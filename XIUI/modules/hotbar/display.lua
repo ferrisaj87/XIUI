@@ -337,6 +337,8 @@ function M.DrawWindow(settings)
         pcall(function()
             windowBg.update(bgPrimHandle, imguiPosX, imguiPosY, contentWidth, contentHeight, bgOptions);
         end);
+
+        imgui.End();
     end
 
     imgui.PopStyleVar(2);
