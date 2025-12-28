@@ -125,7 +125,7 @@ function M.DrawWindow(settings)
     
     -- Compute content size for side hotbars (5, 6, 7)
     local verticalHotbarWidth = (buttonSize * VERTICAL_HOTBAR_COLUMNS) + (buttonGap * (VERTICAL_HOTBAR_COLUMNS - 1));
-    local verticalHotbarHeight = (buttonSize + labelGap + textHeight) * VERTICAL_HOTBAR_ROWS + (rowGap * (VERTICAL_HOTBAR_ROWS - 1)) + VERTICAL_HOTBAR_NUMBER_SPACING;
+    local verticalHotbarHeight = VERTICAL_HOTBAR_NUMBER_SPACING + (buttonSize + labelGap + textHeight) * VERTICAL_HOTBAR_ROWS + (rowGap * (VERTICAL_HOTBAR_ROWS - 1));
     
     -- Compute total content size (main hotbar + gap + vertical hotbars)
     local verticalMargin = 50; -- margin between horizontal and vertical hotbars
@@ -322,10 +322,17 @@ function M.DrawWindow(settings)
         local hotbarMargin = 0;
         for hotbarNum = 1, VERTICAL_HOTBARS_COUNT do
             local hotbarOffsetX = verticalStartX + (hotbarNum - 1) * (verticalHotbarWidth + buttonGap) + hotbarMargin;
+            
+            -- Draw hotbar number above vertical hotbar
+            local hotbarNumber = tostring(4 + hotbarNum);
+            local hotbarNumX = hotbarOffsetX + (verticalHotbarWidth / 2) - (imgui.CalcTextSize(hotbarNumber) / 2);
+            local hotbarNumY = imguiVerticalPosY + (padding - VERTICAL_HOTBAR_NUMBER_SPACING);
+            drawList:AddText({hotbarNumX, hotbarNumY}, imgui.GetColorU32({0.8, 0.8, 0.8, 1.0}), hotbarNumber);
+            
             local verticalIdx = 1;
             for row = 1, VERTICAL_HOTBAR_ROWS do
                 local btnX = hotbarOffsetX;
-                local btnY = imguiVerticalPosY + padding + (row - 1) * (buttonSize + labelGap + textHeight + rowGap);
+                local btnY = imguiVerticalPosY + padding + VERTICAL_HOTBAR_NUMBER_SPACING + (row - 1) * (buttonSize + labelGap + textHeight + rowGap);
                 for column = 1, VERTICAL_HOTBAR_COLUMNS do
                     local buttonIndex = (hotbarNum - 1) * (VERTICAL_HOTBAR_ROWS * VERTICAL_HOTBAR_COLUMNS) + verticalIdx;
                     local id = 'hotbar_vertical_btn_' .. buttonIndex;
@@ -355,7 +362,7 @@ function M.DrawWindow(settings)
                     else 
                         keybindDisplay = 'C-A' .. keybindKey;                    
                     end
-                    
+
                     drawList:AddText({keybindX, keybindY}, imgui.GetColorU32({0.7, 0.7, 0.7, 1.0}), keybindDisplay);
 
                     -- Draw label beneath each button
@@ -367,12 +374,6 @@ function M.DrawWindow(settings)
                     verticalIdx = verticalIdx + 1;
                 end
             end
-            
-            -- Draw hotbar number below vertical hotbar
-            local hotbarNumber = tostring(4 + hotbarNum);
-            local hotbarNumX = hotbarOffsetX + (verticalHotbarWidth / 2) - (imgui.CalcTextSize(hotbarNumber) / 2);
-            local hotbarNumY = imguiVerticalPosY + padding + VERTICAL_HOTBAR_ROWS * (buttonSize + labelGap + textHeight + rowGap) + VERTICAL_HOTBAR_NUMBER_POSITION;
-            drawList:AddText({hotbarNumX, hotbarNumY}, imgui.GetColorU32({0.8, 0.8, 0.8, 1.0}), hotbarNumber);
             
             hotbarMargin = hotbarMargin + VERTICAL_HOTBAR_SPACING;
         end
