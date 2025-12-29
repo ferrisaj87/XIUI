@@ -33,41 +33,36 @@ textures.Initialize = function(self)
 
     self.Cache = {};
     
-    -- Load slot background and frame images
-    local imagesDirectory = string.format('%saddons\\XIUI\\modules\\hotbar\\images\\', AshitaCore:GetInstallPath());
+    -- Load slot background and frame images from assets
+    local assetsDirectory = string.format('%saddons\\XIUI\\assets\\hotbar\\', AshitaCore:GetInstallPath());
     
     -- Load slot background
-    local slotBg = LoadTextureFromPath(imagesDirectory .. 'slot.png');
+    local slotBg = LoadTextureFromPath(assetsDirectory .. 'slot.png');
     if slotBg then
         self.Cache['slot'] = slotBg;
-        print('[Hotbar] Loaded slot background texture');
     end
     
     -- Load frame overlay
-    local frame = LoadTextureFromPath(imagesDirectory .. 'frame.png');
+    local frame = LoadTextureFromPath(assetsDirectory .. 'frame.png');
     if frame then
         self.Cache['frame'] = frame;
-        print('[Hotbar] Loaded frame texture');
     end
     
     -- Load spell icons - use proper path separator for Windows
-    local spellDirectory = string.format('%saddons\\XIUI\\modules\\hotbar\\images\\icons\\spells\\', AshitaCore:GetInstallPath());
-    
-    print(string.format('[Hotbar] Loading textures from: %s', spellDirectory));
+    local spellDirectory = string.format(assetsDirectory .. '\\spells\\', AshitaCore:GetInstallPath());
     
     local spellContents = ashita.fs.get_directory(spellDirectory, '.*\\.png$');
     if spellContents then
-        print(string.format('[Hotbar] Found %d PNG files', #spellContents));
         for _, file in pairs(spellContents) do
             local index = string.find(file, '%.');
             if index then
-                local key = string.sub(file, 1, index - 1);
+                local key = 'spells'.. string.sub(file, 1, index - 1);
                 local fullPath = spellDirectory .. file;
                 local texture = LoadTextureFromPath(fullPath);
                 if texture then
                     self.Cache[file] = texture;  -- Store by full filename (e.g., "00086.png")
                     self.Cache[key] = texture;   -- Also store by key (e.g., "00086")
-                    print(string.format('[Hotbar] Loaded texture: %s (key: %s)', file, key));
+                    --print(string.format('[Hotbar] Loaded texture: %s (key: %s)', file, key));
                 else
                     print(string.format('[Hotbar] Failed to load texture: %s', fullPath));
                 end

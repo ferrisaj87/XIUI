@@ -13,7 +13,7 @@ local button = require('libs.button');
 local data = require('modules.hotbar.data');
 local actions = require('modules.hotbar.actions');
 local textures = require('modules.hotbar.textures');
-local spells = require('modules.hotbar.spells');
+local horizonSpells = require('modules.hotbar.database.horizonspells');
 
 local M = {};
 
@@ -79,6 +79,18 @@ local selectedTab = 1;
 -- ============================================
 -- Helper Functions
 -- ============================================
+
+--- Find a spell by English name in horizonspells
+---@param spellName string The English name of the spell
+---@return table|nil The spell data table with en, icon_id, prefix, and id fields
+local function GetSpellByName(spellName)
+    for _, spell in pairs(horizonSpells) do
+        if spell.en == spellName then
+            return spell;
+        end
+    end
+    return nil;
+end
 
 --- Draws a single hotbar button with textures, keybind, and label
 --- Shared function for both horizontal and vertical bars. Handles layered rendering
@@ -201,7 +213,7 @@ function M.DrawWindow(settings)
     local buttonGap = 12; -- increased horizontal spacing between buttons
 
     -- Determine button size to fit text ("Button Text") plus padding, then apply configured button scale
-    local sampleLabel = 'Horizon2';
+    local sampleLabel = 'a-sample';
     local labelPadding = 12; -- horizontal padding to give breathing room for text
     local baseButtonSize = 100
     local button_scale = gConfig.hotbarButtonScale or 0.56; -- final scale (default ~56%)
@@ -328,26 +340,25 @@ function M.DrawWindow(settings)
                 
                 -- Demo: Show Cure spells on first 3 buttons
                 if idx == 37 then
-                    local cure = spells.getSpell('Cure');
+                    local cure = GetSpellByName('Cure');
                     if cure then
-                        labelText = cure.name;
-                        spellIcon = textures:Get(cure.icon);
-                        command = cure.command;
-                       
+                        labelText = cure.en;
+                        spellIcon = textures:Get('spells' .. string.format('%05d', cure.id));
+                        command = cure.prefix .. ' "' .. cure.en .. '" <t>';
                     end
                 elseif idx == 38 then
-                    local cure2 = spells.getSpell('Cure II');
+                    local cure2 = GetSpellByName('Cure II');
                     if cure2 then
-                        labelText = cure2.name;
-                        spellIcon = textures:Get(cure2.icon);
-                        command = cure2.command;
+                        labelText = cure2.en;
+                        spellIcon = textures:Get('spells' .. string.format('%05d', cure2.id));
+                        command = cure2.prefix .. ' "' .. cure2.en .. '" <t>';
                     end
                 elseif idx == 39 then
-                    local cure3 = spells.getSpell('Cure III');
+                    local cure3 = GetSpellByName('Cure III');
                     if cure3 then
-                        labelText = cure3.name;
-                        spellIcon = textures:Get(cure3.icon);
-                        command = cure3.command;
+                        labelText = cure3.en;
+                        spellIcon = textures:Get('spells' .. string.format('%05d', cure3.id));
+                        command = cure3.prefix .. ' "' .. cure3.en .. '" <t>';
                     end
                 end
                 
@@ -446,7 +457,7 @@ function M.DrawWindow(settings)
                 for column = 1, VERTICAL_HOTBAR_COLUMNS do
                     local buttonIndex = (hotbarNum - 1) * (VERTICAL_HOTBAR_ROWS * VERTICAL_HOTBAR_COLUMNS) + verticalIdx;
                     local id = 'hotbar_vertical_btn_' .. buttonIndex;
-                    local labelText = 'Vertic' .. hotbarNum;
+                    local labelText = sampleLabel
                     local spellIcon = nil;
                     local command = nil;
 
