@@ -3,6 +3,7 @@
 ]]--
 
 require('common');
+local jobs = require('libs.jobs');
 
 local M = {};
 
@@ -105,9 +106,16 @@ function M.Initialize()
     -- Clear any existing cache
     M.keybindsCache = {};
     
+    -- Get the current job
+    local player = AshitaCore:GetMemoryManager():GetPlayer();
+    local currentJobId = player:GetMainJob();
+    
+    local jobName = jobs[currentJobId];
+    jobName = jobName:lower();
+    
     -- Get the path to the keybinds file
     local addonPath = AshitaCore:GetInstallPath();
-    local keybindsPath = string.format('%saddons\\XIUI\\modules\\hotbar\\keybinds\\whm.lua', addonPath);
+    local keybindsPath = string.format('%saddons\\XIUI\\modules\\hotbar\\keybinds\\%s.lua', addonPath, jobName);
     
     -- Load the keybinds file
     local success, result = pcall(function()
@@ -128,7 +136,20 @@ function M.Initialize()
         end
         
         -- Parse the keybinds into structured objects
-        for jobName, binds in pairs(keybinds_job) do
+        -- First, check if the current job exists in the keybinds, otherwise use Base
+        local jobsToLoad = {};
+        local currentJobUpper = jobName:upper();
+        
+        if keybinds_job[currentJobUpper] then
+            jobsToLoad[currentJobUpper] = keybinds_job[currentJobUpper];
+        elseif keybinds_job['Base'] then
+            jobsToLoad['Base'] = keybinds_job['Base'];
+        else
+            -- Load all jobs if Base not found
+            jobsToLoad = keybinds_job;
+        end
+        
+        for jobKey, binds in pairs(jobsToLoad) do
             if type(binds) == 'table' then
                 local parsedBinds = {};
                 for i, entry in ipairs(binds) do
@@ -137,7 +158,7 @@ function M.Initialize()
                         table.insert(parsedBinds, parsed);
                     end
                 end
-                M.keybindsCache[jobName] = parsedBinds;
+                M.keybindsCache[jobKey] = parsedBinds;
             end
         end
         
