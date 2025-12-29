@@ -1,4 +1,4 @@
-
+keybinds_job = {}
 keybinds_job['Base'] = {
  
   -- Hotbar #1 (1-12)

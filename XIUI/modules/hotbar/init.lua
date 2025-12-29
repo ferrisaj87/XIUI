@@ -305,6 +305,16 @@ function M.HandleZonePacket()
 end
 
 -- ============================================
+-- Job Change Handler
+-- ============================================
+
+function M.HandleJobChangePacket(e)
+    -- Reload keybinds for the new job
+    print("[XIUI hotbar] Job change detected, reloading keybinds...");
+    data.SetPlayerJob();
+end
+
+-- ============================================
 -- Key Handler
 -- ============================================
 function M.HandleKey(event)
