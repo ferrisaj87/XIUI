@@ -45,17 +45,23 @@ function M.createUserSettingsDefaults()
         treasurePoolPreview = false,          -- Show preview with test data
         treasurePoolExpanded = false,         -- Expanded view (false = collapsed)
 
-        -- Hotbar settings
-        hotbarEnabled = true,           -- Show treasure pool when items in pool
-        hotbarFontSize = 10,            -- Font size for text
-        hotbarScaleX = 1.0,             -- Horizontal scale
-        hotbarScaleY = 1.0,             -- Vertical scale
-        hotbarBgScale = 1.0,            -- Background texture scale
-        hotbarBorderScale = 1.0,        -- Border texture scale
-        hotbarBackgroundOpacity = 0.87, -- Background opacity
-        hotbarBorderOpacity = 1.0,      -- Border opacity
-        hotbarBackgroundTheme = 'Plain', -- Background theme
-        hotbarPreview = false,          -- Show preview with test data
+        -- Hotbar settings (global)
+        hotbarEnabled = true,                 -- Show hotbar module
+        hotbarPreview = false,                -- Show preview with test data
+        hotbarBarPositions = nil,             -- Per-bar positions (nil = defaults)
+
+        -- Global hotbar visual settings (used when bar's useGlobalSettings = true)
+        hotbarGlobal = factories.createHotbarGlobalDefaults(),
+
+        -- Per-bar hotbar settings (Bar 1-6 each have independent configurations)
+        -- Bars 1-3 enabled by default, bars 4-6 disabled by default
+        -- By default, useGlobalSettings = true, so bars use hotbarGlobal for visuals
+        hotbarBar1 = factories.createHotbarBarDefaults({ rows = 1, columns = 12 }),
+        hotbarBar2 = factories.createHotbarBarDefaults({ rows = 1, columns = 12 }),
+        hotbarBar3 = factories.createHotbarBarDefaults({ rows = 1, columns = 12 }),
+        hotbarBar4 = factories.createHotbarBarDefaults({ rows = 1, columns = 12, enabled = false }),
+        hotbarBar5 = factories.createHotbarBarDefaults({ rows = 1, columns = 12, enabled = false }),
+        hotbarBar6 = factories.createHotbarBarDefaults({ rows = 1, columns = 12, enabled = false }),
 
         -- Notifications settings
         notificationsShowPartyInvite = true,

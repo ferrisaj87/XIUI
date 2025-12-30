@@ -3,6 +3,8 @@
 ]]--
 
 require('common');
+local ffi = require('ffi');
+local d3d8 = require('d3d8');
 local data = require('modules.hotbar.data');
 local horizonSpells = require('modules.hotbar.database.horizonspells');
 local textures = require('modules.hotbar.textures');
@@ -12,6 +14,9 @@ local M = {};
 local controlPressed = false;
 local altPressed = false;
 local shiftPressed = false;
+
+-- Icon cache for items (keyed by item name since we look up by name)
+local itemIconCache = {};
 
 -- ============================================
 -- Helper Functions
@@ -29,26 +34,175 @@ local function GetSpellByName(spellName)
     return nil;
 end
 
---- Build command and spell icon from keybind data
---- Centralized function to avoid code duplication between display and key handling
----@param bind table The keybind data with actionType, action, and target fields
----@return string|nil command The command to execute
----@return any|nil spellIcon The spell icon texture (if applicable)
-function M.BuildCommand(bind)
-    local command = nil;
-    local spellIcon = nil;
-    
+--- Load item icon from game resources by item ID
+---@param itemId number The item ID
+---@return table|nil texture The icon texture
+local function LoadItemIconById(itemId)
+    if not itemId or itemId == 0 or itemId == 65535 then
+        return nil;
+    end
+
+    -- Check cache first
+    if itemIconCache[itemId] then
+        return itemIconCache[itemId];
+    end
+
+    local success, result = pcall(function()
+        local device = GetD3D8Device();
+        if device == nil then return nil; end
+
+        local resMgr = AshitaCore:GetResourceManager();
+        if not resMgr then return nil; end
+
+        local item = resMgr:GetItemById(itemId);
+        if item == nil then return nil; end
+
+        if item.Bitmap == nil or item.ImageSize == nil or item.ImageSize <= 0 then
+            return nil;
+        end
+
+        local dx_texture_ptr = ffi.new('IDirect3DTexture8*[1]');
+        if ffi.C.D3DXCreateTextureFromFileInMemoryEx(
+            device, item.Bitmap, item.ImageSize,
+            0xFFFFFFFF, 0xFFFFFFFF, 1, 0,
+            ffi.C.D3DFMT_A8R8G8B8, ffi.C.D3DPOOL_MANAGED,
+            ffi.C.D3DX_DEFAULT, ffi.C.D3DX_DEFAULT,
+            0xFF000000, nil, nil, dx_texture_ptr
+        ) == ffi.C.S_OK then
+            return {
+                image = d3d8.gc_safe_release(ffi.cast('IDirect3DTexture8*', dx_texture_ptr[0]))
+            };
+        end
+        return nil;
+    end);
+
+    if success and result then
+        itemIconCache[itemId] = result;
+    end
+
+    return itemIconCache[itemId];
+end
+
+-- Cache for item name -> id lookups (populated lazily)
+local itemNameToIdCache = {};
+
+--- Load item icon from game resources by item name (slower, uses name lookup)
+---@param itemName string The item name to look up
+---@return table|nil texture The icon texture
+local function LoadItemIconByName(itemName)
+    if not itemName or itemName == '' then
+        return nil;
+    end
+
+    -- Check name->id cache first
+    if itemNameToIdCache[itemName] then
+        return LoadItemIconById(itemNameToIdCache[itemName]);
+    end
+
+    -- Search for item by name (slow, but cached after first find)
+    local resMgr = AshitaCore:GetResourceManager();
+    if not resMgr then return nil; end
+
+    for itemId = 1, 65535 do
+        local item = resMgr:GetItemById(itemId);
+        if item and item.Name and item.Name[1] == itemName then
+            itemNameToIdCache[itemName] = itemId;
+            return LoadItemIconById(itemId);
+        end
+    end
+
+    return nil;
+end
+
+--- Get icon for a bind (separate from command building for use in drag preview)
+---@param bind table The keybind data
+---@return any|nil icon The icon texture (if available)
+---@return number|nil iconId The icon ID (for reference)
+function M.GetBindIcon(bind)
     if not bind then
         return nil, nil;
     end
-    
+
+    local icon = nil;
+    local iconId = nil;
+
+    -- Check for custom icon override first
+    if bind.customIconType and bind.customIconId then
+        if bind.customIconType == 'spell' then
+            icon = textures:Get('spells' .. string.format('%05d', bind.customIconId));
+            iconId = bind.customIconId;
+            if icon then return icon, iconId; end
+        elseif bind.customIconType == 'item' then
+            icon = LoadItemIconById(bind.customIconId);
+            iconId = bind.customIconId;
+            if icon then return icon, iconId; end
+        end
+    end
+
+    if bind.actionType == 'ma' then
+        -- Magic spell - look up in horizonspells database
+        local spell = GetSpellByName(bind.action);
+        if spell then
+            iconId = spell.id;
+            icon = textures:Get('spells' .. string.format('%05d', spell.id));
+        end
+    elseif bind.actionType == 'ja' then
+        -- Job ability - try to get from game resources
+        local resMgr = AshitaCore:GetResourceManager();
+        if resMgr then
+            for abilityId = 1, 1024 do
+                local ability = resMgr:GetAbilityById(abilityId);
+                if ability and ability.Name and ability.Name[1] == bind.action then
+                    iconId = abilityId;
+                    -- Abilities don't have separate icon files in our assets yet
+                    -- but we store the ID for future use
+                    break;
+                end
+            end
+        end
+    elseif bind.actionType == 'ws' then
+        -- Weaponskill - try to get from game resources
+        local resMgr = AshitaCore:GetResourceManager();
+        if resMgr then
+            for wsId = 1, 255 do
+                local ability = resMgr:GetAbilityById(wsId + 256);
+                if ability and ability.Name and ability.Name[1] == bind.action then
+                    iconId = wsId;
+                    break;
+                end
+            end
+        end
+    elseif bind.actionType == 'item' or bind.actionType == 'equip' then
+        -- Item or Equipment - load icon from game resources
+        -- Use itemId if available (faster), otherwise fall back to name lookup
+        if bind.itemId then
+            icon = LoadItemIconById(bind.itemId);
+        else
+            icon = LoadItemIconByName(bind.action);
+        end
+    end
+
+    return icon, iconId;
+end
+
+--- Build command and icon from keybind data
+--- Centralized function to avoid code duplication between display and key handling
+---@param bind table The keybind data with actionType, action, and target fields
+---@return string|nil command The command to execute
+---@return any|nil icon The icon texture (if applicable)
+function M.BuildCommand(bind)
+    local command = nil;
+
+    if not bind then
+        return nil, nil;
+    end
+
+    -- Get icon using the helper function
+    local icon = M.GetBindIcon(bind);
+
     -- Build command based on action type
     if bind.actionType == 'ma' then
         -- Magic spell
-        local spell = GetSpellByName(bind.action);
-        if spell then
-            spellIcon = textures:Get('spells' .. string.format('%05d', spell.id));
-        end
         command = '/ma "' .. bind.action .. '" <' .. bind.target .. '>';
     elseif bind.actionType == 'ja' then
         -- Job ability
@@ -56,12 +210,22 @@ function M.BuildCommand(bind)
     elseif bind.actionType == 'ws' then
         -- Weapon skill
         command = '/ws "' .. bind.action .. '" <' .. bind.target .. '>';
+    elseif bind.actionType == 'item' then
+        -- Use item
+        command = '/item "' .. bind.action .. '" <' .. bind.target .. '>';
+    elseif bind.actionType == 'equip' then
+        -- Equip item to slot
+        local slot = bind.equipSlot or 'main';
+        command = '/equip ' .. slot .. ' "' .. bind.action .. '"';
+    elseif bind.actionType == 'pet' then
+        -- Pet command
+        command = '/pet "' .. bind.action .. '" <' .. bind.target .. '>';
     elseif bind.actionType == 'macro' then
-        -- Macro command
-        command = bind.action;
+        -- Macro command (raw command or use macroText)
+        command = bind.macroText or bind.action;
     end
-    
-    return command, spellIcon;
+
+    return command, icon;
 end
 
 

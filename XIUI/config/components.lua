@@ -455,6 +455,31 @@ function components.DrawPartySlider(partyTable, label, configKey, min, max, form
     end
 end
 
+-- Helper function for per-party integer slider (uses SliderInt with proper format)
+function components.DrawPartySliderInt(partyTable, label, configKey, min, max, format, callback, default)
+    local defaultValue = default or min;
+    local currentValue = partyTable[configKey];
+    if currentValue == nil then
+        currentValue = defaultValue;
+        partyTable[configKey] = defaultValue;  -- Initialize missing value
+    end
+    local value = { math.floor(currentValue) };
+    local uniqueLabel = label .. '##party_' .. configKey;
+
+    imgui.SetNextItemWidth(150);
+    local changed = imgui.SliderInt(uniqueLabel, value, min, max, format);
+
+    if changed then
+        partyTable[configKey] = value[1];
+        if callback then callback() end
+        UpdateUserSettings();
+    end
+
+    if (imgui.IsItemDeactivatedAfterEdit()) then
+        SaveSettingsToDisk();
+    end
+end
+
 -- Helper function for per-party combo box
 function components.DrawPartyComboBox(partyTable, label, configKey, items, callback)
     local currentValue = partyTable[configKey];

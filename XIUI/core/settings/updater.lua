@@ -122,12 +122,12 @@ function M.UpdateUserSettings(gAdjustedSettings, default_settings, gConfig)
     if _XIUI_DEV_ALPHA_HOTBAR == true then
         -- Hotbar fonts (dev-only)
         applyGlobalFontSettings(gAdjustedSettings.hotbarSettings.font_settings, us.fontFamily, fontWeightFlags, us.fontOutlineWidth);
-        applyGlobalFontSettings(gAdjustedSettings.hotbarSettings.title_font_settings, us.fontFamily, fontWeightFlags, us.fontOutlineWidth);
-        -- Title font uses italic (matching party list pattern)
-        gAdjustedSettings.hotbarSettings.title_font_settings.font_flags = bit.bor(fontWeightFlags, gdi.FontFlags.Italic);
+        applyGlobalFontSettings(gAdjustedSettings.hotbarSettings.keybind_font_settings, us.fontFamily, fontWeightFlags, 1);
+        applyGlobalFontSettings(gAdjustedSettings.hotbarSettings.label_font_settings, us.fontFamily, fontWeightFlags, us.fontOutlineWidth);
         -- Apply font heights from user settings (ensure minimum)
         gAdjustedSettings.hotbarSettings.font_settings.font_height = math.max(us.hotbarFontSize or 10, 8);
-        gAdjustedSettings.hotbarSettings.title_font_settings.font_height = math.max(us.hotbarFontSize or 10, 8);
+        gAdjustedSettings.hotbarSettings.keybind_font_settings.font_height = math.max(us.hotbarKeybindFontSize or 8, 6);
+        gAdjustedSettings.hotbarSettings.label_font_settings.font_height = math.max(us.hotbarLabelFontSize or 10, 8);
         -- Hotbar background and scaling settings (mirrors config defaults)
         gAdjustedSettings.hotbarSettings.scaleX = us.hotbarScaleX or 1.0;
         gAdjustedSettings.hotbarSettings.scaleY = us.hotbarScaleY or 1.0;

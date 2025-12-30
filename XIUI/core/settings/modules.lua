@@ -663,7 +663,7 @@ function M.createModuleDefaults()
         -- settings for hotbar (dev-only)
         hotbarSettings = T{
             font_settings = T{
-                font_alignment = gdi.Alignment.Center,
+                font_alignment = gdi.Alignment.Left,
                 font_family = 'Consolas',
                 font_height = 10,
                 font_color = 0xFFFFFFFF,
@@ -671,12 +671,21 @@ function M.createModuleDefaults()
                 outline_color = 0xFF000000,
                 outline_width = 2,
             },
-            title_font_settings = T{
-                font_alignment = gdi.Alignment.Center,
+            keybind_font_settings = T{
+                font_alignment = gdi.Alignment.Left,
                 font_family = 'Consolas',
-                font_height = 12,
+                font_height = 8,
+                font_color = 0xCCCCCCCC,
+                font_flags = gdi.FontFlags.None,
+                outline_color = 0xFF000000,
+                outline_width = 1,
+            },
+            label_font_settings = T{
+                font_alignment = gdi.Alignment.Left,
+                font_family = 'Consolas',
+                font_height = 10,
                 font_color = 0xFFFFFFFF,
-                font_flags = gdi.FontFlags.Bold,
+                font_flags = gdi.FontFlags.None,
                 outline_color = 0xFF000000,
                 outline_width = 2,
             },

@@ -39,7 +39,7 @@ local _XIUI_DEV_HOT_RELOADING_ENABLED = true;
 local _XIUI_DEV_HOT_RELOAD_POLL_TIME_SECONDS = 1;
 local _XIUI_DEV_HOT_RELOAD_LAST_RELOAD_TIME;
 local _XIUI_DEV_HOT_RELOAD_FILES = {};
-_XIUI_DEV_ALPHA_HOTBAR = false;
+_XIUI_DEV_ALPHA_HOTBAR = true;
 
 require('common');
 local settings = require('settings');

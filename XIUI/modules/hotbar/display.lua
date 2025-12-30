@@ -1,19 +1,20 @@
 --[[
 * XIUI hotbar - Display Module
+* Renders 6 independent hotbar windows with primitives and GDI fonts
 ]]--
 
 require('common');
 require('handlers.helpers');
 local imgui = require('imgui');
 local ffi = require('ffi');
-local d3d8 = require('d3d8');
 local windowBg = require('libs.windowbackground');
-local progressbar = require('libs.progressbar');
-local button = require('libs.button');
+local drawing = require('libs.drawing');
+
 local data = require('modules.hotbar.data');
 local actions = require('modules.hotbar.actions');
 local textures = require('modules.hotbar.textures');
-local horizonSpells = require('modules.hotbar.database.horizonspells');
+local macropalette = require('modules.hotbar.macropalette');
+local dragdrop = require('libs.dragdrop');
 
 local M = {};
 
@@ -21,176 +22,474 @@ local M = {};
 -- Constants
 -- ============================================
 
-local ICON_SIZE = 24;
-local ROW_HEIGHT = 32;  -- Icon (24) + top offset (2) + gap (4) + bar (3) - 1
-local PADDING = 8;
-local ICON_TEXT_GAP = 6;
-local ROW_SPACING = 4;
-local BAR_HEIGHT = 3;
-
--- Keybind text positioning
-local KEYBIND_OFFSET = 0.04;  -- relative to button size
-
-local HORIZONTAL_COLUMNS = 12; -- buttons per row
-local HORIZONTAL_ROWS = 4; -- number of HORIZONTAL_ROWS
-
-local VERTICAL_HOTBAR_COLUMNS = 2;
-local VERTICAL_HOTBAR_ROWS = 6;
-local VERTICAL_HOTBARS_COUNT = 2;
-local VERTICAL_HOTBAR_SPACING = 20; -- spacing between vertical hotbars
-
--- Hotbar number label spacing
-local HORIZONTAL_HOTBAR_NUMBER_OFFSET = 12; -- horizontal offset for left-side hotbar numbers
-local HORIZONTAL_HOTBAR_NUMBER_POSITION = -2; -- x position of hotbar number text
-local VERTICAL_HOTBAR_NUMBER_SPACING = 16; -- vertical spacing below vertical hotbars for number
-local VERTICAL_HOTBAR_NUMBER_POSITION = 0; -- y position of hotbar number text below
-local VERTICAL_HOTBAR_NUMBER_OFFSET =  4; -- horizontal offset for vertical hotbar numbers
--- Keybind constants for hotbar HORIZONTAL_ROWS
-local KEYBIND_SHIFT = 12;
-local KEYBIND_CTRL = 24;
-local KEYBIND_ALT = 36;
-local KEYBIND_BASE = 48;
-
+local KEYBIND_OFFSET_X = 2;
+local KEYBIND_OFFSET_Y = 2;
 
 -- ============================================
 -- State
 -- ============================================
 
--- Background primitive handles (one for horizontal, one for vertical)
-local bgPrimHandleHorizontal = nil;
-local bgPrimHandleVertical = nil;
-
--- Theme tracking (for detecting changes like petbar)
+-- Loaded theme tracking
 local loadedBgTheme = nil;
-
--- Item icon cache (itemId -> texture table with .image)
-local iconCache = {};
 
 -- Textures initialized flag
 local texturesInitialized = false;
-
--- Tab state: 1 = Pool view, 2 = History view
-local selectedTab = 1;
-
--- ============================================
--- Item Icon Loading
--- ============================================
 
 -- ============================================
 -- Helper Functions
 -- ============================================
 
---- Find a spell by English name in horizonspells
----@param spellName string The English name of the spell
----@return table|nil The spell data table with en, icon_id, prefix, and id fields
-local function GetSpellByName(spellName)
-    for _, spell in pairs(horizonSpells) do
-        if spell.en == spellName then
-            return spell;
+-- Get default position for a bar
+local function GetDefaultBarPosition(barIndex)
+    local screenWidth = imgui.GetIO().DisplaySize.x or 1920;
+    local screenHeight = imgui.GetIO().DisplaySize.y or 1080;
+
+    -- Use per-bar settings for accurate dimensions
+    local barSettings = data.GetBarSettings(barIndex);
+    local slotSize = barSettings.slotSize or 32;
+    local slotGap = barSettings.slotXPadding or data.BUTTON_GAP;
+    local padding = data.PADDING;
+    local layout = data.GetBarLayout(barIndex);
+
+    -- All bars: stack vertically, centered horizontally
+    -- Bar 1 at the bottom, bar 2 above it, etc.
+    local barWidth = (slotSize * layout.columns) + (slotGap * (layout.columns - 1)) + (padding * 2);
+    local barHeight = slotSize + (padding * 2);
+    local x = (screenWidth - barWidth) / 2;
+    local y = screenHeight - 120 - ((barIndex - 1) * (barHeight + 4));
+    return x, y;
+end
+
+-- Calculate bar dimensions using per-bar settings
+local function GetBarDimensions(barIndex)
+    local barSettings = data.GetBarSettings(barIndex);
+    local slotSize = barSettings.slotSize or 32;
+    -- Use per-bar slot padding settings
+    local slotGap = barSettings.slotXPadding or data.BUTTON_GAP;
+    local padding = data.PADDING;
+    local rowGap = barSettings.slotYPadding or data.ROW_GAP;
+
+    local layout = data.GetBarLayout(barIndex);
+
+    -- Calculate dimensions based on rows and columns
+    local width = (slotSize * layout.columns) + (slotGap * (layout.columns - 1)) + (padding * 2);
+    local height = (slotSize * layout.rows) + (rowGap * (layout.rows - 1)) + (padding * 2);
+
+    return width, height, slotSize, slotGap, rowGap, layout;
+end
+
+-- Cached asset path
+local assetsPath = nil;
+
+local function GetAssetsPath()
+    if not assetsPath then
+        assetsPath = string.format('%saddons\\XIUI\\assets\\hotbar\\', AshitaCore:GetInstallPath());
+    end
+    return assetsPath;
+end
+
+-- Draw a single hotbar slot using primitives and fonts
+local function DrawSlot(barIndex, slotIndex, x, y, buttonSize, bind, barSettings)
+    local slotPrim = data.slotPrims[barIndex] and data.slotPrims[barIndex][slotIndex];
+    local keybindFont = data.keybindFonts[barIndex] and data.keybindFonts[barIndex][slotIndex];
+    local labelFont = data.labelFonts[barIndex] and data.labelFonts[barIndex][slotIndex];
+
+    -- Get per-bar display settings
+    local showSlotFrame = barSettings and barSettings.showSlotFrame or false;
+    local showActionLabels = barSettings and barSettings.showActionLabels or false;
+
+    -- Check hover state first
+    local mouseX, mouseY = imgui.GetMousePos();
+    local isHovered = mouseX >= x and mouseX <= x + buttonSize and
+                      mouseY >= y and mouseY <= y + buttonSize;
+
+    -- Update slot background primitive
+    if slotPrim then
+        local texturePath = GetAssetsPath() .. 'slot.png';
+        slotPrim.texture = texturePath;
+        slotPrim.position_x = x;
+        slotPrim.position_y = y;
+        -- Don't set width/height (let it use texture's native size)
+        -- Use scale to size the output to buttonSize
+        -- slot.png is 40x40 pixels
+        local textureSize = 40;
+        local scale = buttonSize / textureSize;
+        slotPrim.scale_x = scale;
+        slotPrim.scale_y = scale;
+        slotPrim.visible = true;
+
+        -- Get slot background color from per-bar settings
+        local slotBgColor = barSettings and barSettings.slotBackgroundColor or 0xFFFFFFFF;
+
+        -- Hover state: brighten on hover (blend with slot color)
+        if isHovered then
+            -- Darken the color slightly on hover (multiply RGB by ~0.8)
+            local a = bit.rshift(bit.band(slotBgColor, 0xFF000000), 24);
+            local r = math.floor(bit.rshift(bit.band(slotBgColor, 0x00FF0000), 16) * 0.8);
+            local g = math.floor(bit.rshift(bit.band(slotBgColor, 0x0000FF00), 8) * 0.8);
+            local b = math.floor(bit.band(slotBgColor, 0x000000FF) * 0.8);
+            slotPrim.color = bit.bor(bit.lshift(a, 24), bit.lshift(r, 16), bit.lshift(g, 8), b);
+        else
+            slotPrim.color = slotBgColor;
         end
     end
-    return nil;
-end
 
---- Draws a single hotbar button with textures, keybind, and label
---- Shared function for both horizontal and vertical bars. Handles layered rendering
---- with slot background, button with icon, and frame overlay. Displays keybind text
---- and label, and executes commands on click.
----@param params table The parameters table
----@param params.id string Unique identifier for the button
----@param params.btnX number X position of the button (in pixels)
----@param params.btnY number Y position of the button (in pixels)
----@param params.buttonSize number Size of the button (in pixels)
----@param params.labelText string Text label to display below the button
----@param params.spellIcon table|nil Spell icon texture object (optional)
----@param params.command string|nil Command to execute when button is clicked (optional)
----@param params.drawList table ImGui draw list for rendering
----@param params.keybindDisplay string Keybind text to display in top-left corner
----@param params.labelGap number Gap between button and label text (optional, default 4)
----@return boolean clicked Whether the button was clicked this frame
----@return boolean hovered Whether the button is hovered
-local function DrawHotbarButton(params)
-    local id = params.id;
-    local btnX = params.btnX;
-    local btnY = params.btnY;
-    local buttonSize = params.buttonSize;
-    local labelText = params.labelText;
-    local spellIcon = params.spellIcon;
-    local command = params.command;
-    local drawList = params.drawList;
-    local keybindDisplay = params.keybindDisplay;
-    
-    local noCommand = not command or command == ''
+    -- Get keybind display text
+    local keybindDisplay = data.GetKeybindDisplay(barIndex, slotIndex);
 
-    if noCommand then
-       return false, false;
+    -- Update keybind font
+    if keybindFont then
+        keybindFont:set_text(keybindDisplay);
+        keybindFont:set_position_x(x + KEYBIND_OFFSET_X);
+        keybindFont:set_position_y(y + KEYBIND_OFFSET_Y);
+        -- Apply per-bar keybind size and color
+        local keybindSize = barSettings and barSettings.keybindFontSize or 8;
+        local keybindColor = barSettings and barSettings.keybindFontColor or 0xFFFFFFFF;
+        keybindFont:set_font_height(keybindSize);
+        keybindFont:set_font_color(keybindColor);
+        keybindFont:set_visible(true);
     end
 
-    -- Get slot background and frame textures
-    local slotBgTexture = textures:Get('slot');
-    local frameTexture = textures:Get('frame');
-    
-    -- Draw layered button: slot background -> button (with icon) -> frame overlay
-    
-    -- Draw button with spell icon using button library (with transparent background)
-    
-    -- Convert textures to pointers for ImGui
-    local slotBgPtr = slotBgTexture and tonumber(ffi.cast("uint32_t", slotBgTexture.image));
-    local framePtr = frameTexture and tonumber(ffi.cast("uint32_t", frameTexture.image));
+    -- Get action label and command
+    local labelText = '';
+    local command = nil;
+    local spellIcon = nil;
 
-        -- Draw slot background first (behind everything)
-    if slotBgPtr then
-        drawList:AddImage(slotBgPtr, {btnX, btnY}, {btnX + buttonSize, btnY + buttonSize});
+    if bind then
+        labelText = bind.displayName or bind.action or '';
+        command, spellIcon = actions.BuildCommand(bind);
     end
 
-    local clicked, hovered = button.Draw(id, btnX, btnY, buttonSize, buttonSize, {
-        colors = {
-            normal = 0x00000000,   -- Fully transparent
-            hovered = 0x22FFFFFF,  -- Slight white tint on hover
-            pressed = 0x44FFFFFF,  -- Brighter tint when pressed
-            border = 0x00000000,   -- No border
-        },
-        rounding = 0,
-        borderThickness = 0,
-        tooltip = labelText,
-        image = spellIcon,
-        imageSize = {buttonSize * 0.75, buttonSize * 0.75},
-        drawList = drawList,
+    -- Action label (optional, shown outside/below the bar)
+    if labelFont then
+        if showActionLabels and labelText ~= '' then
+            labelFont:set_text(labelText);
+            -- Center the label under the slot (font has center alignment)
+            local labelOffsetX = barSettings and barSettings.actionLabelOffsetX or 0;
+            local labelOffsetY = barSettings and barSettings.actionLabelOffsetY or 0;
+            labelFont:set_position_x(x + (buttonSize / 2) + labelOffsetX);
+            labelFont:set_position_y(y + buttonSize + data.LABEL_GAP + labelOffsetY);
+            labelFont:set_visible(true);
+        else
+            labelFont:set_visible(false);
+        end
+    end
+
+    -- Draw spell icon and optional frame using ImGui window draw list
+    -- (Use window draw list so tooltips render on top)
+    local drawList = imgui.GetWindowDrawList();
+    if drawList then
+        -- Draw spell icon if available
+        if spellIcon and spellIcon.image then
+            local iconPtr = tonumber(ffi.cast("uint32_t", spellIcon.image));
+            if iconPtr then
+                local iconPadding = buttonSize * 0.125;
+                local iconSize = buttonSize * 0.75;
+                drawList:AddImage(iconPtr,
+                    {x + iconPadding, y + iconPadding},
+                    {x + iconPadding + iconSize, y + iconPadding + iconSize}
+                );
+            end
+        end
+
+        -- Draw frame overlay if enabled in per-bar settings
+        if showSlotFrame then
+            local frameTexture = textures:Get('frame');
+            if frameTexture and frameTexture.image then
+                local framePtr = tonumber(ffi.cast("uint32_t", frameTexture.image));
+                if framePtr then
+                    drawList:AddImage(framePtr, {x, y}, {x + buttonSize, y + buttonSize});
+                end
+            end
+        end
+
+        -- Draw hover effect when mouse is over the slot
+        if isHovered and not dragdrop.IsDragging() then
+            local hoverTintColor = imgui.GetColorU32({1.0, 1.0, 1.0, 0.15});  -- White at 15% opacity
+            local hoverBorderColor = imgui.GetColorU32({1.0, 1.0, 1.0, 0.10});  -- White at 10% opacity
+            drawList:AddRectFilled(
+                {x, y},
+                {x + buttonSize, y + buttonSize},
+                hoverTintColor,
+                2  -- slight rounding
+            );
+            drawList:AddRect(
+                {x, y},
+                {x + buttonSize, y + buttonSize},
+                hoverBorderColor,
+                2,  -- slight rounding
+                0,
+                1   -- border thickness
+            );
+        end
+    end
+
+    -- Draw tooltip when hovering over a slot with content
+    if isHovered and bind and not dragdrop.IsDragging() then
+        -- Style the tooltip
+        imgui.PushStyleColor(ImGuiCol_PopupBg, {0.067, 0.063, 0.055, 0.95});
+        imgui.PushStyleColor(ImGuiCol_Border, {0.3, 0.28, 0.24, 0.8});
+        imgui.PushStyleColor(ImGuiCol_Text, {0.9, 0.9, 0.9, 1.0});
+        imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, {8, 6});
+        imgui.PushStyleVar(ImGuiStyleVar_WindowRounding, 4);
+
+        imgui.BeginTooltip();
+
+        -- Action name (gold color)
+        local actionName = bind.displayName or bind.action or 'Unknown';
+        imgui.TextColored({0.957, 0.855, 0.592, 1.0}, actionName);
+
+        -- Action type
+        local typeLabels = {
+            ma = 'Spell',
+            ja = 'Ability',
+            ws = 'Weaponskill',
+            item = 'Item',
+            equip = 'Equip',
+            macro = 'Macro',
+            pet = 'Pet Command',
+        };
+        local typeLabel = typeLabels[bind.actionType] or bind.actionType or '?';
+
+        imgui.Spacing();
+        imgui.TextColored({0.6, 0.6, 0.6, 1.0}, 'Type: ' .. typeLabel);
+
+        -- Target (if applicable)
+        if bind.target and bind.actionType ~= 'equip' and bind.actionType ~= 'macro' then
+            imgui.TextColored({0.6, 0.6, 0.6, 1.0}, 'Target: <' .. bind.target .. '>');
+        end
+
+        -- Equipment slot (if equip type)
+        if bind.actionType == 'equip' and bind.equipSlot then
+            local slotLabels = {
+                main = 'Main Hand', sub = 'Sub/Shield', range = 'Range', ammo = 'Ammo',
+                head = 'Head', body = 'Body', hands = 'Hands', legs = 'Legs', feet = 'Feet',
+                neck = 'Neck', waist = 'Waist', ear1 = 'Ear 1', ear2 = 'Ear 2',
+                ring1 = 'Ring 1', ring2 = 'Ring 2', back = 'Back',
+            };
+            local slotLabel = slotLabels[bind.equipSlot] or bind.equipSlot;
+            imgui.TextColored({0.6, 0.6, 0.6, 1.0}, 'Slot: ' .. slotLabel);
+        end
+
+        -- Macro text (if macro type)
+        if bind.actionType == 'macro' and bind.macroText then
+            imgui.TextColored({0.6, 0.6, 0.6, 1.0}, 'Command:');
+            imgui.TextColored({0.5, 0.7, 0.5, 1.0}, bind.macroText);
+        end
+
+        -- Custom icon indicator
+        if bind.customIconType then
+            imgui.Spacing();
+            imgui.TextColored({0.4, 0.4, 0.4, 1.0}, '(Custom icon)');
+        end
+
+        imgui.EndTooltip();
+
+        imgui.PopStyleVar(2);
+        imgui.PopStyleColor(3);
+    end
+
+    -- Handle drag & drop with ImGui invisible button overlay
+    imgui.SetCursorScreenPos({x, y});
+    local buttonId = string.format('##hotbarslot_%d_%d', barIndex, slotIndex);
+    imgui.InvisibleButton(buttonId, {buttonSize, buttonSize});
+
+    local isItemHovered = imgui.IsItemHovered();
+    local isItemActive = imgui.IsItemActive();
+
+    -- Drag source (if slot has content)
+    if bind and isItemActive and imgui.IsMouseDragging(0, 3) then
+        if not dragdrop.IsDragging() and not dragdrop.IsDragPending() then
+            macropalette.StartDragSlot(barIndex, slotIndex, bind);
+        end
+    end
+
+    -- Drop zone - register this slot as a valid drop target
+    local zoneId = string.format('hotbar_%d_%d', barIndex, slotIndex);
+    local dropped = dragdrop.DropZone(zoneId, x, y, buttonSize, buttonSize, {
+        accepts = {'macro', 'slot'},
+        highlightColor = 0xA8FFFFFF,  -- White at 66% opacity
+        onDrop = function(payload)
+            macropalette.HandleDropOnSlot(payload, barIndex, slotIndex);
+        end,
     });
-    
-    -- Draw label beneath each button
-    local labelX = btnX;
-    local labelY = btnY + buttonSize + (params.labelGap or 4);
-    drawList:AddText({labelX, labelY}, imgui.GetColorU32({0.9, 0.9, 0.9, 1.0}), labelText);
 
-        -- Draw frame overlay on top
-    if framePtr then
-        drawList:AddImage(framePtr, {btnX, btnY}, {btnX + buttonSize, btnY + buttonSize});
+    -- Handle click interaction on mouse RELEASE (not click)
+    -- Only execute if: hovering, mouse released, has command, not dragging, and no drag was attempted
+    if isItemHovered and imgui.IsMouseReleased(0) and command then
+        if not dragdrop.IsDragging() and not dragdrop.WasDragAttempted() then
+            AshitaCore:GetChatManager():QueueCommand(-1, command);
+        end
     end
 
-    -- Draw keybind in top-left corner of button
-    local keybindX = btnX + buttonSize * KEYBIND_OFFSET;
-    local keybindY = btnY + buttonSize * KEYBIND_OFFSET;
-    drawList:AddText({keybindX, keybindY}, imgui.GetColorU32({0.7, 0.7, 0.7, 1.0}), keybindDisplay);
-   
-    -- Execute command when button is clicked
-    if clicked and command then
-        AshitaCore:GetChatManager():QueueCommand(-1, command);
+    -- Right-click to clear slot
+    if isItemHovered and imgui.IsMouseClicked(1) and bind then
+        macropalette.ClearSlot(barIndex, slotIndex);
     end
-    
-    return clicked, hovered;
+
+    return isHovered;
+end
+
+-- Draw a single hotbar window
+local function DrawBarWindow(barIndex, settings)
+    -- Get per-bar settings
+    local barSettings = data.GetBarSettings(barIndex);
+
+    -- Check if bar is enabled
+    if not barSettings.enabled then
+        -- Hide bar resources
+        data.SetBarFontsVisible(barIndex, false);
+        if data.bgHandles[barIndex] then
+            windowBg.hide(data.bgHandles[barIndex]);
+        end
+        -- Hide unused slot primitives
+        for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
+            if data.slotPrims[barIndex] and data.slotPrims[barIndex][slotIndex] then
+                data.slotPrims[barIndex][slotIndex].visible = false;
+            end
+        end
+        return;
+    end
+
+    -- Get saved position or default
+    local savedPos = gConfig.hotbarBarPositions and gConfig.hotbarBarPositions[barIndex];
+    local defaultX, defaultY = GetDefaultBarPosition(barIndex);
+    local posX = savedPos and savedPos.x or defaultX;
+    local posY = savedPos and savedPos.y or defaultY;
+
+    -- Get dimensions (now includes layout)
+    local barWidth, barHeight, buttonSize, buttonGap, rowGap, layout = GetBarDimensions(barIndex);
+
+    -- Pre-hide any slot primitives/fonts beyond the current slot count
+    -- This prevents orphaned primitives when layout changes (e.g., reducing columns)
+    local slotCount = layout.slots;
+    for hiddenSlot = slotCount + 1, data.MAX_SLOTS_PER_BAR do
+        if data.slotPrims[barIndex] and data.slotPrims[barIndex][hiddenSlot] then
+            data.slotPrims[barIndex][hiddenSlot].visible = false;
+        end
+        if data.keybindFonts[barIndex] and data.keybindFonts[barIndex][hiddenSlot] then
+            data.keybindFonts[barIndex][hiddenSlot]:set_visible(false);
+        end
+        if data.labelFonts[barIndex] and data.labelFonts[barIndex][hiddenSlot] then
+            data.labelFonts[barIndex][hiddenSlot]:set_visible(false);
+        end
+    end
+
+    -- Window flags (dummy window for positioning)
+    local windowFlags = GetBaseWindowFlags(gConfig.lockPositions);
+
+    local windowName = string.format('Hotbar%d', barIndex);
+
+    imgui.SetNextWindowPos({posX, posY}, ImGuiCond_FirstUseEver);
+    imgui.SetNextWindowSize({barWidth, barHeight}, ImGuiCond_Always);
+
+    local windowPosX, windowPosY;
+
+    if imgui.Begin(windowName, true, windowFlags) then
+        windowPosX, windowPosY = imgui.GetWindowPos();
+
+        -- Reserve space
+        imgui.Dummy({barWidth, barHeight});
+
+        -- Update background using per-bar settings
+        local bgTheme = barSettings.backgroundTheme or 'Window1';
+        local bgScale = barSettings.bgScale or 1.0;
+        local borderScale = barSettings.borderScale or 1.0;
+        local bgOpacity = barSettings.backgroundOpacity or 0.87;
+        local borderOpacity = barSettings.borderOpacity or 1.0;
+
+        -- Use per-bar color settings
+        local bgColor = barSettings.bgColor or 0xFFFFFFFF;
+        local borderColor = barSettings.borderColor or 0xFFFFFFFF;
+
+        local bgOptions = {
+            theme = bgTheme,
+            padding = 0,  -- Padding already included in barWidth/barHeight
+            paddingY = 0,
+            bgScale = bgScale,
+            borderScale = borderScale,
+            bgOpacity = bgOpacity,
+            borderOpacity = borderOpacity,
+            bgColor = bgColor,
+            borderColor = borderColor,
+        };
+
+        if data.bgHandles[barIndex] then
+            windowBg.update(data.bgHandles[barIndex], windowPosX, windowPosY, barWidth, barHeight, bgOptions);
+        end
+
+        -- Draw hotbar number to the LEFT of the bar (outside container)
+        if data.hotbarNumberFonts[barIndex] then
+            local showNumber = barSettings.showHotbarNumber;
+            if showNumber == nil then showNumber = true; end
+            if showNumber then
+                data.hotbarNumberFonts[barIndex]:set_text(tostring(barIndex));
+                -- Position to the left of the bar
+                data.hotbarNumberFonts[barIndex]:set_position_x(windowPosX - 16);
+                data.hotbarNumberFonts[barIndex]:set_position_y(windowPosY + (barHeight / 2) - 6);
+                data.hotbarNumberFonts[barIndex]:set_visible(true);
+            else
+                data.hotbarNumberFonts[barIndex]:set_visible(false);
+            end
+        end
+
+        -- Draw slots based on layout (rows x columns)
+        local padding = data.PADDING;
+        local slotCount = layout.slots;
+        local slotIndex = 1;
+
+        for row = 1, layout.rows do
+            for col = 1, layout.columns do
+                if slotIndex <= slotCount then
+                    local slotX = windowPosX + padding + (col - 1) * (buttonSize + buttonGap);
+                    local slotY = windowPosY + padding + (row - 1) * (buttonSize + rowGap);
+
+                    local bind = data.GetKeybindForSlot(barIndex, slotIndex);
+                    DrawSlot(barIndex, slotIndex, slotX, slotY, buttonSize, bind, barSettings);
+                end
+                slotIndex = slotIndex + 1;
+            end
+        end
+
+        -- Hide unused slot primitives and fonts
+        for hiddenSlot = slotCount + 1, data.MAX_SLOTS_PER_BAR do
+            if data.slotPrims[barIndex] and data.slotPrims[barIndex][hiddenSlot] then
+                data.slotPrims[barIndex][hiddenSlot].visible = false;
+            end
+            if data.keybindFonts[barIndex] and data.keybindFonts[barIndex][hiddenSlot] then
+                data.keybindFonts[barIndex][hiddenSlot]:set_visible(false);
+            end
+            if data.labelFonts[barIndex] and data.labelFonts[barIndex][hiddenSlot] then
+                data.labelFonts[barIndex][hiddenSlot]:set_visible(false);
+            end
+        end
+
+        imgui.End();
+    end
+
+    -- Save position if changed
+    if windowPosX ~= nil then
+        if gConfig.hotbarBarPositions == nil then
+            gConfig.hotbarBarPositions = {};
+        end
+        if gConfig.hotbarBarPositions[barIndex] == nil then
+            gConfig.hotbarBarPositions[barIndex] = {};
+        end
+        if gConfig.hotbarBarPositions[barIndex].x ~= windowPosX or
+           gConfig.hotbarBarPositions[barIndex].y ~= windowPosY then
+            gConfig.hotbarBarPositions[barIndex].x = windowPosX;
+            gConfig.hotbarBarPositions[barIndex].y = windowPosY;
+        end
+    end
 end
 
 -- ============================================
--- History View Constants
+-- Public Functions
 -- ============================================
-
--- Helper to build a comma-separated list of names
-
-local drawing = require('libs.drawing');
 
 function M.DrawWindow(settings)
-    -- Render a themed hotbar with two HORIZONTAL_ROWS of buttons (10 per row, 20 total) using an imgui window
+    -- Update drag-drop state (must be called every frame)
+    dragdrop.Update();
 
     -- Initialize textures on first draw
     if not texturesInitialized then
@@ -198,364 +497,59 @@ function M.DrawWindow(settings)
         texturesInitialized = true;
     end
 
-    -- Validate primitives
-    if not bgPrimHandleHorizontal or not bgPrimHandleVertical then
+    -- Check if backgrounds are initialized
+    local anyInitialized = false;
+    for i = 1, data.NUM_BARS do
+        if data.bgHandles[i] then
+            anyInitialized = true;
+            break;
+        end
+    end
+    if not anyInitialized then
         return;
     end
 
-    -- Scales from config
-    local scaleX = gConfig.hotbarScaleX or 1.0;
-    local scaleY = gConfig.hotbarScaleY or 1.0;
-
-    -- Dimensions
-    local iconSize = math.floor(ICON_SIZE * scaleY);
-    local padding = PADDING;
-
-    -- Button layout
-    local buttonGap = 12; -- increased horizontal spacing between buttons
-
-    -- Determine button size to fit text ("Button Text") plus padding, then apply configured button scale
-    local sampleLabel = 'a-sample';
-    local labelPadding = 12; -- horizontal padding to give breathing room for text
-    local baseButtonSize = 100
-    local button_scale = gConfig.hotbarButtonScale or 0.56; -- final scale (default ~56%)
-    local buttonSize = math.max(8, math.floor(baseButtonSize * button_scale));
-
-    -- Label spacing and heights
-    local labelGap = 4;
-    local textHeight = imgui.GetTextLineHeight();
-    local rowGap = 6; -- vertical gap between HORIZONTAL_ROWS
-
-    -- Compute content size for main hotbar
-    local mainHotbarWidth = (buttonSize * HORIZONTAL_COLUMNS) + (buttonGap * (HORIZONTAL_COLUMNS - 1)) + HORIZONTAL_HOTBAR_NUMBER_OFFSET;
-    local mainHotbarHeight = (buttonSize + labelGap + textHeight) * HORIZONTAL_ROWS + (rowGap * (HORIZONTAL_ROWS - 1));
-    
-    -- Compute content size for side hotbars (5, 6, 7)
-    local verticalHotbarWidth = (buttonSize * VERTICAL_HOTBAR_COLUMNS) + (buttonGap * (VERTICAL_HOTBAR_COLUMNS - 1));
-    local verticalHotbarHeight = VERTICAL_HOTBAR_NUMBER_SPACING + (buttonSize + labelGap + textHeight) * VERTICAL_HOTBAR_ROWS + (rowGap * (VERTICAL_HOTBAR_ROWS - 1));
-    
-    -- Compute total content size (main hotbar + gap + vertical hotbars)
-    local verticalMargin = 50; -- margin between horizontal and vertical hotbars
-    local verticalHotbarsExtraMargin = (VERTICAL_HOTBARS_COUNT - 1) * VERTICAL_HOTBAR_SPACING; -- accumulated margin from loop
-    local contentWidth = (padding * 2) + mainHotbarWidth + verticalMargin + (verticalHotbarWidth * VERTICAL_HOTBARS_COUNT) + (buttonGap * (VERTICAL_HOTBARS_COUNT - 1)) + verticalHotbarsExtraMargin;
-    local horizontalContentHeight = padding + mainHotbarHeight + (padding / 2);
-    local verticalContentHeight = padding + verticalHotbarHeight + (padding / 2);
-
-    -- Background options (use theme settings like partylist)
-    local bgTheme = gConfig.hotbarBackgroundTheme or 'Plain';
-    local bgScale = gConfig.hotbarBgScale or 1.0;
-    local borderScale = gConfig.hotbarBorderScale or 1.0;
-    local bgOpacity = gConfig.hotbarBackgroundOpacity or 0.87;
-    local borderOpacity = gConfig.hotbarBorderOpacity or 1.0;
-
-    -- Apply theme change safely
-    if loadedBgTheme ~= bgTheme and bgPrimHandleHorizontal and bgPrimHandleVertical then
-        loadedBgTheme = bgTheme;
-        pcall(function()
-            windowBg.setTheme(bgPrimHandleHorizontal, bgTheme, bgScale, borderScale);
-            windowBg.setTheme(bgPrimHandleVertical, bgTheme, bgScale, borderScale);
-        end);
+    -- Draw each bar as its own window (per-bar themes handled in DrawBarWindow)
+    for barIndex = 1, data.NUM_BARS do
+        DrawBarWindow(barIndex, settings);
     end
 
-    -- Determine colors: prefer user color customization for hotbar, else fall back to theme sensible defaults
-    local hotbarColors = gConfig and gConfig.colorCustomization and gConfig.colorCustomization.hotbar;
-    local bgColor = hotbarColors and hotbarColors.bgColor or nil;
-    local borderColor = hotbarColors and hotbarColors.borderColor or nil;
+    -- Draw the macro palette window
+    macropalette.DrawPalette();
 
-    if not bgColor then
-        if bgTheme == 'Plain' then
-            bgColor = 0xFF1A1A1A; -- dark tint for plain
-        else
-            bgColor = 0xFFFFFFFF; -- white (no tint) for themed textures
-        end
-    end
-    if not borderColor then
-        borderColor = 0xFFFFFFFF;
-    end
+    -- Render drag preview (must be called at end of frame)
+    dragdrop.Render();
 
-    -- Use saved state if present (for drag-to-move later)
-    local savedX = (gConfig.hotbarState and gConfig.hotbarState.x) or 1000;
-    local savedY = (gConfig.hotbarState and gConfig.hotbarState.y) or 1000;
-    local savedVerticalX = (gConfig.hotbarVerticalState and gConfig.hotbarVerticalState.x) or 1200;
-    local savedVerticalY = (gConfig.hotbarVerticalState and gConfig.hotbarVerticalState.y) or 1000;
-
-    local bgOptions = {
-        theme = bgTheme,
-        padding = padding,
-        paddingY = padding,
-        bgScale = bgScale,
-        borderScale = borderScale,
-        bgOpacity = bgOpacity,
-        borderOpacity = borderOpacity,
-        bgColor = bgColor,
-        borderColor = borderColor,
-    };
-
-    -- Use an imgui window (no decoration / no background) to get a consistent position/size like PartyWindow
-    local windowFlags = GetBaseWindowFlags(gConfig.lockPositions);
-
-    -- Get draw list once for all windows
-    local drawList = drawing.GetUIDrawList();
-
-    -- ============================================
-    -- HORIZONTAL HOTBAR WINDOW
-    -- ============================================
-    local windowName = 'Hotbar';
-
-    imgui.PushStyleVar(ImGuiStyleVar_FramePadding, {0,0});
-    imgui.PushStyleVar(ImGuiStyleVar_ItemSpacing, { buttonGap, 0 });
-    -- Only set position on first use, then let ImGui track dragging
-    imgui.SetNextWindowPos({savedX, savedY}, ImGuiCond_FirstUseEver);
-
-    local imguiPosX, imguiPosY;
-    if (imgui.Begin(windowName, true, windowFlags)) then
-        imguiPosX, imguiPosY = imgui.GetWindowPos();
-
-        -- Reserve window space IMMEDIATELY after Begin()
-        -- This tells imgui about the window bounds before any button drawing
-        imgui.Dummy({mainHotbarWidth + (padding * 2), horizontalContentHeight});
-
-        -- Draw main hotbar (4 rows x 10 columns)
-        local idx = 1;
-        for row = 1, HORIZONTAL_ROWS do
-            local btnX = imguiPosX + padding + HORIZONTAL_HOTBAR_NUMBER_OFFSET;
-            local btnY = imguiPosY + padding + (row - 1) * (buttonSize + labelGap + textHeight + rowGap);
-            
-            -- Invert hotbar number for display (row 1 = hotbar 4, row 4 = hotbar 1)
-            local hotbarNumber = HORIZONTAL_ROWS - row + 1;
-            local hotbarNumX = imguiPosX + padding + HORIZONTAL_HOTBAR_NUMBER_POSITION;
-            local hotbarNumY = btnY + (buttonSize - imgui.GetTextLineHeight()) / 2; -- center vertically
-            -- Use GDI font for hotbar number (following party list pattern)
-            if data.hotbarNumberFonts[hotbarNumber] then
-                data.hotbarNumberFonts[hotbarNumber]:set_text(tostring(hotbarNumber));
-                data.hotbarNumberFonts[hotbarNumber]:set_position_x(hotbarNumX);
-                data.hotbarNumberFonts[hotbarNumber]:set_position_y(hotbarNumY);
-                data.hotbarNumberFonts[hotbarNumber]:set_visible(true);
-            end
-            
-            for column = 1, HORIZONTAL_COLUMNS do
-                local id = 'hotbar_btn_' .. idx;
-                local labelText = sampleLabel;
-                local spellIcon = nil;
-                local command = nil;
-                
-                -- Load keybind from data (using inverted hotbar number)
-                local keybinds = data.GetCurrentKeybinds();
-                if keybinds then
-                    for _, bind in ipairs(keybinds) do
-                        if bind.hotbar == hotbarNumber and bind.slot == column then
-                            labelText = bind.displayName or bind.action;
-                            -- Use centralized command builder
-                            command, spellIcon = actions.BuildCommand(bind);
-                            break;
-                        end
-                    end
-                end
-                
-                -- Compute keybind display based on hotbar number
-                local keybindDisplay = '';
-                local keybindKey = tostring(column);
-                if(keybindKey == '11') then
-                    keybindKey = '-';
-                end
-                if(keybindKey == '12') then
-                    keybindKey = '+';
-                end
-                if(hotbarNumber == 4) then
-                    keybindDisplay = 'S' .. keybindKey;
-                elseif(hotbarNumber == 3) then
-                    keybindDisplay = 'A' .. keybindKey;                    
-                elseif(hotbarNumber == 2) then
-                    keybindDisplay = 'C' .. keybindKey;
-                else
-                    keybindDisplay = keybindKey;
-                end
-
-                -- Draw button using shared function
-                DrawHotbarButton({
-                    id = id,
-                    btnX = btnX,
-                    btnY = btnY,
-                    buttonSize = buttonSize,
-                    labelText = labelText,
-                    spellIcon = spellIcon,
-                    command = command,
-                    drawList = drawList,
-                    keybindDisplay = keybindDisplay,
-                    labelGap = labelGap,
-                });
-
-                btnX = btnX + buttonSize + buttonGap;
-                idx = idx + 1;
-            end
-        end
-
-        -- Update background primitive using imgui window position
-        pcall(function()
-            windowBg.update(bgPrimHandleHorizontal, imguiPosX, imguiPosY, mainHotbarWidth + (padding * 2), horizontalContentHeight, bgOptions);
-        end);
-
-        imgui.End();
-    end
-
-    imgui.PopStyleVar(2);
-
-    -- Save horizontal window position
-    if imguiPosX ~= nil then
-        if gConfig.hotbarState == nil then
-            gConfig.hotbarState = {};
-        end
-        if gConfig.hotbarState.x ~= imguiPosX or gConfig.hotbarState.y ~= imguiPosY then
-            gConfig.hotbarState.x = imguiPosX;
-            gConfig.hotbarState.y = imguiPosY;
-        end
-    end
-
-    -- ============================================
-    -- VERTICAL HOTBAR WINDOW
-    -- ============================================
-    imgui.PushStyleVar(ImGuiStyleVar_FramePadding, {0,0});
-    imgui.PushStyleVar(ImGuiStyleVar_ItemSpacing, { buttonGap, 0 });
-    imgui.SetNextWindowPos({savedVerticalX, savedVerticalY}, ImGuiCond_FirstUseEver);
-
-    local imguiVerticalPosX, imguiVerticalPosY;
-    if (imgui.Begin('HotbarVertical', true, windowFlags)) then
-        imguiVerticalPosX, imguiVerticalPosY = imgui.GetWindowPos();
-
-        -- Calculate vertical hotbar total width
-        local verticalHotbarsExtraMargin = (VERTICAL_HOTBARS_COUNT - 1) * VERTICAL_HOTBAR_SPACING;
-        local totalVerticalWidth = (verticalHotbarWidth * VERTICAL_HOTBARS_COUNT) + (buttonGap * (VERTICAL_HOTBARS_COUNT - 1)) + verticalHotbarsExtraMargin + (padding * 2);
-
-        imgui.Dummy({totalVerticalWidth, verticalContentHeight});
-
-        -- Draw vertical hotbars (5, 6, 7) - each with 4 rows x 2 columns
-        local verticalStartX = imguiVerticalPosX + padding;
-        local hotbarMargin = 0;
-        for hotbarNum = 1, VERTICAL_HOTBARS_COUNT do
-            local hotbarOffsetX = verticalStartX + (hotbarNum - 1) * (verticalHotbarWidth + buttonGap) + hotbarMargin;
-            
-            -- Draw hotbar number above vertical hotbar
-            local hotbarNumber = 4 + hotbarNum;
-            local hotbarNumberStr = tostring(hotbarNumber);
-            local hotbarNumX = hotbarOffsetX + (verticalHotbarWidth / 2) - (imgui.CalcTextSize(hotbarNumberStr) / 2) + VERTICAL_HOTBAR_NUMBER_OFFSET;
-            local hotbarNumY = imguiVerticalPosY + VERTICAL_HOTBAR_NUMBER_POSITION;
-            -- Use GDI font for hotbar number (following party list pattern)
-            if data.hotbarNumberFonts[hotbarNumber] then
-                data.hotbarNumberFonts[hotbarNumber]:set_text(hotbarNumberStr);
-                data.hotbarNumberFonts[hotbarNumber]:set_position_x(hotbarNumX);
-                data.hotbarNumberFonts[hotbarNumber]:set_position_y(hotbarNumY);
-                data.hotbarNumberFonts[hotbarNumber]:set_visible(true);
-            end
-            
-            local verticalIdx = 1;
-            for row = 1, VERTICAL_HOTBAR_ROWS do
-                local btnX = hotbarOffsetX;
-                local btnY = imguiVerticalPosY + padding + VERTICAL_HOTBAR_NUMBER_SPACING + (row - 1) * (buttonSize + labelGap + textHeight + rowGap);
-                for column = 1, VERTICAL_HOTBAR_COLUMNS do
-                    local buttonIndex = (hotbarNum - 1) * (VERTICAL_HOTBAR_ROWS * VERTICAL_HOTBAR_COLUMNS) + verticalIdx;
-                    local id = 'hotbar_vertical_btn_' .. buttonIndex;
-                    local labelText = sampleLabel
-                    local spellIcon = nil;
-                    local command = nil;
-
-                    -- Load keybind from data (using hotbarNumber 5 or 6)
-                    local hotbarNumberVertical = 4 + hotbarNum; -- 5 or 6
-                    local keybinds = data.GetCurrentKeybinds();
-                    if keybinds then
-                        for _, bind in ipairs(keybinds) do
-                            if bind.hotbar == hotbarNumberVertical and bind.slot == verticalIdx then
-                                labelText = bind.displayName or bind.action;
-                                -- Use centralized command builder
-                                command, spellIcon = actions.BuildCommand(bind);
-                                break;
-                            end
-                        end
-                    end
-
-                    -- Compute keybind display for vertical bars
-                    local keybindDisplay = '';
-                    local keybindKey = tostring(verticalIdx);
-                    if(keybindKey == '11') then
-                        keybindKey = '-';
-                    end
-                    if(keybindKey == '12') then
-                        keybindKey = '+';
-                    end
-                    if hotbarNum == 1 then
-                        keybindDisplay = 'CS' .. keybindKey;
-                    else 
-                        keybindDisplay = 'CA' .. keybindKey;                    
-                    end
-
-                    -- Draw button using shared function
-                    DrawHotbarButton({
-                        id = id,
-                        btnX = btnX,
-                        btnY = btnY,
-                        buttonSize = buttonSize,
-                        labelText = labelText,
-                        spellIcon = spellIcon,
-                        command = command,
-                        drawList = drawList,
-                        keybindDisplay = keybindDisplay,
-                        labelGap = labelGap,
-                    });
-
-                    btnX = btnX + buttonSize + buttonGap;
-                    verticalIdx = verticalIdx + 1;
-                end
-            end
-            
-            hotbarMargin = hotbarMargin + VERTICAL_HOTBAR_SPACING;
-        end
-
-        -- Update vertical background primitive
-        local verticalHotbarsExtraMargin = (VERTICAL_HOTBARS_COUNT - 1) * VERTICAL_HOTBAR_SPACING;
-        local totalVerticalWidth = (verticalHotbarWidth * VERTICAL_HOTBARS_COUNT) + (buttonGap * (VERTICAL_HOTBARS_COUNT - 1)) + verticalHotbarsExtraMargin + (padding * 2);
-        pcall(function()
-            windowBg.update(bgPrimHandleVertical, imguiVerticalPosX, imguiVerticalPosY, totalVerticalWidth, verticalContentHeight, bgOptions);
-        end);
-
-        imgui.End();
-    end
-
-    imgui.PopStyleVar(2);
-
-    -- Save vertical window position
-    if imguiVerticalPosX ~= nil then
-        if gConfig.hotbarVerticalState == nil then
-            gConfig.hotbarVerticalState = {};
-        end
-        if gConfig.hotbarVerticalState.x ~= imguiVerticalPosX or gConfig.hotbarVerticalState.y ~= imguiVerticalPosY then
-            gConfig.hotbarVerticalState.x = imguiVerticalPosX;
-            gConfig.hotbarVerticalState.y = imguiVerticalPosY;
+    -- Handle slot dragged outside (remove the action)
+    if dragdrop.WasDroppedOutside() then
+        local lastPayload = dragdrop.GetLastPayload();
+        if lastPayload and lastPayload.type == 'slot' then
+            -- Slot was dragged outside all drop zones - clear it
+            macropalette.ClearSlot(lastPayload.barIndex, lastPayload.slotIndex);
         end
     end
 end
 
 function M.HideWindow()
-    if bgPrimHandleHorizontal then
-        windowBg.hide(bgPrimHandleHorizontal);
-    end
-    if bgPrimHandleVertical then
-        windowBg.hide(bgPrimHandleVertical);
-    end
-
-    -- Hide hotbar number fonts
-    for i = 1, 6 do
-        if data.hotbarNumberFonts[i] then
-            data.hotbarNumberFonts[i]:set_visible(false);
+    -- Hide all backgrounds
+    for barIndex = 1, data.NUM_BARS do
+        if data.bgHandles[barIndex] then
+            windowBg.hide(data.bgHandles[barIndex]);
         end
     end
 
-    -- Hide main hotbar buttons
-    for i = 1, HORIZONTAL_ROWS * HORIZONTAL_COLUMNS do
-        button.HidePrim('hotbar_btn_' .. i);
-    end
-    
-    -- Hide side hotbar buttons
-    for i = 1, VERTICAL_HOTBARS_COUNT * VERTICAL_HOTBAR_ROWS * VERTICAL_HOTBAR_COLUMNS do
-        button.HidePrim('hotbar_vertical_btn_' .. i);
+    -- Hide all fonts
+    data.SetAllFontsVisible(false);
+
+    -- Hide slot primitives
+    for barIndex = 1, data.NUM_BARS do
+        if data.slotPrims[barIndex] then
+            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
+                if data.slotPrims[barIndex][slotIndex] then
+                    data.slotPrims[barIndex][slotIndex].visible = false;
+                end
+            end
+        end
     end
 end
 
@@ -564,33 +558,22 @@ end
 -- ============================================
 
 function M.Initialize(settings)
-    -- Get background theme and scales from config (with defaults)
     local bgTheme = gConfig.hotbarBackgroundTheme or 'Plain';
-    local bgScale = gConfig.hotbarBgScale or 1.0;
-    local borderScale = gConfig.hotbarBorderScale or 1.0;
     loadedBgTheme = bgTheme;
-
-    -- Create background primitives (fonts created by init.lua)
-    local primData = {
-        visible = false,
-        can_focus = false,
-        locked = true,
-        width = 100,
-        height = 100,
-    };
-    bgPrimHandleHorizontal = windowBg.create(primData, bgTheme, bgScale, borderScale);
-    bgPrimHandleVertical = windowBg.create(primData, bgTheme, bgScale, borderScale);
+    -- Background primitives are now created in init.lua
 end
 
 function M.UpdateVisuals(settings)
-    -- Check if theme changed
-    local bgTheme = gConfig.hotbarBackgroundTheme or 'Plain';
-    local bgScale = gConfig.hotbarBgScale or 1.0;
-    local borderScale = gConfig.hotbarBorderScale or 1.0;
-    if loadedBgTheme ~= bgTheme and bgPrimHandleHorizontal and bgPrimHandleVertical then
-        loadedBgTheme = bgTheme;
-        windowBg.setTheme(bgPrimHandleHorizontal, bgTheme, bgScale, borderScale);
-        windowBg.setTheme(bgPrimHandleVertical, bgTheme, bgScale, borderScale);
+    -- Update each bar's theme from per-bar settings
+    for barIndex = 1, data.NUM_BARS do
+        local barSettings = data.GetBarSettings(barIndex);
+        local bgTheme = barSettings.backgroundTheme or 'Plain';
+        local bgScale = barSettings.bgScale or 1.0;
+        local borderScale = barSettings.borderScale or 1.0;
+
+        if data.bgHandles[barIndex] then
+            windowBg.setTheme(data.bgHandles[barIndex], bgTheme, bgScale, borderScale);
+        end
     end
 end
 
@@ -601,24 +584,9 @@ function M.SetHidden(hidden)
 end
 
 function M.Cleanup()
-    if bgPrimHandleHorizontal then
-        windowBg.destroy(bgPrimHandleHorizontal);
-        bgPrimHandleHorizontal = nil;
-    end
-    if bgPrimHandleVertical then
-        windowBg.destroy(bgPrimHandleVertical);
-        bgPrimHandleVertical = nil;
-    end
-
-    -- Destroy main hotbar buttons
-    for i = 1, HORIZONTAL_ROWS * HORIZONTAL_COLUMNS do
-        button.DestroyPrim('hotbar_btn_' .. i);
-    end
-    
-    -- Destroy side hotbar buttons
-    for i = 1, VERTICAL_HOTBARS_COUNT * VERTICAL_HOTBAR_ROWS * VERTICAL_HOTBAR_COLUMNS do
-        button.DestroyPrim('hotbar_vertical_btn_' .. i);
-    end
+    -- Background cleanup is handled in init.lua
+    loadedBgTheme = nil;
+    texturesInitialized = false;
 end
 
 return M;

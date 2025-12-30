@@ -106,6 +106,7 @@ local selectedPetBarTab = 1;  -- 1 = Pet Bar, 2 = Pet Target
 local selectedPetTypeTab = 1;  -- 1 = Avatar, 2 = Charm, 3 = Jug, 4 = Automaton, 5 = Wyvern
 local selectedPetTypeColorTab = 1;  -- Pet type color sub-tab
 local selectedPetBarColorTab = 1;  -- 1 = Pet Bar, 2 = Pet Target (for color settings)
+local selectedHotbarTab = 1;  -- 1 = Bar 1, 2 = Bar 2, etc. (for hotbar settings)
 
 -- Category definitions
 local categories = {
@@ -144,6 +145,7 @@ local function buildState()
         selectedPetBarColorTab = selectedPetBarColorTab,
         selectedPetTypeTab = selectedPetTypeTab,
         selectedPetTypeColorTab = selectedPetTypeColorTab,
+        selectedHotbarTab = selectedHotbarTab,
         githubTexture = githubTexture,
     };
 end
@@ -156,6 +158,7 @@ local function applySettingsState(newState)
         if newState.selectedTargetBarTab then selectedTargetBarTab = newState.selectedTargetBarTab; end
         if newState.selectedPetBarTab then selectedPetBarTab = newState.selectedPetBarTab; end
         if newState.selectedPetTypeTab then selectedPetTypeTab = newState.selectedPetTypeTab; end
+        if newState.selectedHotbarTab then selectedHotbarTab = newState.selectedHotbarTab; end
     end
 end
 
@@ -166,6 +169,7 @@ local function applyColorState(newState)
         if newState.selectedTargetBarColorTab then selectedTargetBarColorTab = newState.selectedTargetBarColorTab; end
         if newState.selectedPetBarColorTab then selectedPetBarColorTab = newState.selectedPetBarColorTab; end
         if newState.selectedPetTypeColorTab then selectedPetTypeColorTab = newState.selectedPetTypeColorTab; end
+        if newState.selectedHotbarTab then selectedHotbarTab = newState.selectedHotbarTab; end
     end
 end
 
@@ -227,7 +231,8 @@ local function DrawTreasurePoolSettings()
 end
 
 local function DrawHotbarSettings()
-    hotbarModule.DrawSettings();
+    local newState = hotbarModule.DrawSettings(buildState());
+    applySettingsState(newState);
 end
 
 -- Color settings draw functions with state handling
@@ -288,7 +293,8 @@ local function DrawTreasurePoolColorSettings()
 end
 
 local function DrawHotbarColorSettings()
-    hotbarModule.DrawColorSettings();
+    local newState = hotbarModule.DrawColorSettings(buildState());
+    applyColorState(newState);
 end
 
 -- Dispatch tables for settings and color settings

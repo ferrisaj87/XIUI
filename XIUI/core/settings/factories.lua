@@ -227,6 +227,98 @@ function M.createPetBarTypeColorDefaults()
     };
 end
 
+-- Factory function to create global hotbar settings (shared across all bars when useGlobalSettings is true)
+function M.createHotbarGlobalDefaults()
+    return T{
+        -- Visual settings
+        slotSize = 48,          -- Slot size in pixels
+        bgScale = 1.0,
+        borderScale = 1.0,
+        backgroundOpacity = 0.87,
+        borderOpacity = 1.0,
+        backgroundTheme = 'Window1',
+        showHotbarNumber = true,
+        showSlotFrame = false,
+        showActionLabels = false,
+        actionLabelOffsetX = 0,
+        actionLabelOffsetY = 0,
+
+        -- Slot padding (gap between slots)
+        slotXPadding = 8,
+        slotYPadding = 6,
+
+        -- Slot appearance
+        slotBackgroundColor = 0x55000000,
+
+        -- Window colors
+        bgColor = 0xFFFFFFFF,
+        borderColor = 0xFFFFFFFF,
+
+        -- Font settings
+        keybindFontSize = 8,
+        keybindFontColor = 0xFFFFFFFF,
+        labelFontSize = 10,
+    };
+end
+
+-- Factory function to create per-hotbar settings with overrides
+-- Each hotbar (1-6) can have independent layout and visual settings
+function M.createHotbarBarDefaults(overrides)
+    local defaults = T{
+        -- Global settings toggle (when true, uses hotbarGlobal settings for visuals)
+        useGlobalSettings = true,
+
+        -- Layout settings (always per-bar)
+        enabled = true,
+        rows = 1,               -- Number of rows (1-12)
+        columns = 12,           -- Number of columns (1-12)
+        slots = 12,             -- Total slots, auto-calculated from rows*columns
+
+        -- Visual settings (used when useGlobalSettings = false)
+        slotSize = 48,          -- Slot size in pixels
+        bgScale = 1.0,
+        borderScale = 1.0,
+        backgroundOpacity = 0.87,
+        borderOpacity = 1.0,
+        backgroundTheme = 'Window1',
+        showHotbarNumber = true,
+        showSlotFrame = false,
+        showActionLabels = false,
+        actionLabelOffsetX = 0,     -- X offset for action labels
+        actionLabelOffsetY = 0,     -- Y offset for action labels
+
+        -- Slot padding (gap between slots)
+        slotXPadding = 8,       -- Horizontal gap between slots
+        slotYPadding = 6,       -- Vertical gap between rows
+
+        -- Slot appearance
+        slotBackgroundColor = 0x55000000,  -- ARGB color for slot backgrounds (black at 33% opacity)
+
+        -- Window colors (per-bar)
+        bgColor = 0xFFFFFFFF,              -- Background color tint (ARGB)
+        borderColor = 0xFFFFFFFF,          -- Border color tint (ARGB)
+
+        -- Font settings
+        keybindFontSize = 8,
+        keybindFontColor = 0xFFFFFFFF,     -- Keybind text color (ARGB)
+        labelFontSize = 10,
+
+        -- Keybind assignments per job (nil = use job file defaults)
+        -- Structure: keybinds[jobId][slotIndex] = { type, action, target, display }
+        keybinds = nil,
+    };
+    if overrides then
+        for k, v in pairs(overrides) do
+            defaults[k] = v;
+        end
+        -- Auto-calculate slots if rows/columns changed but slots wasn't explicitly set
+        if (overrides.rows or overrides.columns) and not overrides.slots then
+            defaults.slots = defaults.rows * defaults.columns;
+        end
+    end
+    return defaults;
+end
+
 -- Factory function to create party color settings
 function M.createPartyColorDefaults(includeTP)
     local colors = T{

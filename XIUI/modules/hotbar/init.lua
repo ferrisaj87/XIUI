@@ -1,5 +1,6 @@
 --[[
 * XIUI Hotbar Module
+* Main entry point - manages lifecycle for 6 independent hotbar windows
 ]]--
 
 -- This module copies concepts and content from the Windower XIVHotbar addon, https://github.com/Technyze/XIVHotbar2
@@ -32,20 +33,16 @@
         SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ]]
 
---[[
--- Big thanks to:
--- - Akaden & Rubenator: For the inspiration to the moving icons/hotbars part
--- - Maverickdfz:        Inspiration to the mouse actions
---]]
-
 require('common');
 require('handlers.helpers');
 local gdi = require('submodules.gdifonts.include');
+local primitives = require('primitives');
 local windowBg = require('libs.windowbackground');
 
 local data = require('modules.hotbar.data');
 local display = require('modules.hotbar.display');
 local actions = require('modules.hotbar.actions');
+local macropalette = require('modules.hotbar.macropalette');
 
 local M = {};
 
@@ -65,115 +62,169 @@ function M.Initialize(settings)
     if _XIUI_DEV_ALPHA_HOTBAR == false then return; end
     if M.initialized then return; end
 
-    print('[XIUI hotbar] Initialising...');
-
-    -- Ensure settings have defaults BEFORE creating fonts
+    -- Ensure global settings have defaults
     if gConfig then
-        -- Clear any stale preview state
         gConfig.hotbarPreview = false;
-
-        -- Set defaults for new settings
         if gConfig.hotbarEnabled == nil then gConfig.hotbarEnabled = true; end
-        if gConfig.hotbarFontSize == nil or gConfig.hotbarFontSize < 8 then
-            gConfig.hotbarFontSize = 10;
+
+        -- Per-bar position defaults
+        if gConfig.hotbarBarPositions == nil then
+            gConfig.hotbarBarPositions = {};
         end
-        if gConfig.hotbarScaleX == nil or gConfig.hotbarScaleX < 0.5 then
-            gConfig.hotbarScaleX = 1.0;
-        end
-        if gConfig.hotbarScaleY == nil or gConfig.hotbarScaleY < 0.5 then
-            gConfig.hotbarScaleY = 1.0;
-        end
-        -- Split background/border settings (like petbar)
-        if gConfig.hotbarBgScale == nil or gConfig.hotbarBgScale < 0.1 then
-            gConfig.hotbarBgScale = 1.0;
-        end
-        if gConfig.hotbarBorderScale == nil or gConfig.hotbarBorderScale < 0.1 then
-            gConfig.hotbarBorderScale = 1.0;
-        end
-        -- Migrate old hotbarOpacity to new split settings
-        if gConfig.hotbarBackgroundOpacity == nil then
-            if gConfig.hotbarOpacity ~= nil then
-                gConfig.hotbarBackgroundOpacity = gConfig.hotbarOpacity;
-                gConfig.hotbarOpacity = nil;  -- Clean up old setting
-            else
-                gConfig.hotbarBackgroundOpacity = 0.87;
-            end
-        end
-        if gConfig.hotbarBorderOpacity == nil then gConfig.hotbarBorderOpacity = 1.0; end
-        if gConfig.hotbarBackgroundTheme == nil then gConfig.hotbarBackgroundTheme = 'Plain'; end
     end
 
-    -- Initialize data layer first
-    data.Initialize();
+    -- Initialize keybinds
+    data.InitializeKeybinds();
 
-    -- Create fonts using settings from gAdjustedSettings.hotbarSettings
-    -- (passed in as 'settings' parameter by module registry)
-    -- Settings include global font family/weight applied via updater.lua
+    -- Validate font settings
     local fontSettings = settings and settings.font_settings;
-    local titleFontSettings = settings and settings.title_font_settings;
+    local keybindFontSettings = settings and settings.keybind_font_settings;
+    local labelFontSettings = settings and settings.label_font_settings;
 
-    -- Validate font settings exist before creating fonts
-    if not fontSettings or not titleFontSettings then
-        print('[XIUI hotbar] Warning: Invalid font settings, skipping font creation');
-        M.initialized = true;
-        return;
+    if not fontSettings then
+        print('[XIUI hotbar] Warning: Invalid font settings, using defaults');
+        fontSettings = {
+            font_family = 'Consolas',
+            font_height = 10,
+            font_color = 0xFFFFFFFF,
+            font_flags = 0,
+            outline_color = 0xFF000000,
+            outline_width = 2,
+        };
     end
 
-     --//@TODO: 
-    -- -- Use pcall for safety during font creation
-    -- local function safeCreateFont(settings)
-    --     local success, result = pcall(function()
-    --         return FontManager.create(settings);
-    --     end);
-    --     if success then
-    --         return result;
-    --     end
-    --     print('[XIUI hotbar] Warning: Font creation failed');
-    --     return nil;
-    -- end
+    -- Use keybind/label specific settings or fall back to base font settings
+    keybindFontSettings = keybindFontSettings or fontSettings;
+    labelFontSettings = labelFontSettings or fontSettings;
 
-    -- Create GDI fonts for hotbar numbers (1-6) using title font settings
-    for i = 1, 6 do
-        local numberFontSettings = deep_copy_table(titleFontSettings);
-        numberFontSettings.font_height = math.max(titleFontSettings.font_height or 12, 8);
-        data.hotbarNumberFonts[i] = FontManager.create(numberFontSettings);
-        data.hotbarNumberFonts[i]:set_visible(false);
+    -- Primitive base data
+    local primData = {
+        visible = false,
+        can_focus = false,
+        locked = true,
+        width = 100,
+        height = 100,
+    };
+
+    -- Create resources for each bar
+    data.allFonts = {};
+
+    for barIndex = 1, data.NUM_BARS do
+        -- Get per-bar settings
+        local barSettings = data.GetBarSettings(barIndex);
+        local bgTheme = barSettings.backgroundTheme or 'Plain';
+        local bgScale = barSettings.bgScale or 1.0;
+        local borderScale = barSettings.borderScale or 1.0;
+        local slotCount = data.GetBarSlotCount(barIndex);
+
+        -- 1. Create background primitive (renders at bottom)
+        data.bgHandles[barIndex] = windowBg.create(primData, bgTheme, bgScale, borderScale);
+
+        -- 2. Create slot primitives (render above background) - up to MAX_SLOTS_PER_BAR
+        data.slotPrims[barIndex] = {};
+        for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
+            local prim = primitives.new(primData);
+            prim.visible = false;
+            prim.can_focus = false;
+            data.slotPrims[barIndex][slotIndex] = prim;
+        end
+
+        -- Get per-bar font sizes
+        local kbFontSize = barSettings.keybindFontSize or 8;
+        local lblFontSize = barSettings.labelFontSize or 10;
+
+        -- 3. Create keybind fonts for each slot - up to MAX_SLOTS_PER_BAR
+        data.keybindFonts[barIndex] = {};
+        for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
+            local kbSettings = deep_copy_table(keybindFontSettings);
+            kbSettings.font_height = kbFontSize;
+            local font = FontManager.create(kbSettings);
+            font:set_visible(false);
+            data.keybindFonts[barIndex][slotIndex] = font;
+            table.insert(data.allFonts, font);
+        end
+
+        -- 4. Create label fonts for each slot (centered alignment for labels below slots)
+        data.labelFonts[barIndex] = {};
+        for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
+            local lblSettings = deep_copy_table(labelFontSettings);
+            lblSettings.font_height = lblFontSize;
+            lblSettings.font_alignment = gdi.Alignment.Center;
+            local font = FontManager.create(lblSettings);
+            font:set_visible(false);
+            data.labelFonts[barIndex][slotIndex] = font;
+            table.insert(data.allFonts, font);
+        end
+
+        -- 5. Create hotbar number font
+        local numSettings = deep_copy_table(fontSettings);
+        numSettings.font_height = 12;
+        data.hotbarNumberFonts[barIndex] = FontManager.create(numSettings);
+        data.hotbarNumberFonts[barIndex]:set_visible(false);
+        table.insert(data.allFonts, data.hotbarNumberFonts[barIndex]);
     end
 
-    --//@TODO: 
-    --data.SetAllFontsVisible(false);
-
-    -- Initialize display layer (creates background primitive)
+    -- Initialize display layer
     display.Initialize(settings);
 
-    print('[XIUI hotbar] Initialized');
     M.initialized = true;
-    
 end
 
---//@TODO:
--- Update visual elements (fonts, themes) when settings change
+-- Update visual elements when settings change
 function M.UpdateVisuals(settings)
     if not M.initialized then return; end
 
-    -- Validate settings
-    if not settings or not settings.font_settings or not settings.title_font_settings then
-        return;
-    end
+    local fontSettings = settings and settings.font_settings;
+    local keybindFontSettings = settings and settings.keybind_font_settings or fontSettings;
+    local labelFontSettings = settings and settings.label_font_settings or fontSettings;
 
-    -- Recreate hotbar number fonts with updated settings
-    for i = 1, 6 do
-        if data.hotbarNumberFonts[i] then
-            local numberFontSettings = deep_copy_table(settings.title_font_settings);
-            numberFontSettings.font_height = math.max(settings.title_font_settings.font_height or 12, 8);
-            data.hotbarNumberFonts[i] = FontManager.recreate(data.hotbarNumberFonts[i], numberFontSettings);
+    if not fontSettings then return; end
+
+    -- Recreate fonts for each bar
+    for barIndex = 1, data.NUM_BARS do
+        -- Get per-bar font sizes
+        local barSettings = data.GetBarSettings(barIndex);
+        local kbFontSize = barSettings.keybindFontSize or 8;
+        local lblFontSize = barSettings.labelFontSize or 10;
+
+        -- Keybind fonts
+        if data.keybindFonts[barIndex] then
+            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
+                if data.keybindFonts[barIndex][slotIndex] then
+                    local kbSettings = deep_copy_table(keybindFontSettings);
+                    kbSettings.font_height = kbFontSize;
+                    data.keybindFonts[barIndex][slotIndex] = FontManager.recreate(
+                        data.keybindFonts[barIndex][slotIndex], kbSettings
+                    );
+                end
+            end
+        end
+
+        -- Label fonts
+        if data.labelFonts[barIndex] then
+            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
+                if data.labelFonts[barIndex][slotIndex] then
+                    local lblSettings = deep_copy_table(labelFontSettings);
+                    lblSettings.font_height = lblFontSize;
+                    lblSettings.font_alignment = gdi.Alignment.Center;
+                    data.labelFonts[barIndex][slotIndex] = FontManager.recreate(
+                        data.labelFonts[barIndex][slotIndex], lblSettings
+                    );
+                end
+            end
+        end
+
+        -- Hotbar number font
+        if data.hotbarNumberFonts[barIndex] then
+            local numSettings = deep_copy_table(fontSettings);
+            numSettings.font_height = 12;
+            data.hotbarNumberFonts[barIndex] = FontManager.recreate(
+                data.hotbarNumberFonts[barIndex], numSettings
+            );
         end
     end
-   
-    -- Clear color cache
-    data.ClearColorCache();
 
-    -- Update display layer
+    -- Update display layer (handles theme changes)
     display.UpdateVisuals(settings);
 end
 
@@ -181,35 +232,25 @@ end
 function M.DrawWindow(settings)
     if not M.initialized then return; end
     if not M.visible then return; end
+    if gConfig and gConfig.hotbarEnabled == false then
+        display.HideWindow();
+        return;
+    end
 
     display.DrawWindow(settings);
-
-    --//@TODO:
-    -- -- Read pool state from memory (skip in preview mode)
-    -- if not data.IsPreviewActive() then
-    --     data.ReadFromMemory();
-    -- end
-
-    -- -- Check for real items (from memory, not preview)
-    -- local hasRealItems = data.HasRealItems();
-
-    -- -- Draw treasure pool if enabled and (has real items OR preview is on)
-    -- local enabled = gConfig.hotbarEnabled;
-    -- local showWindow = (hasRealItems or data.previewEnabled) and enabled;
-    -- if showWindow then
-    --     display.DrawWindow(settings);
-    -- else
-    --     display.HideWindow();
-    -- end
 end
 
 -- Set module visibility
 function M.SetHidden(hidden)
     M.visible = not hidden;
-    --//@TODO: 
-    -- if hidden then
-    --     data.SetAllFontsVisible(false);
-    -- end
+    if hidden then
+        data.SetAllFontsVisible(false);
+        for barIndex = 1, data.NUM_BARS do
+            if data.bgHandles[barIndex] then
+                windowBg.hide(data.bgHandles[barIndex]);
+            end
+        end
+    end
     display.SetHidden(hidden);
 end
 
@@ -217,77 +258,45 @@ end
 function M.Cleanup()
     if not M.initialized then return; end
 
-    --//@TODO:
-    -- -- Destroy header and button fonts
-    -- data.headerFont = FontManager.destroy(data.headerFont);
-    -- data.lotAllFont = FontManager.destroy(data.lotAllFont);
-    -- data.passAllFont = FontManager.destroy(data.passAllFont);
-    -- data.toggleFont = FontManager.destroy(data.toggleFont);
+    -- Destroy fonts for each bar
+    for barIndex = 1, data.NUM_BARS do
+        -- Keybind fonts
+        if data.keybindFonts[barIndex] then
+            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
+                if data.keybindFonts[barIndex][slotIndex] then
+                    FontManager.destroy(data.keybindFonts[barIndex][slotIndex]);
+                end
+            end
+        end
 
-    -- -- Destroy tab fonts
-    -- data.tabPoolFont = FontManager.destroy(data.tabPoolFont);
-    -- data.tabHistoryFont = FontManager.destroy(data.tabHistoryFont);
+        -- Label fonts
+        if data.labelFonts[barIndex] then
+            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
+                if data.labelFonts[barIndex][slotIndex] then
+                    FontManager.destroy(data.labelFonts[barIndex][slotIndex]);
+                end
+            end
+        end
 
-    -- -- Destroy history fonts
-    -- for i = 0, data.MAX_HISTORY_ITEMS - 1 do
-    --     if data.historyItemFonts[i] then
-    --         data.historyItemFonts[i] = FontManager.destroy(data.historyItemFonts[i]);
-    --     end
-    --     if data.historyWinnerFonts[i] then
-    --         data.historyWinnerFonts[i] = FontManager.destroy(data.historyWinnerFonts[i]);
-    --     end
-    -- end
+        -- Hotbar number font
+        if data.hotbarNumberFonts[barIndex] then
+            FontManager.destroy(data.hotbarNumberFonts[barIndex]);
+        end
 
-    -- -- Destroy per-slot fonts
-    -- for slot = 0, data.MAX_POOL_SLOTS - 1 do
-    --     if data.itemNameFonts[slot] then
-    --         data.itemNameFonts[slot] = FontManager.destroy(data.itemNameFonts[slot]);
-    --     end
-    --     if data.timerFonts[slot] then
-    --         data.timerFonts[slot] = FontManager.destroy(data.timerFonts[slot]);
-    --     end
-    --     if data.lotFonts[slot] then
-    --         data.lotFonts[slot] = FontManager.destroy(data.lotFonts[slot]);
-    --     end
-    --     -- Expanded view fonts
-    --     if data.lottersFonts[slot] then
-    --         data.lottersFonts[slot] = FontManager.destroy(data.lottersFonts[slot]);
-    --     end
-    --     if data.passersFonts[slot] then
-    --         data.passersFonts[slot] = FontManager.destroy(data.passersFonts[slot]);
-    --     end
-    --     if data.pendingFonts[slot] then
-    --         data.pendingFonts[slot] = FontManager.destroy(data.pendingFonts[slot]);
-    --     end
-    --     if data.lotItemFonts[slot] then
-    --         data.lotItemFonts[slot] = FontManager.destroy(data.lotItemFonts[slot]);
-    --     end
-    --     if data.passItemFonts[slot] then
-    --         data.passItemFonts[slot] = FontManager.destroy(data.passItemFonts[slot]);
-    --     end
-    --     -- Member fonts
-    --     if data.memberFonts[slot] then
-    --         for memberIdx = 0, data.MAX_MEMBERS_PER_ITEM - 1 do
-    --             if data.memberFonts[slot][memberIdx] then
-    --                 data.memberFonts[slot][memberIdx] = FontManager.destroy(data.memberFonts[slot][memberIdx]);
-    --             end
-    --         end
-    --     end
-    -- end
+        -- Destroy background
+        if data.bgHandles[barIndex] then
+            windowBg.destroy(data.bgHandles[barIndex]);
+        end
 
-    -- -- Clear font tables
-    -- data.allFonts = nil;
-    -- data.itemNameFonts = {};
-    -- data.timerFonts = {};
-    -- data.lotFonts = {};
-    -- data.lottersFonts = {};
-    -- data.passersFonts = {};
-    -- data.pendingFonts = {};
-    -- data.lotItemFonts = {};
-    -- data.passItemFonts = {};
-    -- data.memberFonts = {};
-    -- data.historyItemFonts = {};
-    -- data.historyWinnerFonts = {};
+        -- Destroy slot primitives
+        if data.slotPrims[barIndex] then
+            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
+                if data.slotPrims[barIndex][slotIndex] then
+                    data.slotPrims[barIndex][slotIndex]:destroy();
+                end
+            end
+        end
+    end
 
     -- Cleanup display and data layers
     display.Cleanup();
@@ -297,70 +306,26 @@ function M.Cleanup()
 end
 
 -- ============================================
--- Zone Change Handler
+-- Event Handlers
 -- ============================================
 
 function M.HandleZonePacket()
     data.Clear();
 end
 
--- ============================================
--- Job Change Handler
--- ============================================
-
 function M.HandleJobChangePacket(e)
-    -- Delay keybind reload to allow Ashita's memory manager to update with the new job
-    -- Without this delay, GetMainJob() returns the previous job, causing wrong keybinds to load
     ashita.tasks.once(0.5, function()
-        print("[XIUI hotbar] Job change detected, reloading keybinds...");
         data.SetPlayerJob();
+        macropalette.SyncToCurrentJob();
     end);
 end
 
--- ============================================
--- Key Handler
--- ============================================
 function M.HandleKey(event)
+    if gConfig and gConfig.hotbarEnabled == false then
+        return;
+    end
     return actions.HandleKey(event);
 end
-
--- ============================================
--- Command Interface
--- ============================================
-
---//@TODO:
--- function M.LotAll()
---     return actions.LotAll();
--- end
-
--- function M.PassAll()
---     return actions.PassAll();
--- end
-
--- function M.LotItem(slot)
---     return actions.LotItem(slot);
--- end
-
--- function M.PassItem(slot)
---     return actions.PassItem(slot);
--- end
-
--- ============================================
--- Query Interface
--- ============================================
-
---//@TODO:
--- function M.GetPoolCount()
---     return data.GetPoolCount();
--- end
-
--- function M.HasItems()
---     return data.HasItems();
--- end
-
--- function M.GetPoolItems()
---     return data.GetPoolItems();
--- end
 
 -- ============================================
 -- Preview Mode
