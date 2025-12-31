@@ -151,6 +151,7 @@ local cachedAbilities = nil;
 local cachedWeaponskills = nil;
 local cachedItems = nil;
 local cacheJobId = nil;
+local cacheSubJobId = nil;
 
 -- Search filter for dropdowns
 local searchFilter = { '' };
@@ -201,11 +202,15 @@ local function GetPlayerSpells()
     local player = AshitaCore:GetMemoryManager():GetPlayer();
     if not player then return {}; end
 
-    local jobId = player:GetMainJob();
-    local jobLevel = player:GetMainJobLevel();
+    local mainJobId = player:GetMainJob();
+    local mainJobLevel = player:GetMainJobLevel();
+    local subJobId = player:GetSubJob();
+    local subJobLevel = player:GetSubJobLevel();
     local resMgr = AshitaCore:GetResourceManager();
 
     local spells = {};
+    local addedSpells = {};  -- Track by spell ID to avoid duplicates
+
     for spellId = 1, 1024 do
         -- Skip trust spells (IDs 896+)
         if spellId >= 896 then
@@ -219,15 +224,32 @@ local function GetPlayerSpells()
 
                 -- Skip garbage/test spell names
                 if not IsGarbageSpellName(spellName) then
-                    -- LevelRequired array is 0-indexed in C (0=None, 1=WAR, 2=MNK, 3=WHM...)
-                    -- but Lua uses 1-indexing, so add 1 to jobId
-                    local reqLevel = spell.LevelRequired[jobId + 1] or 0;
-                    if reqLevel > 0 and reqLevel <= jobLevel then
+                    -- LevelRequired array uses jobId + 1 offset (matches config/hotbar.lua pattern)
+                    -- WHM (jobId=3) -> LevelRequired[4], BLM (jobId=4) -> LevelRequired[5]
+                    local mainReqLevel = spell.LevelRequired[mainJobId + 1] or 0;
+                    local subReqLevel = subJobId > 0 and (spell.LevelRequired[subJobId + 1] or 0) or 0;
+
+                    -- Filter invalid level values (0 = can't learn, 255 = can't learn)
+                    local validMainReq = mainReqLevel > 0 and mainReqLevel < 255;
+                    local validSubReq = subReqLevel > 0 and subReqLevel < 255;
+
+                    -- Check if castable by main job
+                    local canCastMain = validMainReq and mainReqLevel <= mainJobLevel;
+                    -- Check if castable by sub job
+                    local canCastSub = validSubReq and subReqLevel <= subJobLevel;
+
+                    if (canCastMain or canCastSub) and not addedSpells[spellId] then
+                        -- Use main job level if castable, otherwise sub job level
+                        local displayLevel = canCastMain and mainReqLevel or subReqLevel;
+                        local source = canCastMain and 'main' or 'sub';
+
                         table.insert(spells, {
                             id = spellId,
                             name = spellName,
-                            level = reqLevel,
+                            level = displayLevel,
+                            source = source,
                         });
+                        addedSpells[spellId] = true;
                     end
                 end
             end
@@ -244,22 +266,57 @@ local function GetPlayerSpells()
     return spells;
 end
 
--- Get player's available job abilities
+-- Get player's available job abilities (includes both main job and subjob abilities)
 local function GetPlayerAbilities()
     local player = AshitaCore:GetMemoryManager():GetPlayer();
     if not player then return {}; end
 
+    local mainJobId = player:GetMainJob();
+    local mainJobLevel = player:GetMainJobLevel();
+    local subJobId = player:GetSubJob();
+    local subJobLevel = player:GetSubJobLevel();
     local resMgr = AshitaCore:GetResourceManager();
+
     local abilities = {};
+    local addedAbilities = {};  -- Track by ability ID to avoid duplicates
 
     for abilityId = 1, 1024 do
         if player:HasAbility(abilityId) then
             local ability = resMgr:GetAbilityById(abilityId);
             if ability and ability.Name and ability.Name[1] and ability.Name[1] ~= '' then
-                table.insert(abilities, {
-                    id = abilityId,
-                    name = ability.Name[1],
-                });
+                local abilityName = ability.Name[1];
+
+                if not addedAbilities[abilityId] then
+                    -- Determine source based on level requirements if available
+                    -- RecastId[0] is often the job index that grants the ability
+                    local source = 'main';
+
+                    -- Check level requirements if available
+                    -- Level array uses jobId + 1 offset (matches spell pattern)
+                    if ability.Level then
+                        local mainReqLevel = ability.Level[mainJobId + 1] or 0;
+                        local subReqLevel = subJobId > 0 and (ability.Level[subJobId + 1] or 0) or 0;
+
+                        -- Filter invalid level values
+                        local validMainReq = mainReqLevel > 0 and mainReqLevel < 255;
+                        local validSubReq = subReqLevel > 0 and subReqLevel < 255;
+
+                        local canUseMain = validMainReq and mainReqLevel <= mainJobLevel;
+                        local canUseSub = validSubReq and subReqLevel <= subJobLevel;
+
+                        -- Prefer main job if both can use it
+                        if canUseSub and not canUseMain then
+                            source = 'sub';
+                        end
+                    end
+
+                    table.insert(abilities, {
+                        id = abilityId,
+                        name = abilityName,
+                        source = source,
+                    });
+                    addedAbilities[abilityId] = true;
+                end
             end
         end
     end
@@ -368,12 +425,15 @@ local function RefreshCachedLists()
     if not player then return; end
 
     local currentJobId = player:GetMainJob();
+    local currentSubJobId = player:GetSubJob();
 
-    if cacheJobId ~= currentJobId or not cachedSpells then
+    -- Refresh if main job, sub job changed, or cache is empty
+    if cacheJobId ~= currentJobId or cacheSubJobId ~= currentSubJobId or not cachedSpells then
         cachedSpells = GetPlayerSpells();
         cachedAbilities = GetPlayerAbilities();
         cachedWeaponskills = GetPlayerWeaponskills();
         cacheJobId = currentJobId;
+        cacheSubJobId = currentSubJobId;
     end
 
     -- Always refresh items (they don't depend on job)
