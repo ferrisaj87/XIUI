@@ -28,11 +28,16 @@ local M = {};
 
 -- Get abbreviated text for an action (used when no icon available)
 -- @param bind: Action bind data with displayName or action field
--- @return: 3-5 character abbreviation string
+-- @return: max 4 character abbreviation string
 local function GetActionAbbreviation(bind)
     if not bind then return '?'; end
     local name = bind.displayName or bind.action or '';
     if name == '' then return '?'; end
+
+    -- If short enough, just use it
+    if #name <= 4 then
+        return name:upper();
+    end
 
     -- Check if multi-word (contains space)
     local words = {};
@@ -41,15 +46,15 @@ local function GetActionAbbreviation(bind)
     end
 
     if #words > 1 then
-        -- Multi-word: take first letter of each word (up to 5)
+        -- Multi-word: take first letter of each word (up to 4)
         local abbr = '';
-        for i = 1, math.min(#words, 5) do
+        for i = 1, math.min(#words, 4) do
             abbr = abbr .. words[i]:sub(1, 1):upper();
         end
         return abbr;
     else
-        -- Single word: take first 5 characters
-        return name:sub(1, 5);
+        -- Single word: take first 4 characters
+        return name:sub(1, 4):upper();
     end
 end
 

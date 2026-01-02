@@ -55,7 +55,7 @@ local COLORS = {
     usable = {0.5, 0.7, 1.0, 1.0},  -- Blue tint for usable items
 };
 
--- Helper to generate abbreviated text from action name (3-5 chars)
+-- Helper to generate abbreviated text from action name (max 4 chars)
 -- If preferAction is true, prioritize action name over displayName (for previews)
 local function GetActionAbbreviation(macro, preferAction)
     local name;
@@ -70,7 +70,7 @@ local function GetActionAbbreviation(macro, preferAction)
     name = name:gsub('^%s+', ''):gsub('%s+$', '');  -- Trim whitespace
 
     -- If short enough, just use it
-    if #name <= 5 then
+    if #name <= 4 then
         return name:upper();
     end
 
@@ -81,16 +81,16 @@ local function GetActionAbbreviation(macro, preferAction)
     end
 
     if #words >= 2 then
-        -- Multi-word: take first letter of each word (up to 5)
+        -- Multi-word: take first letter of each word (up to 4)
         local abbr = '';
-        for i = 1, math.min(#words, 5) do
+        for i = 1, math.min(#words, 4) do
             abbr = abbr .. words[i]:sub(1, 1):upper();
         end
         return abbr;
     end
 
-    -- Single word: take first 4-5 chars
-    return name:sub(1, 5):upper();
+    -- Single word: take first 4 chars
+    return name:sub(1, 4):upper();
 end
 
 -- Helper to clear all hotbar/crossbar icon caches
@@ -1694,7 +1694,7 @@ function M.DrawPalette()
             editingMacro = {
                 actionType = 'ma',
                 action = '',
-                target = 'me',
+                target = 't',
                 displayName = '',
             };
             selectedMacroIndex = nil;
