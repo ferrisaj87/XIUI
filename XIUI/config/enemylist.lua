@@ -21,6 +21,14 @@ function M.DrawSettings()
         components.DrawCheckbox('Show Enemy Targets', 'showEnemyListTargets');
         imgui.ShowHelp('Shows who each enemy is targeting based on their last action.');
         components.DrawCheckbox('Show Bookends', 'showEnemyListBookends');
+        components.DrawCheckbox('Show Borders', 'showEnemyListBorders');
+        imgui.ShowHelp('Draws a border around each enemy in the list');
+        if gConfig.showEnemyListBorders then
+            imgui.SameLine();
+            components.DrawCheckbox('Use Name Color', 'showEnemyListBordersUseNameColor');
+            imgui.ShowHelp('Use enemy name color as the default border color');
+        end
+
         if (not HzLimitedMode) then
             components.DrawCheckbox('Click to Target', 'enableEnemyListClickTarget');
             imgui.ShowHelp('Click on an enemy entry to target it. Requires /shorthand to be enabled.');
@@ -56,10 +64,10 @@ function M.DrawSettings()
     if components.CollapsingSection('Debuffs##enemyList') then
         components.DrawCheckbox('Show Debuffs', 'showEnemyListDebuffs');
         if (gConfig.showEnemyListDebuffs) then
-            components.DrawCheckbox('Right Align Debuffs', 'enemyListDebuffsRightAlign');
-            imgui.ShowHelp('When enabled, debuff icons align to the right edge of each enemy entry instead of the left.');
+            components.DrawAnchorDropdown('Debuff Anchor', gConfig, 'enemyListDebuffsAnchor',
+                'Which side of the enemy entry to anchor debuff icons.');
             components.DrawSlider('Debuff Offset X', 'enemyListDebuffOffsetX', -100, 200);
-            imgui.ShowHelp('Horizontal offset for debuff icons. Offsets from left edge (or right edge if right-aligned).');
+            imgui.ShowHelp('Horizontal offset for debuff icons from the anchor edge.');
             components.DrawSlider('Debuff Offset Y', 'enemyListDebuffOffsetY', -100, 200);
             imgui.ShowHelp('Vertical offset for debuff icons from top of entry.');
             components.DrawSlider('Status Effect Icon Size', 'enemyListIconScale', 0.1, 3.0, '%.1f');
@@ -93,7 +101,9 @@ function M.DrawColorSettings()
         imgui.ShowHelp("Enemy name colors are in the Global section");
     end
 
-    if components.CollapsingSection('Border Colors##enemyListColor') then
+    if components.CollapsingSection('Background Colors##enemyListColor') then
+        components.DrawTextColorPicker("Background", gConfig.colorCustomization.enemyList, 'backgroundColor', "Background color for list entries");
+        components.DrawTextColorPicker("Default Border", gConfig.colorCustomization.enemyList, 'borderColor', "Default border color for enemies");
         components.DrawTextColorPicker("Target Border", gConfig.colorCustomization.enemyList, 'targetBorderColor', "Border color for currently targeted enemy");
         components.DrawTextColorPicker("Subtarget Border", gConfig.colorCustomization.enemyList, 'subtargetBorderColor', "Border color for subtargeted enemy");
     end

@@ -114,6 +114,7 @@ local function DrawPartyTabContent(party, partyName)
         components.DrawPartySlider(party, 'Min Rows', 'minRows', 1, 6);
         components.DrawPartySlider(party, 'Entry Spacing', 'entrySpacing', -50, 50);
         components.DrawPartySlider(party, 'Selection Box Scale Y', 'selectionBoxScaleY', 0.5, 2.0, '%.2f');
+        components.DrawPartySlider(party, 'Selection Box Offset Y', 'selectionBoxOffsetY', -50, 50);
 
         -- General scale controls (applies to all elements)
         components.DrawPartySlider(party, 'Scale X', 'scaleX', 0.1, 3.0, '%.2f');
@@ -293,7 +294,9 @@ function M.DrawSettings(state)
     components.DrawCheckbox('Show When Solo', 'showPartyListWhenSolo');
     components.DrawCheckbox('Hide During Events', 'partyListHideDuringEvents');
     components.DrawCheckbox('Alliance Windows', 'partyListAlliance');
-
+    components.DrawCheckbox('Click to Target', 'enablePartyListClickTarget');
+    imgui.ShowHelp('Click on a party member to target them. Requires /shorthand to be enabled.');
+    
     imgui.Spacing();
 
     -- Party tab buttons

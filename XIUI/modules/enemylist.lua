@@ -305,19 +305,20 @@ enemylist.DrawWindow = function(settings)
 					nameColor = GetEntityNameColor(ent, k, gConfig.colorCustomization.shared);
 				end
 
-				-- Draw border first if this is the selected target
-				local borderColor;
-				if (subTargetIndex ~= nil and k == subTargetIndex) then
-					-- Subtarget border - use configured color
-					local rgba = ARGBToRGBA(gConfig.colorCustomization.enemyList.subtargetBorderColor);
-					borderColor = imgui.GetColorU32(rgba);
-				elseif (targetIndex ~= nil and k == targetIndex) then
-					-- Main target border - use configured color
-					local rgba = ARGBToRGBA(gConfig.colorCustomization.enemyList.targetBorderColor);
-					borderColor = imgui.GetColorU32(rgba);
-				end
+				if (gConfig.showEnemyListBorders) then
+					local borderColor;
+					if (subTargetIndex ~= nil and k == subTargetIndex) then
+						-- Subtarget border - use configured color
+						borderColor = imgui.GetColorU32(ARGBToRGBA(gConfig.colorCustomization.enemyList.subtargetBorderColor));
+					elseif (targetIndex ~= nil and k == targetIndex) then
+						-- Main target border - use configured color
+						borderColor = imgui.GetColorU32(ARGBToRGBA(gConfig.colorCustomization.enemyList.targetBorderColor));
+					elseif (gConfig.showEnemyListBordersUseNameColor) then
+						borderColor = imgui.GetColorU32(ARGBToRGBA(nameColor));
+					else
+						borderColor = imgui.GetColorU32(ARGBToRGBA(gConfig.colorCustomization.enemyList.borderColor));
+					end
 
-				if (borderColor) then
 					-- Draw border rectangle around the entire entry
 					-- Window margins ensure this won't be clipped
 					imgui.GetWindowDrawList():AddRect(
@@ -347,9 +348,7 @@ enemylist.DrawWindow = function(settings)
 					bg.position_y = entryStartY;
 					bg.width = entryWidth;
 					bg.height = entryHeight;
-					-- Set semi-transparent black color (ARGB format)
-					-- Alpha is the first byte: 0.4 * 255 = 102 = 0x66
-					bg.color = 0x66000000;  -- Semi-transparent black
+					bg.color = gConfig.colorCustomization.enemyList.backgroundColor;
 					bg.visible = true;
 				end
 
@@ -458,7 +457,7 @@ enemylist.DrawWindow = function(settings)
 				end
 
 				-- ===== DEBUFF ICONS =====
-				-- Positioned at top-left or top-right of entry (offset by user settings)
+				-- Positioned at left or right of entry based on anchor setting (offset by user settings)
 				if (gConfig.showEnemyListDebuffs) then
 					local buffIds = nil;
 					if isPreviewMode then
@@ -471,16 +470,17 @@ enemylist.DrawWindow = function(settings)
 					if (buffIds ~= nil and #buffIds > 0) then
 						local debuffX;
 						local debuffY = entryStartY + settings.debuffOffsetY;
+						local anchor = gConfig.enemyListDebuffsAnchor or 'right';
 
-						if (gConfig.enemyListDebuffsRightAlign) then
-							-- Right-aligned: calculate width of debuff icons and position from right edge
+						if (anchor == 'right') then
+							-- Right anchor: position to the right of the entry
+							debuffX = entryStartX + entryWidth + settings.debuffOffsetX;
+						else
+							-- Left anchor: calculate width of debuff icons and position to the left of entry
 							local numIcons = math.min(#buffIds, settings.maxIcons);
 							local iconSpacing = 1; -- matches ImGuiStyleVar_ItemSpacing
 							local debuffWidth = (numIcons * settings.iconSize) + ((numIcons - 1) * iconSpacing);
-							debuffX = entryStartX + entryWidth - debuffWidth - settings.debuffOffsetX;
-						else
-							-- Left-aligned: position from left edge
-							debuffX = entryStartX + settings.debuffOffsetX;
+							debuffX = entryStartX - debuffWidth - settings.debuffOffsetX;
 						end
 
 						imgui.SetNextWindowPos({debuffX, debuffY});

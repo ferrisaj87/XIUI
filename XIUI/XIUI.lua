@@ -24,7 +24,7 @@
 
 addon.name      = 'XIUI';
 addon.author    = 'Team XIUI';
-addon.version   = '1.6.01';
+addon.version   = '1.6.11';
 addon.desc      = 'Multiple UI elements with manager';
 addon.link      = 'https://github.com/tirem/XIUI'
 
@@ -567,6 +567,12 @@ ashita.events.register('command', 'command_cb', function (e)
                 -- Default: print stats
                 diagnostics.PrintStats();
             end
+            return;
+        end
+
+        -- Reset gil per hour tracking: /xiui resetgil
+        if (command_args[2] == 'resetgil') then
+            gilTracker.ResetTracking();
             return;
         end
     end

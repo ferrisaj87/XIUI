@@ -97,6 +97,7 @@ function M.createUserSettingsDefaults()
         notificationsSubtitleFontSize = 12,
         notificationsProgressBarScaleY = 1.0,
         notificationsHideDuringEvents = false,
+        notificationsProgressBarDirection = 'left',
 
         -- Background/Border settings
         notificationsBackgroundTheme = 'Plain',
@@ -140,6 +141,10 @@ function M.createUserSettingsDefaults()
             borderScale = 1.0,
             backgroundOpacity = 1.0,
             borderOpacity = 1.0,
+
+            -- Window position (saved when user moves window)
+            windowPosX = nil,
+            windowPosY = nil,
         },
 
         statusIconTheme = 'XIView',
@@ -154,10 +159,10 @@ function M.createUserSettingsDefaults()
         enemyListMaxColumns = 1,
         enemyListRowSpacing = 5,
         enemyListColumnSpacing = 10,
-        enemyListDebuffOffsetX = 131,
+        enemyListDebuffOffsetX = 5,
         enemyListDebuffOffsetY = 0,
         showEnemyListDebuffs = true,
-        enemyListDebuffsRightAlign = false,
+        enemyListDebuffsAnchor = 'right', -- 'left' or 'right' - which side of enemy entry to anchor debuffs
         showEnemyListTargets = true,
         enableEnemyListClickTarget = true,
         enemyListPreview = true,
@@ -212,6 +217,7 @@ function M.createUserSettingsDefaults()
         showTargetBarLockOnBorder = true,
         showTargetBarCastBar = true,
         showEnemyId = false,
+        showEnemyIdHex = true,
         targetBarHideDuringEvents = true,
         splitTargetOfTarget = false,
         totBarScaleX = 1,
@@ -227,6 +233,8 @@ function M.createUserSettingsDefaults()
         showEnemyDistance = true,
         showEnemyHPPText = true,
         showEnemyListBookends = false,
+        showEnemyListBorders = true,
+        showEnemyListBordersUseNameColor = false,
         -- Enemy target container settings
         enemyListTargetOffsetX = 0,
         enemyListTargetOffsetY = 43,
@@ -254,6 +262,11 @@ function M.createUserSettingsDefaults()
         gilTrackerRightAlign = false,
         gilTrackerIconRight = true,
         gilTrackerShowIcon = true,
+        gilTrackerShowGilPerHour = true,
+        gilTrackerTextOffsetX = 0,
+        gilTrackerTextOffsetY = 0,
+        gilTrackerGilPerHourOffsetX = 0,
+        gilTrackerGilPerHourOffsetY = 0,
 
         inventoryTrackerScale = 1,
         inventoryTrackerFontSize = 12,
@@ -428,6 +441,7 @@ function M.createUserSettingsDefaults()
         partyListBgScale = 1.0,
         partyListBgColor = { 255, 255, 255, 255 },
         partyListBorderColor = { 255, 255, 255, 255 },
+        enablePartyListClickTarget = false,
 
         -- Legacy layout settings (kept for migration)
         partyListLayout1 = T{
@@ -446,6 +460,7 @@ function M.createUserSettingsDefaults()
             partyListTP = true,
             partyListMinRows = 1,
             selectionBoxScaleY = 1,
+            selectionBoxOffsetY = 0,
             partyList2ScaleX = 0.7,
             partyList2ScaleY = 0.7,
             partyList2FontSize = 12,
@@ -505,6 +520,7 @@ function M.createUserSettingsDefaults()
             partyListTP = true,
             partyListMinRows = 1,
             selectionBoxScaleY = 1,
+            selectionBoxOffsetY = 0,
             partyList2ScaleX = 0.55,
             partyList2ScaleY = 0.55,
             partyList2FontSize = 12,
@@ -594,6 +610,9 @@ function M.createUserSettingsDefaults()
         petBarScaleY = 1.0,
         petBarHideDuringEvents = true,
         petBarPreview = true,
+        -- Window positions (saved when user moves window)
+        petBarWindowPosX = nil,
+        petBarWindowPosY = nil,
         petBarPreviewType = 2, -- Avatar (SMN)
         petBarShowDistance = true,
         petBarShowTarget = true,

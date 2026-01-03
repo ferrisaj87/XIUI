@@ -243,6 +243,7 @@ function M.DrawWindow(settings)
     local borderOpacity = gConfig.treasurePoolBorderOpacity or 1.0;
     local bgTheme = gConfig.treasurePoolBackgroundTheme or 'Plain';
     local isExpanded = gConfig.treasurePoolExpanded == true;
+    local isMinimized = gConfig.treasurePoolMinimized == true;
 
     -- Calculate dimensions (different for expanded vs collapsed)
     local iconSize = math.floor(ICON_SIZE * scaleY);
@@ -366,7 +367,13 @@ function M.DrawWindow(settings)
     end
 
     local headerItemGap = showTitle and 4 or 0;  -- Gap between header and items
-    local totalHeight = padding + headerHeight + headerItemGap + visibleContentHeight + padding;
+    -- When minimized, only show header bar
+    local totalHeight;
+    if isMinimized then
+        totalHeight = padding + headerHeight + padding;
+    else
+        totalHeight = padding + headerHeight + headerItemGap + visibleContentHeight + padding;
+    end
 
     -- Build window flags
     local windowFlags = GetBaseWindowFlags(gConfig.lockPositions);
@@ -399,7 +406,12 @@ function M.DrawWindow(settings)
 
         -- Calculate content area
         local contentWidth = windowWidth - (padding * 2);
-        local contentHeightTotal = headerHeight + headerItemGap + visibleContentHeight;
+        local contentHeightTotal;
+        if isMinimized then
+            contentHeightTotal = headerHeight;
+        else
+            contentHeightTotal = headerHeight + headerItemGap + visibleContentHeight;
+        end
 
         -- Update background (with safety checks)
         if bgPrimHandle then
@@ -518,53 +530,70 @@ function M.DrawWindow(settings)
                 data.headerFont:set_visible(false);
             end
 
-            -- Pool tab: show Lot All, Pass All, Toggle buttons
+            -- Pool tab: show Lot All, Pass All, Minimize, Toggle buttons
             if selectedTab == 1 then
-                -- Position: [Pool] [History] [Lot All] [Pass All] ... [Toggle]
+                -- Position: [Pool] [History] [Lot All] [Pass All] ... [Minimize] [Toggle]
                 local afterTabsX = historyTabX + tabBtnWidth + btnSpacing;
                 local lotAllX = afterTabsX;
                 local passAllX = lotAllX + textBtnWidth + btnSpacing;
                 local toggleX = startX + windowWidth - padding - toggleSize;
+                local minimizeX = toggleX - toggleSize - btnSpacing;
+
+                -- Draw minimize/maximize button using primitive
+                local minimizeClicked = button.DrawMinimizePrim('tpMinimize', minimizeX, btnY, toggleSize, isMinimized, {
+                    colors = button.COLORS_NEUTRAL,
+                    tooltip = isMinimized and 'Maximize window' or 'Minimize to header only',
+                }, imgui.GetForegroundDrawList());
+                if minimizeClicked then
+                    gConfig.treasurePoolMinimized = not gConfig.treasurePoolMinimized;
+                    SaveSettingsToDisk();
+                end
 
                 -- Draw expand/collapse arrow button using primitive
                 local arrowDirection = isExpanded and 'up' or 'down';
                 local toggleClicked = button.DrawArrowPrim('tpToggle', toggleX, btnY, toggleSize, arrowDirection, {
                     colors = button.COLORS_NEUTRAL,
-                    tooltip = isExpanded and 'Collapse' or 'Expand',
+                    tooltip = isMinimized
+                        and (isExpanded and 'Maximize and collapse' or 'Maximize and expand')
+                        or (isExpanded and 'Collapse' or 'Expand'),
                 }, imgui.GetForegroundDrawList());
                 if toggleClicked then
+                    -- If minimized, maximize first then apply expand/collapse
+                    if isMinimized then
+                        gConfig.treasurePoolMinimized = false;
+                    end
                     gConfig.treasurePoolExpanded = not gConfig.treasurePoolExpanded;
                     scrollOffset = 0;  -- Reset scroll when toggling
                     SaveSettingsToDisk();
                 end
 
-                -- Draw Lot All and Pass All buttons (disabled in HzLimitedMode)
+                -- Draw Pass All button (Always enabled)
+                local passAllClicked = button.DrawPrim('tpPassAll', passAllX, btnY, textBtnWidth, btnHeight, {
+                    colors = button.COLORS_NEGATIVE,
+                    tooltip = 'Pass on all items',
+                });
+                if passAllClicked then
+                    actions.PassAll();
+                end
+
+                -- Draw Pass All label (GDI font renders on top of primitive)
+                if data.passAllFont then
+                    data.passAllFont:set_font_height(fontSize);
+                    data.passAllFont:set_text('Pass All');
+                    local passTextW, passTextH = data.passAllFont:get_text_size();
+                    passTextW = passTextW or (fontSize * 2.5);
+                    passTextH = passTextH or fontSize;
+                    data.passAllFont:set_position_x(passAllX + (textBtnWidth - passTextW) / 2);
+                    data.passAllFont:set_position_y(btnY + (btnHeight - passTextH) / 2);
+                    data.passAllFont:set_visible(true);
+                    if data.lastColors.passAll ~= 0xFFFFFFFF then
+                        data.passAllFont:set_font_color(0xFFFFFFFF);
+                        data.lastColors.passAll = 0xFFFFFFFF;
+                    end
+                end
+
+                -- Draw Lot All button (disabled in HzLimitedMode)
                 if (not HzLimitedMode) then
-                    -- Draw Pass All button (negative/red) using primitive
-                    local passAllClicked = button.DrawPrim('tpPassAll', passAllX, btnY, textBtnWidth, btnHeight, {
-                        colors = button.COLORS_NEGATIVE,
-                        tooltip = 'Pass on all items',
-                    });
-                    if passAllClicked then
-                        actions.PassAll();
-                    end
-
-                    -- Draw Pass All label (GDI font renders on top of primitive)
-                    if data.passAllFont then
-                        data.passAllFont:set_font_height(fontSize);
-                        data.passAllFont:set_text('Pass All');
-                        local passTextW, passTextH = data.passAllFont:get_text_size();
-                        passTextW = passTextW or (fontSize * 2.5);
-                        passTextH = passTextH or fontSize;
-                        data.passAllFont:set_position_x(passAllX + (textBtnWidth - passTextW) / 2);
-                        data.passAllFont:set_position_y(btnY + (btnHeight - passTextH) / 2);
-                        data.passAllFont:set_visible(true);
-                        if data.lastColors.passAll ~= 0xFFFFFFFF then
-                            data.passAllFont:set_font_color(0xFFFFFFFF);
-                            data.lastColors.passAll = 0xFFFFFFFF;
-                        end
-                    end
-
                     -- Draw Lot All button (positive/green) using primitive
                     local lotAllClicked = button.DrawPrim('tpLotAll', lotAllX, btnY, textBtnWidth, btnHeight, {
                         colors = button.COLORS_POSITIVE,
@@ -590,24 +619,52 @@ function M.DrawWindow(settings)
                         end
                     end
                 else
-                    -- Hide Lot All / Pass All in HzLimitedMode
+                    -- Hide Lot All in HzLimitedMode
                     button.HidePrim('tpLotAll');
-                    button.HidePrim('tpPassAll');
                     if data.lotAllFont then data.lotAllFont:set_visible(false); end
-                    if data.passAllFont then data.passAllFont:set_visible(false); end
                 end
 
                 -- Hide toggle font (not needed, using arrow button)
                 if data.toggleFont then data.toggleFont:set_visible(false); end
 
             else
-                -- History tab: hide Pool-specific buttons
-                button.HidePrim('tpToggle');
+                -- History tab: hide Pool-specific buttons but keep minimize and toggle
                 button.HidePrim('tpLotAll');
                 button.HidePrim('tpPassAll');
                 if data.toggleFont then data.toggleFont:set_visible(false); end
                 if data.lotAllFont then data.lotAllFont:set_visible(false); end
                 if data.passAllFont then data.passAllFont:set_visible(false); end
+
+                -- Position buttons (right-aligned)
+                local toggleX = startX + windowWidth - padding - toggleSize;
+                local minimizeX = toggleX - toggleSize - btnSpacing;
+
+                -- Draw minimize button on History tab
+                local minimizeClicked = button.DrawMinimizePrim('tpMinimize', minimizeX, btnY, toggleSize, isMinimized, {
+                    colors = button.COLORS_NEUTRAL,
+                    tooltip = isMinimized and 'Maximize window' or 'Minimize to header only',
+                }, imgui.GetForegroundDrawList());
+                if minimizeClicked then
+                    gConfig.treasurePoolMinimized = not gConfig.treasurePoolMinimized;
+                    SaveSettingsToDisk();
+                end
+
+                -- Draw expand/collapse arrow button on History tab
+                local arrowDirection = isExpanded and 'up' or 'down';
+                local toggleClicked = button.DrawArrowPrim('tpToggle', toggleX, btnY, toggleSize, arrowDirection, {
+                    colors = button.COLORS_NEUTRAL,
+                    tooltip = isMinimized
+                        and (isExpanded and 'Maximize and collapse' or 'Maximize and expand')
+                        or (isExpanded and 'Collapse' or 'Expand'),
+                }, imgui.GetForegroundDrawList());
+                if toggleClicked then
+                    -- If minimized, maximize first then apply expand/collapse
+                    if isMinimized then
+                        gConfig.treasurePoolMinimized = false;
+                    end
+                    gConfig.treasurePoolExpanded = not gConfig.treasurePoolExpanded;
+                    SaveSettingsToDisk();
+                end
             end
 
             y = y + headerHeight + 4;  -- Add padding between header and items
@@ -621,10 +678,38 @@ function M.DrawWindow(settings)
             if data.tabHistoryFont then data.tabHistoryFont:set_visible(false); end
             button.HidePrim('tpTabPool');
             button.HidePrim('tpTabHistory');
+            button.HidePrim('tpMinimize');
+            button.HidePrim('tpToggle');
         end
 
-        -- Render content based on selected tab
-        if selectedTab == 1 then
+        -- Render content based on selected tab (skip when minimized)
+        if isMinimized then
+            -- When minimized, hide all content fonts and buttons
+            for slot = 0, data.MAX_POOL_SLOTS - 1 do
+                if data.itemNameFonts[slot] then data.itemNameFonts[slot]:set_visible(false); end
+                if data.timerFonts[slot] then data.timerFonts[slot]:set_visible(false); end
+                if data.lotFonts[slot] then data.lotFonts[slot]:set_visible(false); end
+                if data.lottersFonts[slot] then data.lottersFonts[slot]:set_visible(false); end
+                if data.passersFonts[slot] then data.passersFonts[slot]:set_visible(false); end
+                if data.pendingFonts[slot] then data.pendingFonts[slot]:set_visible(false); end
+                if data.lotItemFonts[slot] then data.lotItemFonts[slot]:set_visible(false); end
+                if data.passItemFonts[slot] then data.passItemFonts[slot]:set_visible(false); end
+                if data.memberFonts[slot] then
+                    for memberIdx = 0, data.MAX_MEMBERS_PER_ITEM - 1 do
+                        if data.memberFonts[slot][memberIdx] then
+                            data.memberFonts[slot][memberIdx]:set_visible(false);
+                        end
+                    end
+                end
+                button.HidePrim(string.format('tpLotItem%d', slot));
+                button.HidePrim(string.format('tpPassItem%d', slot));
+            end
+            -- Hide history fonts
+            for i = 0, data.MAX_HISTORY_ITEMS - 1 do
+                if data.historyItemFonts[i] then data.historyItemFonts[i]:set_visible(false); end
+                if data.historyWinnerFonts[i] then data.historyWinnerFonts[i]:set_visible(false); end
+            end
+        elseif selectedTab == 1 then
             -- ============================================
             -- POOL TAB: Show treasure pool items
             -- ============================================
@@ -1401,6 +1486,7 @@ function M.HideWindow()
 
     -- Hide primitive buttons
     button.HidePrim('tpToggle');
+    button.HidePrim('tpMinimize');
     button.HidePrim('tpLotAll');
     button.HidePrim('tpPassAll');
     button.HidePrim('tpTabPool');
@@ -1464,6 +1550,7 @@ function M.Cleanup()
 
     -- Destroy primitive buttons
     button.DestroyPrim('tpToggle');
+    button.DestroyPrim('tpMinimize');
     button.DestroyPrim('tpLotAll');
     button.DestroyPrim('tpPassAll');
     button.DestroyPrim('tpTabPool');

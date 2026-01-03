@@ -22,6 +22,11 @@ local windowState = {
     height = nil,
 };
 
+-- Position saving state
+local hasAppliedSavedPosition = false;
+local lastSavedPosX = nil;
+local lastSavedPosY = nil;
+
 -- ============================================
 -- Per-Pet-Type Settings Helpers
 -- ============================================
@@ -631,7 +636,7 @@ function display.DrawWindow(settings)
     local isJug = petData.isJug;
     local isCharmed = petData.isCharmed;
     local jugTimeRemaining = petData.jugTimeRemaining;
-    local charmElapsed = petData.charmElapsed;
+    local charmTimeRemaining = petData.charmTimeRemaining;
 
     -- Set current pet name for background image rendering
     data.currentPetName = petName;
@@ -643,6 +648,14 @@ function display.DrawWindow(settings)
     local windowFlags = data.getBaseWindowFlags();
     if gConfig.lockPositions and not (showConfig[1] and gConfig.petBarPreview) then
         windowFlags = bit.bor(windowFlags, ImGuiWindowFlags_NoMove);
+    end
+
+    -- Apply saved position on first render
+    if not hasAppliedSavedPosition and gConfig.petBarWindowPosX ~= nil and gConfig.petBarWindowPosY ~= nil then
+        imgui.SetNextWindowPos({gConfig.petBarWindowPosX, gConfig.petBarWindowPosY}, ImGuiCond_Once);
+        hasAppliedSavedPosition = true;
+        lastSavedPosX = gConfig.petBarWindowPosX;
+        lastSavedPosY = gConfig.petBarWindowPosY;
     end
 
     -- Get per-pet-type settings and colors
@@ -1106,8 +1119,14 @@ function display.DrawWindow(settings)
                 timerX = windowPosX + offsetX;
                 timerY = windowPosY + offsetY;
 
-                if charmElapsed then
-                    timerStr = data.FormatTimeMMSS(charmElapsed);
+                if charmTimeRemaining then
+                    timerStr = data.FormatTimeMMSS(charmTimeRemaining);
+                    -- Warning color if under 30 seconds
+                    if charmTimeRemaining < 30 then
+                         textColor = colorConfig.durationWarningColor or 0xFFFF6600;
+                    end
+                else
+                    timerStr = "??:??";
                 end
 
                 -- Charmed pet: Show heart icon
@@ -1181,6 +1200,25 @@ function display.DrawWindow(settings)
 
         -- Update background primitives
         data.UpdateBackground(windowPosX, windowPosY, windowWidth, windowHeight, settings);
+
+        -- Save position when user moves window (check on mouse release)
+        local canMove = not gConfig.lockPositions or (showConfig[1] and gConfig.petBarPreview);
+        if canMove then
+            -- Only save if position changed significantly (avoid floating point noise)
+            local posChanged = (lastSavedPosX == nil or lastSavedPosY == nil) or
+                               (math.abs(windowPosX - lastSavedPosX) > 1) or
+                               (math.abs(windowPosY - lastSavedPosY) > 1);
+            if posChanged and not imgui.IsMouseDown(0) then
+                -- Mouse released and position changed - save to settings
+                gConfig.petBarWindowPosX = windowPosX;
+                gConfig.petBarWindowPosY = windowPosY;
+                lastSavedPosX = windowPosX;
+                lastSavedPosY = windowPosY;
+                if SaveSettingsToDisk then
+                    SaveSettingsToDisk();
+                end
+            end
+        end
     end
     imgui.End();
 
