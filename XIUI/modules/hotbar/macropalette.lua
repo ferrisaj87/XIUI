@@ -236,9 +236,9 @@ local searchFilter = { '' };
 -- Icon picker state
 local iconPickerOpen = false;
 local iconPickerFilter = { '' };
-local iconPickerTab = 1;  -- 1 = Spells, 2 = Items
-local iconPickerPage = { 1, 1 };  -- Current page for each tab [spells, items]
-local iconPickerLastFilter = { '', '' };  -- Track filter changes to reset page
+local iconPickerTab = 1;  -- 1 = Spells, 2 = Items, 3 = Custom
+local iconPickerPage = { 1, 1, 1 };  -- Current page for each tab [spells, items, custom]
+local iconPickerLastFilter = { '', '', '' };  -- Track filter changes to reset page
 local iconPickerSpellType = 'All';  -- Current spell type filter
 
 -- Spell type display names and order
@@ -328,6 +328,27 @@ local ITEM_TYPE_ICONS = {
     [10] = 6232,  -- Furnishing item
 };
 local iconPickerItemType = 0;  -- 0 = All
+
+-- Custom icon categories (subdirectories in assets/hotbar/custom/)
+local CUSTOM_ICON_CATEGORIES = {};  -- Populated by scanning directory
+local CUSTOM_ICON_LABELS = {
+    ['all'] = 'All',
+};
+local customIconCategory = 'all';  -- 'all' or a folder name
+
+-- Custom icon cache
+local customIconsCache = nil;  -- All custom icons
+local customIconsByCategoryCache = {};  -- Pre-filtered by category
+local customIconsCacheKey = nil;
+
+-- Custom icons directory path
+local customIconsDir = nil;
+
+-- New folder creation state
+local newFolderName = { '' };
+
+-- Delete folder confirmation state
+local deleteFolderTarget = nil;  -- Category name to delete
 
 -- Cached filtered results for icon picker (avoid recalculating every frame)
 local filteredSpellsCache = nil;
@@ -523,6 +544,268 @@ local function GetItemLoadProgress()
         return 100;
     end
     return math.floor((itemIconLoadState.currentId / itemIconLoadState.maxId) * 100);
+end
+
+-- ============================================
+-- Custom Icons Loading
+-- ============================================
+
+-- Get the custom icons directory path
+local function GetCustomIconsDir()
+    if not customIconsDir then
+        customIconsDir = string.format('%saddons\\XIUI\\assets\\hotbar\\custom\\', AshitaCore:GetInstallPath());
+    end
+    return customIconsDir;
+end
+
+-- Recursively scan a directory for PNG files
+-- topLevelCategory: the immediate subdirectory name (for nested files)
+local function ScanDirectoryForPngs(dir, relativePath, results, topLevelCategory)
+    relativePath = relativePath or '';
+    results = results or {};
+    
+    local contents = ashita.fs.get_directory(dir, '.*');
+    if not contents then return results; end
+    
+    for _, entry in pairs(contents) do
+        local fullPath = dir .. entry;
+        local relPath = relativePath ~= '' and (relativePath .. '\\' .. entry) or entry;
+        
+        -- Check if it's a PNG file
+        if entry:lower():match('%.png$') then
+            -- Category is: root (if at root level), or the top-level folder name
+            local category = topLevelCategory or 'root';
+            table.insert(results, {
+                name = entry:gsub('%.png$', ''),  -- Remove .png extension for display
+                path = relPath,  -- Relative path from custom/ directory
+                category = category,
+            });
+        -- Check if it's a directory (no extension, not a file)
+        elseif not entry:match('%.') then
+            -- Determine the category for nested items
+            -- If we're at root level, this entry IS the top-level category
+            -- If we're already in a subdirectory, keep the original top-level category
+            local categoryForNested = topLevelCategory or entry;
+            -- Recursively scan subdirectory
+            ScanDirectoryForPngs(fullPath .. '\\', relPath, results, categoryForNested);
+        end
+    end
+    
+    return results;
+end
+
+-- Scan and cache all custom icons
+local function LoadCustomIcons()
+    if customIconsCache then
+        return customIconsCache;
+    end
+    
+    local baseDir = GetCustomIconsDir();
+    customIconsCache = ScanDirectoryForPngs(baseDir);
+    
+    -- Sort alphabetically by name
+    table.sort(customIconsCache, function(a, b)
+        return a.name:lower() < b.name:lower();
+    end);
+    
+    -- Build category list from folders only
+    CUSTOM_ICON_CATEGORIES = { 'all' };  -- 'all' is always first
+    customIconsByCategoryCache = { ['all'] = customIconsCache };
+    customCategoryIconCache = {};  -- Clear category icon cache
+    
+    local seenCategories = { ['all'] = true };
+    
+    -- First, scan for all immediate subdirectories (including empty ones)
+    local contents = ashita.fs.get_directory(baseDir, '.*');
+    if contents then
+        for _, entry in pairs(contents) do
+            -- Check if it's a directory (no file extension)
+            if not entry:match('%.') then
+                if not seenCategories[entry] then
+                    seenCategories[entry] = true;
+                    table.insert(CUSTOM_ICON_CATEGORIES, entry);
+                    customIconsByCategoryCache[entry] = {};
+                    -- Generate label from directory name
+                    local label = entry:gsub('^%l', string.upper):gsub('_', ' ');
+                    CUSTOM_ICON_LABELS[entry] = label;
+                end
+            end
+        end
+    end
+    
+    -- Then populate categories from found icons
+    for _, icon in ipairs(customIconsCache) do
+        -- Only add to categories for folders (not root-level files)
+        if icon.category ~= 'root' then
+            -- Add category if somehow not seen yet
+            if not seenCategories[icon.category] then
+                seenCategories[icon.category] = true;
+                table.insert(CUSTOM_ICON_CATEGORIES, icon.category);
+                customIconsByCategoryCache[icon.category] = {};
+                local label = icon.category:gsub('^%l', string.upper):gsub('_', ' ');
+                CUSTOM_ICON_LABELS[icon.category] = label;
+            end
+            -- Add to category-specific list
+            table.insert(customIconsByCategoryCache[icon.category], icon);
+        end
+        -- Root files are only in 'all', no separate category
+    end
+    
+    -- Sort categories alphanumerically (but keep 'all' first)
+    table.sort(CUSTOM_ICON_CATEGORIES, function(a, b)
+        if a == 'all' then return true; end
+        if b == 'all' then return false; end
+        return a:lower() < b:lower();
+    end);
+    
+    return customIconsCache;
+end
+
+-- Get custom icons filtered by category
+local function GetCustomIconsFiltered(category, filter)
+    LoadCustomIcons();  -- Ensure loaded
+    
+    local sourceList;
+    if category == 'all' then
+        sourceList = customIconsCache;
+    else
+        sourceList = customIconsByCategoryCache[category] or {};
+    end
+    
+    -- Apply text filter if any
+    if filter and filter ~= '' then
+        local filtered = {};
+        filter = filter:lower();
+        for _, icon in ipairs(sourceList) do
+            if icon.name:lower():find(filter, 1, true) then
+                table.insert(filtered, icon);
+            end
+        end
+        return filtered;
+    end
+    
+    return sourceList;
+end
+
+-- Load a custom icon texture by relative path
+local function LoadCustomIconTexture(relativePath)
+    local fullPath = GetCustomIconsDir() .. relativePath;
+    return textures:LoadTextureFromPath(fullPath);
+end
+
+-- Create a new custom icon folder
+local function CreateCustomFolder(folderName)
+    if not folderName or folderName == '' then return false; end
+    
+    -- Sanitize folder name (remove invalid characters)
+    local sanitized = folderName:gsub('[<>:"/\\|?*]', ''):gsub('^%s+', ''):gsub('%s+$', '');
+    if sanitized == '' then return false; end
+    
+    local folderPath = GetCustomIconsDir() .. sanitized;
+    
+    -- Create the directory
+    ashita.fs.create_directory(folderPath);
+    
+    -- Clear caches to force rescan
+    customIconsCache = nil;
+    customIconsByCategoryCache = {};
+    customCategoryIconCache = {};
+    customIconsCacheKey = nil;
+    
+    -- Set the new folder as current category
+    customIconCategory = sanitized;
+    
+    return true;
+end
+
+-- Cache for category filter icons
+local customCategoryIconCache = {};
+
+-- Track which categories are empty (for showing letter instead of icon)
+local function IsCategoryEmpty(category)
+    if category == 'all' then return false; end
+    local categoryIcons = customIconsByCategoryCache[category];
+    return not categoryIcons or #categoryIcons == 0;
+end
+
+-- Get a representative icon for a category (for filter buttons)
+-- Returns icon, isEmptyFolder
+local function GetCustomCategoryIcon(category)
+    -- Check cache first (but not for empty folders - they might get icons added)
+    if customCategoryIconCache[category] and not IsCategoryEmpty(category) then
+        return customCategoryIconCache[category], false;
+    end
+    
+    -- For 'all', use a special infinite symbol icon if available
+    if category == 'all' then
+        -- Try to use the 'infinite' icon from jobs folder
+        local infiniteIcon = textures:Get('infinite');
+        if infiniteIcon then
+            customCategoryIconCache[category] = infiniteIcon;
+            return infiniteIcon, false;
+        end
+        -- Fallback: use first icon from all icons
+        if customIconsCache and #customIconsCache > 0 then
+            local icon = LoadCustomIconTexture(customIconsCache[1].path);
+            customCategoryIconCache[category] = icon;
+            return icon, false;
+        end
+        return nil, false;
+    end
+    
+    -- Get the first icon from this category (folder)
+    local categoryIcons = customIconsByCategoryCache[category];
+    if categoryIcons and #categoryIcons > 0 then
+        local icon = LoadCustomIconTexture(categoryIcons[1].path);
+        customCategoryIconCache[category] = icon;
+        return icon, false;
+    end
+    
+    -- Empty folder - return nil to signal we need to draw a letter
+    return nil, true;
+end
+
+-- Open a custom icon folder in Windows Explorer
+local function OpenCustomFolder(category)
+    local folderPath;
+    if category == 'all' or not category then
+        folderPath = GetCustomIconsDir();
+    else
+        folderPath = GetCustomIconsDir() .. category;
+    end
+    ashita.misc.execute(folderPath, '');
+end
+
+-- Delete a custom icon folder and all its contents
+local function DeleteCustomFolder(category)
+    if not category or category == 'all' then return false; end
+    
+    local folderPath = GetCustomIconsDir() .. category;
+    
+    -- Delete all files in the folder first
+    local contents = ashita.fs.get_directory(folderPath, '.*');
+    if contents then
+        for _, file in pairs(contents) do
+            local filePath = folderPath .. '\\' .. file;
+            os.remove(filePath);
+        end
+    end
+    
+    -- Delete the empty folder using Windows rmdir command
+    os.execute('rmdir "' .. folderPath .. '"');
+    
+    -- Clear caches to force rescan
+    customIconsCache = nil;
+    customIconsByCategoryCache = {};
+    customCategoryIconCache = {};
+    customIconsCacheKey = nil;
+    -- Also clear the action module's custom icon cache
+    actions.ClearCustomIconCache();
+    
+    -- Reset to 'all' category
+    customIconCategory = 'all';
+    
+    return true;
 end
 
 -- Push XIUI styling for combo popups
@@ -999,6 +1282,7 @@ function M.HandleDropOnSlot(payload, targetBarIndex, targetSlotIndex)
                 itemId = macroData.itemId,  -- Store item ID for fast icon lookup
                 customIconType = macroData.customIconType,  -- Custom icon override
                 customIconId = macroData.customIconId,
+                customIconPath = macroData.customIconPath,  -- Custom icon path for 'custom' type
                 macroRef = macroData.id,  -- Store reference to source macro for live updates
                 macroPaletteKey = macroPaletteKey,  -- Store which palette the macro came from
             };
@@ -1025,6 +1309,7 @@ function M.HandleDropOnSlot(payload, targetBarIndex, targetSlotIndex)
                 itemId = sourceBindData.itemId,  -- Preserve item ID for icon lookup
                 customIconType = sourceBindData.customIconType,  -- Preserve custom icon
                 customIconId = sourceBindData.customIconId,
+                customIconPath = sourceBindData.customIconPath,  -- Preserve custom icon path
                 macroRef = sourceBindData.macroRef,  -- Preserve macro reference
                 macroPaletteKey = sourceBindData.macroPaletteKey,  -- Preserve palette key
             };
@@ -1044,6 +1329,7 @@ function M.HandleDropOnSlot(payload, targetBarIndex, targetSlotIndex)
                 itemId = targetBind.itemId,  -- Preserve item ID for icon lookup
                 customIconType = targetBind.customIconType,  -- Preserve custom icon
                 customIconId = targetBind.customIconId,
+                customIconPath = targetBind.customIconPath,  -- Preserve custom icon path
                 macroRef = targetBind.macroRef,  -- Preserve macro reference
                 macroPaletteKey = targetBind.macroPaletteKey,  -- Preserve palette key
             };
@@ -1080,6 +1366,7 @@ function M.HandleDropOnSlot(payload, targetBarIndex, targetSlotIndex)
                 itemId = sourceBindData.itemId,
                 customIconType = sourceBindData.customIconType,
                 customIconId = sourceBindData.customIconId,
+                customIconPath = sourceBindData.customIconPath,  -- Preserve custom icon path
                 macroRef = sourceBindData.macroRef,  -- Preserve macro reference
                 macroPaletteKey = sourceBindData.macroPaletteKey,  -- Preserve palette key
             };
@@ -1225,7 +1512,7 @@ local function DrawMacroTile(macro, index, x, y, size)
         imgui.TextColored(COLORS.gold, macro.displayName or macro.action or 'Unknown');
         imgui.Spacing();
         imgui.TextColored(COLORS.textDim, 'Type: ' .. (ACTION_TYPE_LABELS[macro.actionType] or macro.actionType or '?'));
-        if macro.target then
+        if macro.actionType ~= 'macro' and macro.target then
             imgui.TextColored(COLORS.textDim, 'Target: <' .. macro.target .. '>');
         end
         imgui.Spacing();
@@ -1832,7 +2119,7 @@ function M.DrawPalette()
                                 imgui.TextColored(COLORS.gold, macro.displayName or macro.action or 'Unknown');
                                 imgui.Spacing();
                                 imgui.TextColored(COLORS.textDim, 'Type: ' .. (ACTION_TYPE_LABELS[macro.actionType] or macro.actionType or '?'));
-                                if macro.target then
+                                if macro.actionType ~= 'macro' and macro.target then
                                     imgui.TextColored(COLORS.textDim, 'Target: <' .. macro.target .. '>');
                                 end
                                 imgui.Spacing();
@@ -2124,6 +2411,22 @@ local function DrawIconPicker()
 
         imgui.SameLine();
 
+        -- Custom tab
+        if iconPickerTab == 3 then
+            imgui.PushStyleColor(ImGuiCol_Button, COLORS.bgLight);
+            imgui.PushStyleColor(ImGuiCol_Border, COLORS.gold);
+        else
+            imgui.PushStyleColor(ImGuiCol_Button, COLORS.bgDark);
+            imgui.PushStyleColor(ImGuiCol_Border, COLORS.border);
+        end
+        if imgui.Button('Custom', {tabWidth, 24}) then
+            iconPickerTab = 3;
+            -- Keep filter text, don't reset - reduces lag from cache rebuilds
+        end
+        imgui.PopStyleColor(2);
+
+        imgui.SameLine();
+
         -- Clear icon button
         imgui.PushStyleColor(ImGuiCol_Button, COLORS.dangerDim);
         imgui.PushStyleColor(ImGuiCol_ButtonHovered, COLORS.danger);
@@ -2131,6 +2434,7 @@ local function DrawIconPicker()
         if imgui.Button('Clear', {50, 24}) then
             editingMacro.customIconType = nil;
             editingMacro.customIconId = nil;
+            editingMacro.customIconPath = nil;
             iconPickerOpen = false;
         end
         imgui.PopStyleColor(3);
@@ -2222,6 +2526,127 @@ local function DrawIconPicker()
             imgui.Spacing();
         end
 
+        -- Custom icon category filter buttons (only for custom tab)
+        if iconPickerTab == 3 then
+            -- Load categories if not loaded
+            LoadCustomIcons();
+            
+            local filterIconSize = 24;
+            imgui.PushStyleVar(ImGuiStyleVar_FrameBorderSize, 2);
+            imgui.PushStyleVar(ImGuiStyleVar_ItemSpacing, {3, 3});
+            imgui.PushStyleVar(ImGuiStyleVar_FramePadding, {2, 2});
+            
+            local buttonsPerRow = 10;  -- Wrap after this many buttons
+            local buttonCount = 0;
+            local totalButtons = #CUSTOM_ICON_CATEGORIES + 1;  -- +1 for the "+" button
+            
+            for i, category in ipairs(CUSTOM_ICON_CATEGORIES) do
+                local tooltip = CUSTOM_ICON_LABELS[category] or category;
+                local isSelected = customIconCategory == category;
+                
+                -- Get a representative icon from this category
+                local categoryIcon, isEmpty = GetCustomCategoryIcon(category);
+                
+                if isEmpty then
+                    -- Empty folder - draw a button with first letter
+                    local letter = category:sub(1, 1):upper();
+                    if isSelected then
+                        imgui.PushStyleColor(ImGuiCol_Button, COLORS.bgLight);
+                        imgui.PushStyleColor(ImGuiCol_Border, COLORS.gold);
+                    else
+                        imgui.PushStyleColor(ImGuiCol_Button, COLORS.bgDark);
+                        imgui.PushStyleColor(ImGuiCol_Border, COLORS.border);
+                    end
+                    imgui.PushStyleColor(ImGuiCol_Text, COLORS.goldDim);
+                    if imgui.Button(letter .. '##customFilter' .. i, {filterIconSize, filterIconSize}) then
+                        customIconCategory = category;
+                        iconPickerPage[3] = 1;
+                        customIconsCacheKey = nil;
+                    end
+                    imgui.PopStyleColor(3);
+                    if imgui.IsItemHovered() then
+                        imgui.BeginTooltip();
+                        imgui.Text(tooltip .. ' (empty)');
+                        imgui.EndTooltip();
+                    end
+                else
+                    -- Use DrawIconButton for categories with icons
+                    if DrawIconButton('##customFilter' .. i, categoryIcon, filterIconSize, isSelected, tooltip) then
+                        customIconCategory = category;
+                        iconPickerPage[3] = 1;
+                        customIconsCacheKey = nil;  -- Invalidate cache
+                    end
+                end
+                
+                buttonCount = buttonCount + 1;
+                
+                -- Handle row wrapping
+                if buttonCount < totalButtons then
+                    if buttonCount % buttonsPerRow == 0 then
+                        -- Start new row
+                    else
+                        imgui.SameLine();
+                    end
+                end
+            end
+            
+            -- "+" button to create new folder
+            imgui.PushStyleColor(ImGuiCol_Button, COLORS.bgDark);
+            imgui.PushStyleColor(ImGuiCol_ButtonHovered, COLORS.bgLight);
+            imgui.PushStyleColor(ImGuiCol_Border, COLORS.border);
+            imgui.PushStyleColor(ImGuiCol_Text, COLORS.gold);
+            if imgui.Button('+##newCustomFolder', {filterIconSize, filterIconSize}) then
+                newFolderName[1] = '';
+                imgui.OpenPopup('Create Custom Folder##newFolderPopup');
+            end
+            imgui.PopStyleColor(4);
+            if imgui.IsItemHovered() then
+                imgui.BeginTooltip();
+                imgui.Text('Create new folder');
+                imgui.EndTooltip();
+            end
+            
+            imgui.PopStyleVar(3);
+            imgui.Spacing();
+            
+            -- Apply XIUI styling to popup
+            imgui.PushStyleColor(ImGuiCol_PopupBg, COLORS.bgDark);
+            imgui.PushStyleColor(ImGuiCol_Border, COLORS.border);
+            imgui.PushStyleColor(ImGuiCol_TitleBg, COLORS.bgMedium);
+            imgui.PushStyleColor(ImGuiCol_TitleBgActive, COLORS.bgMedium);
+            imgui.PushStyleColor(ImGuiCol_FrameBg, COLORS.bgMedium);
+            imgui.PushStyleColor(ImGuiCol_FrameBgHovered, COLORS.bgLight);
+            imgui.PushStyleColor(ImGuiCol_Button, COLORS.bgMedium);
+            imgui.PushStyleColor(ImGuiCol_ButtonHovered, COLORS.bgLight);
+            imgui.PushStyleColor(ImGuiCol_Text, COLORS.text);
+            
+            if imgui.BeginPopupModal('Create Custom Folder##newFolderPopup', nil, ImGuiWindowFlags_AlwaysAutoResize) then
+                imgui.TextColored(COLORS.goldDim, 'Folder name:');
+                imgui.SetNextItemWidth(250);
+                imgui.InputText('##newFolderInput', newFolderName, 64);
+                
+                imgui.Spacing();
+                
+                -- Create button
+                imgui.PushStyleColor(ImGuiCol_Button, COLORS.bgLight);
+                if imgui.Button('Create', {120, 24}) then
+                    if CreateCustomFolder(newFolderName[1]) then
+                        imgui.CloseCurrentPopup();
+                    end
+                end
+                imgui.PopStyleColor();
+                imgui.SameLine();
+                -- Cancel button
+                if imgui.Button('Cancel', {120, 24}) then
+                    imgui.CloseCurrentPopup();
+                end
+                
+                imgui.EndPopup();
+            end
+            
+            imgui.PopStyleColor(9);
+        end
+
         local filter = iconPickerFilter[1]:lower();
         local currentPage = iconPickerPage[iconPickerTab];
 
@@ -2229,8 +2654,10 @@ local function DrawIconPicker()
         local cacheKey;
         if iconPickerTab == 1 then
             cacheKey = filter .. ':spell:' .. iconPickerSpellType;
-        else
+        elseif iconPickerTab == 2 then
             cacheKey = filter .. ':item:' .. tostring(iconPickerItemType);
+        elseif iconPickerTab == 3 then
+            cacheKey = filter .. ':custom:' .. customIconCategory;
         end
 
         -- Reset page and invalidate cache if filter/type changed
@@ -2241,12 +2668,18 @@ local function DrawIconPicker()
                 filteredSpellsCache = nil;
                 filteredSpellsCacheKey = cacheKey;
             end
-        else
+        elseif iconPickerTab == 2 then
             if cacheKey ~= filteredItemsCacheKey then
                 iconPickerPage[2] = 1;
                 currentPage = 1;
                 filteredItemsCache = nil;
                 filteredItemsCacheKey = cacheKey;
+            end
+        elseif iconPickerTab == 3 then
+            if cacheKey ~= customIconsCacheKey then
+                iconPickerPage[3] = 1;
+                currentPage = 1;
+                customIconsCacheKey = cacheKey;
             end
         end
 
@@ -2305,12 +2738,15 @@ local function DrawIconPicker()
                     filteredItemsCache = filteredItems;
                 end
             end
+        elseif iconPickerTab == 3 then
+            -- Custom icons - use pre-filtered category list
+            filteredItems = GetCustomIconsFiltered(customIconCategory, filter);
         end
 
         local totalItems = #filteredItems;
         local totalPages = math.max(1, math.ceil(totalItems / ICONS_PER_PAGE));
 
-        -- Show filtered count for spells (items count shown near page navigation only)
+        -- Show filtered count for spells and custom (items count shown near page navigation only)
         if iconPickerTab == 1 then
             local allSpells = GetAllSpells();
             local countText = string.format('%d of %d spells', totalItems, #allSpells);
@@ -2318,6 +2754,91 @@ local function DrawIconPicker()
                 countText = countText .. ' (' .. (SPELL_TYPE_LABELS[iconPickerSpellType] or iconPickerSpellType) .. ')';
             end
             imgui.TextColored(COLORS.textMuted, countText);
+        elseif iconPickerTab == 3 then
+            local allCustom = LoadCustomIcons();
+            local countText = string.format('%d of %d custom icons', totalItems, #allCustom);
+            if customIconCategory ~= 'all' then
+                countText = countText .. ' (' .. (CUSTOM_ICON_LABELS[customIconCategory] or customIconCategory) .. ')';
+            end
+            imgui.TextColored(COLORS.textMuted, countText);
+            
+            -- Delete folder button (only for specific categories, not 'all')
+            if customIconCategory ~= 'all' then
+                imgui.SameLine(imgui.GetWindowWidth() - 145);
+                imgui.PushStyleColor(ImGuiCol_Button, COLORS.dangerDim);
+                imgui.PushStyleColor(ImGuiCol_ButtonHovered, COLORS.danger);
+                imgui.PushStyleColor(ImGuiCol_Text, COLORS.text);
+                if imgui.Button('Delete##deleteFolder', {55, 18}) then
+                    deleteFolderTarget = customIconCategory;
+                    imgui.OpenPopup('Delete Folder##deleteFolderPopup');
+                end
+                imgui.PopStyleColor(3);
+            end
+            
+            -- Refresh button on the right
+            imgui.SameLine(imgui.GetWindowWidth() - 80);
+            imgui.PushStyleColor(ImGuiCol_Button, COLORS.bgDark);
+            imgui.PushStyleColor(ImGuiCol_ButtonHovered, COLORS.bgLight);
+            imgui.PushStyleColor(ImGuiCol_Text, COLORS.goldDim);
+            if imgui.Button('Refresh##refreshCustom', {60, 18}) then
+                -- Clear all caches to force rescan
+                customIconsCache = nil;
+                customIconsByCategoryCache = {};
+                customCategoryIconCache = {};
+                customIconsCacheKey = nil;
+                -- Also clear the action module's custom icon cache
+                actions.ClearCustomIconCache();
+            end
+            imgui.PopStyleColor(3);
+            
+            -- Delete folder confirmation popup
+            imgui.PushStyleColor(ImGuiCol_PopupBg, COLORS.bgDark);
+            imgui.PushStyleColor(ImGuiCol_Border, COLORS.danger);
+            imgui.PushStyleColor(ImGuiCol_TitleBg, COLORS.dangerDim);
+            imgui.PushStyleColor(ImGuiCol_TitleBgActive, COLORS.dangerDim);
+            imgui.PushStyleColor(ImGuiCol_Text, COLORS.text);
+            imgui.PushStyleColor(ImGuiCol_Button, COLORS.bgMedium);
+            imgui.PushStyleColor(ImGuiCol_ButtonHovered, COLORS.bgLight);
+            
+            if imgui.BeginPopupModal('Delete Folder##deleteFolderPopup', nil, ImGuiWindowFlags_AlwaysAutoResize) then
+                local categoryLabel = CUSTOM_ICON_LABELS[deleteFolderTarget] or deleteFolderTarget or '';
+                local iconCount = customIconsByCategoryCache[deleteFolderTarget] and #customIconsByCategoryCache[deleteFolderTarget] or 0;
+                
+                imgui.TextColored(COLORS.danger, 'Delete folder "' .. categoryLabel .. '"?');
+                imgui.Spacing();
+                
+                if iconCount > 0 then
+                    imgui.TextColored(COLORS.text, 'This will permanently delete ' .. iconCount .. ' icon(s).');
+                else
+                    imgui.TextColored(COLORS.textMuted, 'This folder is empty.');
+                end
+                imgui.TextColored(COLORS.textMuted, 'This action cannot be undone.');
+                
+                imgui.Spacing();
+                imgui.Spacing();
+                
+                -- Delete button
+                imgui.PushStyleColor(ImGuiCol_Button, COLORS.danger);
+                imgui.PushStyleColor(ImGuiCol_ButtonHovered, {1.0, 0.4, 0.4, 1.0});
+                if imgui.Button('Delete', {100, 24}) then
+                    DeleteCustomFolder(deleteFolderTarget);
+                    deleteFolderTarget = nil;
+                    imgui.CloseCurrentPopup();
+                end
+                imgui.PopStyleColor(2);
+                
+                imgui.SameLine();
+                
+                -- Cancel button
+                if imgui.Button('Cancel', {100, 24}) then
+                    deleteFolderTarget = nil;
+                    imgui.CloseCurrentPopup();
+                end
+                
+                imgui.EndPopup();
+            end
+            
+            imgui.PopStyleColor(7);
         end
 
         -- Clamp current page
@@ -2518,6 +3039,78 @@ local function DrawIconPicker()
                     end
                 end
             end
+        
+        elseif iconPickerTab == 3 then
+            -- Custom icons - render from custom directory
+            if totalItems == 0 then
+                if customIconCategory ~= 'all' then
+                    -- Empty category folder
+                    local categoryLabel = CUSTOM_ICON_LABELS[customIconCategory] or customIconCategory;
+                    imgui.TextColored(COLORS.textMuted, 'No icons in "' .. categoryLabel .. '"');
+                    imgui.Spacing();
+                    imgui.TextColored(COLORS.textMuted, 'Add PNG images to this folder:');
+                    imgui.Spacing();
+                    
+                    -- Open Folder button
+                    imgui.PushStyleColor(ImGuiCol_Button, COLORS.bgLight);
+                    imgui.PushStyleColor(ImGuiCol_ButtonHovered, COLORS.bgLighter);
+                    imgui.PushStyleColor(ImGuiCol_Text, COLORS.gold);
+                    if imgui.Button('Open Folder##openCustomFolder', {120, 26}) then
+                        OpenCustomFolder(customIconCategory);
+                    end
+                    imgui.PopStyleColor(3);
+                else
+                    -- No custom icons at all
+                    imgui.TextColored(COLORS.textMuted, 'No custom icons found');
+                    imgui.Spacing();
+                    imgui.TextColored(COLORS.textMuted, 'Add PNG images to:');
+                    imgui.TextColored(COLORS.goldDim, 'addons/XIUI/assets/hotbar/custom/');
+                    imgui.Spacing();
+                    imgui.Spacing();
+                    
+                    -- Open Folder button
+                    imgui.PushStyleColor(ImGuiCol_Button, COLORS.bgLight);
+                    imgui.PushStyleColor(ImGuiCol_ButtonHovered, COLORS.bgLighter);
+                    imgui.PushStyleColor(ImGuiCol_Text, COLORS.gold);
+                    if imgui.Button('Open Folder##openCustomFolder', {120, 26}) then
+                        OpenCustomFolder('all');
+                    end
+                    imgui.PopStyleColor(3);
+                end
+            else
+                for i = startIdx, endIdx do
+                    local customIcon = filteredItems[i];
+                    if customIcon then
+                        -- Load icon texture
+                        local icon = LoadCustomIconTexture(customIcon.path);
+                        
+                        if icon and icon.image then
+                            -- Handle grid layout
+                            local col = displayedCount % ICON_GRID_COLUMNS;
+                            if col > 0 then
+                                imgui.SameLine(0, ICON_GRID_GAP);
+                            end
+                            
+                            -- Show category in tooltip
+                            local tooltipText = customIcon.name;
+                            if customIcon.category ~= 'root' then
+                                local categoryLabel = CUSTOM_ICON_LABELS[customIcon.category] or customIcon.category;
+                                tooltipText = customIcon.name .. ' (' .. categoryLabel .. ')';
+                            end
+                            
+                            local isSelected = editingMacro.customIconType == 'custom' and editingMacro.customIconPath == customIcon.path;
+                            if DrawIconButton('##custom' .. i, icon, ICON_GRID_SIZE, isSelected, tooltipText) then
+                                editingMacro.customIconType = 'custom';
+                                editingMacro.customIconPath = customIcon.path;
+                                editingMacro.customIconId = nil;  -- Clear spell/item ID
+                                iconPickerOpen = false;
+                            end
+                            
+                            displayedCount = displayedCount + 1;
+                        end
+                    end
+                end
+            end
         end
 
         imgui.EndChild();
@@ -2530,15 +3123,17 @@ local function DrawIconPicker()
     if not isOpen[1] then
         iconPickerOpen = false;
         iconPickerFilter[1] = '';
-        iconPickerPage = { 1, 1 };  -- Reset pages
-        iconPickerLastFilter = { '', '' };
+        iconPickerPage = { 1, 1, 1 };  -- Reset pages
+        iconPickerLastFilter = { '', '', '' };
         iconPickerSpellType = 'All';  -- Reset spell type filter
         iconPickerItemType = 0;  -- Reset item type filter (0 = All)
+        customIconCategory = 'all';  -- Reset custom category filter
         -- Clear filter caches when picker closes
         filteredSpellsCache = nil;
         filteredSpellsCacheKey = nil;
         filteredItemsCache = nil;
         filteredItemsCacheKey = nil;
+        customIconsCacheKey = nil;
         -- Reset progressive icon loading
         ResetIconLoading();
     end
@@ -2985,6 +3580,8 @@ function M.DrawMacroEditor()
                 if canSave and (editingMacro.displayName or '') == '' then
                     editingMacro.displayName = 'Macro';
                 end
+                -- Clear target for macro type (targets are embedded in macro text)
+                editingMacro.target = nil;
             else
                 canSave = (editingMacro.action or '') ~= '';
                 if canSave and (editingMacro.displayName or '') == '' then

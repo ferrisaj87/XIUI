@@ -534,6 +534,18 @@ ashita.events.register('command', 'command_cb', function (e)
             notifications.TestToastsOnly();
             return;
         end
+
+        -- Hotbar keybind execution: /xiui hotbar <bar> <slot>
+        -- Called by Ashita /bind system to execute hotbar actions
+        if (command_args[2] == 'hotbar' and #command_args >= 4) then
+            local barIndex = tonumber(command_args[3]);
+            local slotIndex = tonumber(command_args[4]);
+            if barIndex and slotIndex then
+                local hotbarActions = require('modules.hotbar.actions');
+                hotbarActions.HandleKeybind(barIndex, slotIndex);
+            end
+            return;
+        end
     end
 end);
 

@@ -166,6 +166,15 @@ function M.Initialize(settings)
             data.cooldownPrims[barIndex][slotIndex] = prim;
         end
 
+        -- 5. Create frame overlay primitives (render above cooldown overlays)
+        data.framePrims[barIndex] = {};
+        for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
+            local prim = primitives.new(primData);
+            prim.visible = false;
+            prim.can_focus = false;
+            data.framePrims[barIndex][slotIndex] = prim;
+        end
+
         -- Get per-bar font sizes
         local kbFontSize = barSettings.keybindFontSize or 10;
         local lblFontSize = barSettings.labelFontSize or 10;
@@ -289,6 +298,10 @@ function M.Initialize(settings)
         petpalette.CheckPetState();
     end);
 
+    -- Register keybinds with Ashita's /bind system
+    -- This blocks native FFXI macros from firing on bound keys
+    actions.RegisterKeybinds();
+
     M.initialized = true;
 end
 
@@ -388,6 +401,9 @@ function M.UpdateVisuals(settings)
     -- Update macro bar patch state based on setting
     local disableMacroBars = gConfig.hotbarGlobal and gConfig.hotbarGlobal.disableMacroBars or false;
     macrobarpatch.Update(disableMacroBars);
+
+    -- Re-register keybinds in case they changed
+    actions.RegisterKeybinds();
 end
 
 -- Main render function - called every frame
@@ -561,6 +577,15 @@ function M.Cleanup()
                 end
             end
         end
+
+        -- Destroy frame primitives
+        if data.framePrims[barIndex] then
+            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
+                if data.framePrims[barIndex][slotIndex] then
+                    data.framePrims[barIndex][slotIndex]:destroy();
+                end
+            end
+        end
     end
 
     -- Cleanup display and data layers
@@ -579,6 +604,9 @@ function M.Cleanup()
 
     -- Remove macro bar patches to restore native behavior
     macrobarpatch.Remove();
+
+    -- Unregister Ashita keybinds to restore native behavior
+    actions.UnregisterKeybinds();
 
     M.initialized = false;
 end

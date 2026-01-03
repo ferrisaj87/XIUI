@@ -58,6 +58,59 @@ local function GetActionAbbreviation(bind)
     end
 end
 
+-- Cache for equipment checks (keyed by itemId)
+local equipmentCheckCache = {};
+
+-- Equipment item types in FFXI
+-- Type 4 = Weapon, Type 5 = Armor (includes all armor, accessories, etc.)
+local EQUIPMENT_TYPES = { [4] = true, [5] = true };
+
+-- Check if an item is equipment (armor, weapons, accessories) by its item data
+-- Requires itemId for reliable detection
+-- @param itemId: Item ID to check (required for reliable detection)
+-- @return: true if equipment, false if consumable, nil if unknown (no itemId)
+local function IsEquipmentItem(itemId)
+    -- Must have itemId for reliable detection
+    if not itemId or itemId <= 0 or itemId == 65535 then
+        return nil;  -- Unknown - can't determine without itemId
+    end
+
+    -- Check cache first
+    if equipmentCheckCache[itemId] ~= nil then
+        return equipmentCheckCache[itemId];
+    end
+
+    local resMgr = AshitaCore:GetResourceManager();
+    if not resMgr then return nil; end
+
+    local isEquip = false;
+    local item = resMgr:GetItemById(itemId);
+    if item then
+        -- Multiple checks for equipment detection:
+        -- 1. Type field (4=Weapon, 5=Armor) - most reliable for retail
+        if item.Type and EQUIPMENT_TYPES[item.Type] then
+            isEquip = true;
+        -- 2. Slots field (non-zero = equippable to body slot)
+        elseif item.Slots and item.Slots > 0 then
+            isEquip = true;
+        -- 3. Jobs field (non-zero = job-restricted, implies equipment)
+        elseif item.Jobs and item.Jobs > 0 then
+            isEquip = true;
+        -- 4. Level field (non-zero = has level requirement, implies equipment)
+        elseif item.Level and item.Level > 0 then
+            isEquip = true;
+        -- 5. StackSize=1 and not Usable type (Type 7) - catches Horizon augmented gear
+        --    Augmented items on private servers often have Type=1 but StackSize=1
+        --    Consumables that stack (potions, food) have StackSize > 1
+        elseif item.StackSize and item.StackSize == 1 and item.Type ~= 7 then
+            isEquip = true;
+        end
+    end
+
+    equipmentCheckCache[itemId] = isEquip;
+    return isEquip;
+end
+
 -- Get total quantity of an item across all containers
 -- @param itemId: Item ID to look up
 -- @param itemName: Item name (fallback for lookup)
@@ -130,6 +183,7 @@ function M.ClearAllCache()
     slotCache = {};
     availabilityCache = {};
     mpCostCache = {};
+    equipmentCheckCache = {};
 end
 
 -- Clear availability cache (call on job change, level sync, etc.)
@@ -142,6 +196,37 @@ local function GetAssetsPath()
         assetsPath = string.format('%saddons\\XIUI\\assets\\hotbar\\', AshitaCore:GetInstallPath());
     end
     return assetsPath;
+end
+
+-- Calculate position based on anchor point within a slot
+-- @param x, y: Top-left corner of the slot
+-- @param size: Slot size in pixels
+-- @param anchor: 'topLeft', 'topRight', 'bottomLeft', 'bottomRight'
+-- @param offsetX, offsetY: Additional offset adjustments
+-- @param padding: Padding from edge (default 2)
+-- @return posX, posY
+local function GetAnchoredPosition(x, y, size, anchor, offsetX, offsetY, padding)
+    padding = padding or 2;
+    offsetX = offsetX or 0;
+    offsetY = offsetY or 0;
+    
+    local posX, posY;
+    
+    if anchor == 'topRight' then
+        posX = x + size - padding;
+        posY = y + padding;
+    elseif anchor == 'bottomLeft' then
+        posX = x + padding;
+        posY = y + size - padding - 10;  -- Account for font height
+    elseif anchor == 'bottomRight' then
+        posX = x + size - padding;
+        posY = y + size - padding - 10;  -- Account for font height
+    else  -- Default: topLeft
+        posX = x + padding;
+        posY = y + padding;
+    end
+    
+    return posX + offsetX, posY + offsetY;
 end
 
 --[[
@@ -549,9 +634,8 @@ function M.DrawSlot(resources, params)
                 resources.keybindFont:set_text(params.keybindText);
                 cache.keybindText = params.keybindText;
             end
-            -- Only update position if changed
-            local kbX = x + 2;
-            local kbY = y + 1;
+            -- Calculate position using anchor
+            local kbX, kbY = GetAnchoredPosition(x, y, size, params.keybindAnchor, params.keybindOffsetX, params.keybindOffsetY);
             if cache and (cache.keybindX ~= kbX or cache.keybindY ~= kbY) then
                 resources.keybindFont:set_position_x(kbX);
                 resources.keybindFont:set_position_y(kbY);
@@ -626,12 +710,15 @@ function M.DrawSlot(resources, params)
     end
 
     -- ========================================
-    -- 8. MP Cost Font (GDI - top right corner)
+    -- 8. MP Cost Font (GDI - anchored position)
     -- Shows "X" when action is unavailable, otherwise shows MP cost
     -- ========================================
     if resources.mpCostFont then
         local showMpCost = params.showMpCost ~= false;
         if showMpCost and bind and animOpacity > 0.5 then
+            -- Calculate position using anchor
+            local mpX, mpY = GetAnchoredPosition(x, y, size, params.mpCostAnchor, params.mpCostOffsetX, params.mpCostOffsetY);
+            
             -- If action is unavailable, show "X" instead of MP cost
             if isUnavailable then
                 local xText = "X";
@@ -639,9 +726,6 @@ function M.DrawSlot(resources, params)
                     resources.mpCostFont:set_text(xText);
                     cache.mpCostText = xText;
                 end
-                -- Position at top-right corner with padding
-                local mpX = x + size - 3;
-                local mpY = y + 1;
                 if cache and (cache.mpCostX ~= mpX or cache.mpCostY ~= mpY) then
                     resources.mpCostFont:set_position_x(mpX);
                     resources.mpCostFont:set_position_y(mpY);
@@ -674,9 +758,6 @@ function M.DrawSlot(resources, params)
                         resources.mpCostFont:set_text(mpText);
                         cache.mpCostText = mpText;
                     end
-                    -- Position at top-right corner with padding
-                    local mpX = x + size - 3;  -- Right-aligned with small padding
-                    local mpY = y + 1;         -- Top with small padding
                     if cache and (cache.mpCostX ~= mpX or cache.mpCostY ~= mpY) then
                         resources.mpCostFont:set_position_x(mpX);
                         resources.mpCostFont:set_position_y(mpY);
@@ -710,24 +791,46 @@ function M.DrawSlot(resources, params)
     end
 
     -- ========================================
-    -- 9. Item Quantity Font (GDI - bottom right corner)
+    -- 9. Item Quantity Font (GDI - anchored position)
+    -- Only show for consumable items, not equipment
     -- ========================================
     if resources.quantityFont then
         local showQuantity = params.showQuantity ~= false;
-        if showQuantity and bind and animOpacity > 0.5 and (bind.actionType == 'item') then
+        -- Skip quantity display for equipment items (armor, weapons, accessories)
+        -- IsEquipmentItem returns: true = equipment, false = consumable, nil = unknown (no itemId)
+        local isEquipment = nil;
+        if showQuantity and bind and bind.actionType == 'item' then
+            if bind.itemId then
+                -- Check cache first, but invalidate if itemId changed (slot was reassigned)
+                if cache and cache.isEquipment ~= nil and cache.equipmentCheckItemId == bind.itemId then
+                    isEquipment = cache.isEquipment;
+                else
+                    isEquipment = IsEquipmentItem(bind.itemId);
+                    if cache then
+                        cache.isEquipment = isEquipment;
+                        cache.equipmentCheckItemId = bind.itemId;
+                    end
+                end
+            else
+                -- No itemId - can't determine equipment status
+            end
+        end
+
+        -- Show quantity for consumables (isEquipment == false) or when we can't determine (isEquipment == nil)
+        -- Hide quantity only when we're certain it's equipment (isEquipment == true)
+        if showQuantity and bind and animOpacity > 0.5 and (bind.actionType == 'item') and isEquipment ~= true then
             -- Get item quantity from inventory
             local quantity = M.GetItemQuantity(bind.itemId, bind.action) or 0;
 
-            -- Always show quantity for items (x0 in red, x1+)
+            -- Always show quantity for consumable items (x0 in red, x1+)
             local qtyText = 'x' .. tostring(quantity);
             -- Only update text if changed
             if cache and cache.quantityText ~= qtyText then
                 resources.quantityFont:set_text(qtyText);
                 cache.quantityText = qtyText;
             end
-            -- Position at bottom-right corner with padding
-            local qtyX = x + size - 3;  -- Right-aligned with small padding
-            local qtyY = y + size - 14; -- Bottom with padding for font height
+            -- Calculate position using anchor
+            local qtyX, qtyY = GetAnchoredPosition(x, y, size, params.quantityAnchor, params.quantityOffsetX, params.quantityOffsetY);
             if cache and (cache.quantityX ~= qtyX or cache.quantityY ~= qtyY) then
                 resources.quantityFont:set_position_x(qtyX);
                 resources.quantityFont:set_position_y(qtyY);
@@ -752,18 +855,57 @@ function M.DrawSlot(resources, params)
     end
 
     -- ========================================
-    -- 10. ImGui: Frame Overlay
+    -- 10. Frame Overlay (Primitive)
     -- ========================================
-    local drawList = imgui.GetWindowDrawList();
-    if drawList and params.showFrame then
-        local frameTexture = textures:Get('frame');
-        if frameTexture and frameTexture.image then
-            local framePtr = tonumber(ffi.cast("uint32_t", frameTexture.image));
-            if framePtr then
+    if resources.framePrim then
+        if params.showFrame and animOpacity > 0.01 then
+            -- Determine frame texture path: custom path or default
+            local framePath = nil;
+            if params.customFramePath and params.customFramePath ~= '' then
+                -- Custom path: resolve relative to hotbar assets directory
+                framePath = GetAssetsPath() .. params.customFramePath;
+            else
+                -- Default: use cached path from textures module
+                framePath = textures:GetPath('frame');
+            end
+
+            if framePath then
+                -- Only set texture if changed
+                if cache and cache.frameTexturePath ~= framePath then
+                    resources.framePrim.texture = framePath;
+                    cache.frameTexturePath = framePath;
+                end
+
+                -- Position frame over slot
+                if cache and (cache.frameX ~= x or cache.frameY ~= y) then
+                    resources.framePrim.position_x = x;
+                    resources.framePrim.position_y = y;
+                    cache.frameX = x;
+                    cache.frameY = y;
+                end
+
+                -- Scale frame to slot size (frame.png is 40x40 base)
+                local frameScale = size / 40;
+                if cache and cache.frameScale ~= frameScale then
+                    resources.framePrim.scale_x = frameScale;
+                    resources.framePrim.scale_y = frameScale;
+                    cache.frameScale = frameScale;
+                end
+
+                -- Apply animation opacity to frame
                 local frameAlpha = math.floor(255 * animOpacity);
                 local frameColor = bit.bor(bit.lshift(frameAlpha, 24), 0x00FFFFFF);
-                drawList:AddImage(framePtr, {x, y}, {x + size, y + size}, {0,0}, {1,1}, frameColor);
+                if cache and cache.frameColor ~= frameColor then
+                    resources.framePrim.color = frameColor;
+                    cache.frameColor = frameColor;
+                end
+
+                resources.framePrim.visible = true;
+            else
+                resources.framePrim.visible = false;
             end
+        else
+            resources.framePrim.visible = false;
         end
     end
 
@@ -833,8 +975,8 @@ function M.DrawSlot(resources, params)
                 if params.onClick then
                     params.onClick();
                 elseif command then
-                    -- Default: execute the command
-                    AshitaCore:GetChatManager():QueueCommand(-1, command);
+                    -- Default: execute the command (handles multi-line macros)
+                    actions.ExecuteCommandString(command);
                 end
             end
         end
@@ -902,8 +1044,8 @@ function M.DrawTooltip(bind)
     local typeLabel = ACTION_TYPE_LABELS[bind.actionType] or bind.actionType or '?';
     imgui.TextColored(COLORS.textDim, 'Type: ' .. typeLabel);
 
-    -- Target
-    if bind.target and bind.target ~= '' then
+    -- Target (not shown for macro type since targets are embedded in macro text)
+    if bind.actionType ~= 'macro' and bind.target and bind.target ~= '' then
         imgui.TextColored(COLORS.textDim, 'Target: <' .. bind.target .. '>');
     end
 
@@ -927,6 +1069,7 @@ function M.HideSlot(resources)
     if not resources then return; end
     if resources.slotPrim then resources.slotPrim.visible = false; end
     if resources.iconPrim then resources.iconPrim.visible = false; end
+    if resources.framePrim then resources.framePrim.visible = false; end
     if resources.timerFont then resources.timerFont:set_visible(false); end
     if resources.keybindFont then resources.keybindFont:set_visible(false); end
     if resources.labelFont then resources.labelFont:set_visible(false); end

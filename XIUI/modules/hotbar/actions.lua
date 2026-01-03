@@ -11,6 +11,46 @@ local textures = require('modules.hotbar.textures');
 
 local M = {};
 
+-- ============================================
+-- Modifier Key Tracking (Event-based)
+-- ============================================
+-- Track modifier states via keyboard events.
+-- This is reset on focus loss which prevents "stuck" keys.
+
+local modifierCtrl = false;
+local modifierAlt = false;
+local modifierShift = false;
+
+--- Update modifier states from keyboard events
+--- Called from HandleKey for every key event
+local function UpdateModifierStates(keyCode, isRelease)
+    -- Ctrl keys (17 = generic, 162 = left, 163 = right)
+    if keyCode == 17 or keyCode == 162 or keyCode == 163 then
+        modifierCtrl = not isRelease;
+    -- Alt keys (18 = generic, 164 = left, 165 = right)
+    elseif keyCode == 18 or keyCode == 164 or keyCode == 165 then
+        modifierAlt = not isRelease;
+    -- Shift keys (16 = generic, 160 = left, 161 = right)
+    elseif keyCode == 16 or keyCode == 160 or keyCode == 161 then
+        modifierShift = not isRelease;
+    end
+end
+
+--- Get current modifier states
+local function GetModifierStates()
+    return modifierCtrl, modifierAlt, modifierShift;
+end
+
+--- Reset all modifier states (call on focus loss or zone)
+function M.ResetModifierStates()
+    modifierCtrl = false;
+    modifierAlt = false;
+    modifierShift = false;
+end
+
+-- Cache for custom icons loaded from disk
+local customIconCache = {};
+
 -- Mapping from summoning spell names to texture cache keys
 -- Spell names (as they appear in-game) -> texture key (as loaded in textures.lua)
 local summonSpellToIconKey = {
@@ -175,10 +215,6 @@ local otherAbilityToIconKey = {
     -- BLM
     ['Elemental Seal'] = 'ability_2hr',
 };
-
-local controlPressed = false;
-local altPressed = false;
-local shiftPressed = false;
 
 -- Track currently pressed hotbar/slot for visual feedback
 local currentPressedHotbar = nil;
@@ -434,15 +470,26 @@ function M.GetBindIcon(bind)
             for _, macro in ipairs(macroDB) do
                 if macro.id == bind.macroRef then
                     -- Found the source macro - use its current custom icon if set
-                    if macro.customIconType and macro.customIconId then
-                        if macro.customIconType == 'spell' then
+                    if macro.customIconType then
+                        if macro.customIconType == 'spell' and macro.customIconId then
                             icon = textures:Get('spells' .. string.format('%05d', macro.customIconId));
                             iconId = macro.customIconId;
                             if icon then return icon, iconId; end
-                        elseif macro.customIconType == 'item' then
+                        elseif macro.customIconType == 'item' and macro.customIconId then
                             icon = LoadItemIconById(macro.customIconId);
                             iconId = macro.customIconId;
                             if icon then return icon, iconId; end
+                        elseif macro.customIconType == 'custom' and macro.customIconPath then
+                            -- Check cache first
+                            if customIconCache[macro.customIconPath] then
+                                return customIconCache[macro.customIconPath], nil;
+                            end
+                            local customDir = string.format('%saddons\\XIUI\\assets\\hotbar\\custom\\', AshitaCore:GetInstallPath());
+                            icon = textures:LoadTextureFromPath(customDir .. macro.customIconPath);
+                            if icon then
+                                customIconCache[macro.customIconPath] = icon;
+                                return icon, nil;
+                            end
                         end
                     end
                     break;
@@ -452,15 +499,27 @@ function M.GetBindIcon(bind)
     end
 
     -- Check for custom icon override on the bind itself
-    if bind.customIconType and bind.customIconId then
-        if bind.customIconType == 'spell' then
+    if bind.customIconType then
+        if bind.customIconType == 'spell' and bind.customIconId then
             icon = textures:Get('spells' .. string.format('%05d', bind.customIconId));
             iconId = bind.customIconId;
             if icon then return icon, iconId; end
-        elseif bind.customIconType == 'item' then
+        elseif bind.customIconType == 'item' and bind.customIconId then
             icon = LoadItemIconById(bind.customIconId);
             iconId = bind.customIconId;
             if icon then return icon, iconId; end
+        elseif bind.customIconType == 'custom' and bind.customIconPath then
+            -- Check cache first
+            if customIconCache[bind.customIconPath] then
+                return customIconCache[bind.customIconPath], nil;
+            end
+            -- Load custom icon from assets/hotbar/custom/ directory
+            local customDir = string.format('%saddons\\XIUI\\assets\\hotbar\\custom\\', AshitaCore:GetInstallPath());
+            icon = textures:LoadTextureFromPath(customDir .. bind.customIconPath);
+            if icon then
+                customIconCache[bind.customIconPath] = icon;
+                return icon, nil;
+            end
         end
     end
 
@@ -618,51 +677,64 @@ local function parseKeyEventFlags(event)
    return (getBit(lparam, 31) == 1)
 end
 
--- Convert virtual key code to string representation
-local function keyCodeToString(keyCode)
-   if keyCode >= 48 and keyCode <= 57 then
-       return tostring(keyCode - 48) -- Keys 0-9
-   elseif keyCode >= 65 and keyCode <= 90 then
-       return string.char(keyCode) -- Keys A-Z
-   elseif keyCode == 189 then -- Minus key
-       return '-'
-   elseif keyCode == 187 then -- Plus/Equal key
-       return '+'
-   end
-   return tostring(keyCode)
-end
+--- Execute a command string (handles multi-line macros with /wait support)
+--- Splits by newlines and executes each non-empty line in sequence
+--- Properly handles /wait, /pause, /sleep by using Ashita's task scheduler
+--- @param commandText string The command text (may contain newlines)
+--- @return boolean success Whether any command was executed
+function M.ExecuteCommandString(commandText)
+    if not commandText or commandText == '' then
+        return false;
+    end
 
--- Determine which hotbar and slot based on modifier keys and key pressed
-local function GetHotbarAndSlot(keyStr)
-    -- Convert key string to slot number
-    local slot = nil;
-    if keyStr == '-' then
-        slot = 11;
-    elseif keyStr == '+' then
-        slot = 12;
-    else
-        slot = tonumber(keyStr);
+    -- Collect all lines first
+    local lines = {};
+    for line in commandText:gmatch('[^\r\n]+') do
+        -- Trim whitespace
+        line = line:match('^%s*(.-)%s*$');
+        if line and line ~= '' then
+            table.insert(lines, line);
+        end
     end
-    
-    if not slot or slot < 1 or slot > 12 then
-        return nil, nil;
+
+    if #lines == 0 then
+        return false;
     end
-    
-    -- Determine hotbar based on modifiers
-    local hotbar = 1; -- default (no modifiers)
-    if controlPressed and shiftPressed then
-        hotbar = 5; -- CS prefix
-    elseif controlPressed and altPressed then
-        hotbar = 6; -- CA prefix
-    elseif shiftPressed then
-        hotbar = 4; -- S prefix
-    elseif altPressed then
-        hotbar = 3; -- A prefix
-    elseif controlPressed then
-        hotbar = 2; -- C prefix
+
+    -- Recursive function to execute lines with proper /wait handling
+    -- This chains tasks instead of scheduling them all at once
+    local function executeNextLine(index)
+        if index > #lines then
+            return;
+        end
+
+        local line = lines[index];
+
+        -- Check for wait/pause/sleep commands
+        local waitMatch = line:match('^/wait%s*(%d*%.?%d*)') or
+                          line:match('^/pause%s*(%d*%.?%d*)') or
+                          line:match('^/sleep%s*(%d*%.?%d*)');
+
+        if waitMatch then
+            -- It's a wait command - schedule the next line after the delay
+            local delay = tonumber(waitMatch) or 1;
+            ashita.tasks.once(delay, function()
+                executeNextLine(index + 1);
+            end);
+        else
+            -- It's a regular command - execute it
+            local chatManager = AshitaCore:GetChatManager();
+            if chatManager then
+                chatManager:QueueCommand(-1, line);
+            end
+            -- Continue to next line immediately
+            executeNextLine(index + 1);
+        end
     end
-    
-    return hotbar, slot;
+
+    -- Start executing from the first line
+    executeNextLine(1);
+    return true;
 end
 
 -- Handle a keybind with the given modifier state
@@ -675,12 +747,7 @@ function M.HandleKeybind(hotbar, slot)
 
     -- Build and execute command
     local command, _ = M.BuildCommand(bind);
-    if command then
-        AshitaCore:GetChatManager():QueueCommand(-1, command);
-        return true;
-    end
-
-    return false;
+    return M.ExecuteCommandString(command);
 end
 
 -- Find hotbar and slot that matches the pressed key + modifiers
@@ -713,14 +780,11 @@ function M.HandleKey(event)
    local isRelease = parseKeyEventFlags(event)
    local keyCode = event.wparam;
 
-   -- Update modifier key states
-   if (keyCode == 17 or keyCode == 162 or keyCode == 163) then -- Ctrl keys
-       controlPressed = not isRelease
-   elseif (keyCode == 18 or keyCode == 164 or keyCode == 165) then -- Alt keys
-       altPressed = not isRelease
-   elseif (keyCode == 16 or keyCode == 160 or keyCode == 161) then -- Shift keys
-       shiftPressed = not isRelease
-   end
+   -- Update modifier state tracking
+   UpdateModifierStates(keyCode, isRelease);
+
+   -- Get current modifier states
+   local controlPressed, altPressed, shiftPressed = GetModifierStates();
 
    -- Check if keybind editor is capturing input
    local hotbarConfig = require('config.hotbar');
@@ -776,14 +840,226 @@ function M.ExecuteAction(slotAction)
     if not slotAction then return false; end
     if not slotAction.actionType or not slotAction.action then return false; end
 
-    -- Build and execute command
+    -- Build and execute command (handles multi-line macros)
     local command, _ = M.BuildCommand(slotAction);
-    if command then
-        AshitaCore:GetChatManager():QueueCommand(-1, command);
-        return true;
+    return M.ExecuteCommandString(command);
+end
+
+-- Clear the custom icon cache (call when icons may have changed)
+function M.ClearCustomIconCache()
+    customIconCache = {};
+end
+
+-- ============================================
+-- Ashita Keybind Registration
+-- Uses /bind to intercept keys at a lower level than addon keyboard events,
+-- which properly blocks native FFXI macros from firing
+-- ============================================
+
+-- SAFETY: Set to false to completely disable /bind registration
+-- This prevents native macro blocking but avoids potential crashes
+local ENABLE_ASHITA_BINDS = true;
+
+-- Track registered binds so we can unbind them on cleanup/change
+local registeredBinds = {};
+
+-- Track if silent mode is enabled
+local silentModeEnabled = false;
+
+-- Track if module is being cleaned up (prevents registration during unload)
+local isCleaningUp = false;
+
+-- Convert modifier flags + key code to Ashita bind format
+-- Ashita uses: ^ for Ctrl, ! for Alt, + for Shift
+local function FormatBindKey(keyCode, ctrl, alt, shift)
+    local prefix = '';
+    if ctrl then prefix = prefix .. '^'; end
+    if alt then prefix = prefix .. '!'; end
+    if shift then prefix = prefix .. '+'; end
+
+    -- Convert virtual key code to Ashita key name
+    -- Reference: https://wiki.ashitaxi.com/doku.php?id=ashitav3:keybinds
+    local keyName = nil;
+
+    -- Number keys 0-9 (VK 48-57)
+    if keyCode >= 48 and keyCode <= 57 then
+        keyName = tostring(keyCode - 48);
+    -- Letter keys A-Z (VK 65-90)
+    elseif keyCode >= 65 and keyCode <= 90 then
+        keyName = string.char(keyCode);
+    -- Function keys F1-F12 (VK 112-123)
+    elseif keyCode >= 112 and keyCode <= 123 then
+        keyName = 'F' .. tostring(keyCode - 111);
+    -- Numpad 0-9 (VK 96-105)
+    elseif keyCode >= 96 and keyCode <= 105 then
+        keyName = 'NUMPAD' .. tostring(keyCode - 96);
+    -- Main keyboard minus (VK 189)
+    elseif keyCode == 189 then
+        keyName = '-';
+    -- Numpad minus (VK 109)
+    elseif keyCode == 109 then
+        keyName = 'NUMPAD-';
+    -- Main keyboard equals/plus (VK 187)
+    elseif keyCode == 187 then
+        keyName = '=';
+    -- Numpad plus (VK 107)
+    elseif keyCode == 107 then
+        keyName = 'NUMPAD+';
+    -- Numpad multiply (VK 106)
+    elseif keyCode == 106 then
+        keyName = 'NUMPAD*';
+    -- Numpad divide (VK 111)
+    elseif keyCode == 111 then
+        keyName = 'NUMPAD/';
+    -- Numpad decimal (VK 110)
+    elseif keyCode == 110 then
+        keyName = 'NUMPAD.';
+    -- Space (VK 32)
+    elseif keyCode == 32 then
+        keyName = 'SPACE';
+    -- Tab (VK 9)
+    elseif keyCode == 9 then
+        keyName = 'TAB';
+    -- Escape (VK 27)
+    elseif keyCode == 27 then
+        keyName = 'ESCAPE';
+    -- Backspace (VK 8)
+    elseif keyCode == 8 then
+        keyName = 'BACK';
+    -- Enter (VK 13)
+    elseif keyCode == 13 then
+        keyName = 'RETURN';
+    -- Backtick/tilde (VK 192)
+    elseif keyCode == 192 then
+        keyName = '`';
+    -- [ (VK 219)
+    elseif keyCode == 219 then
+        keyName = '[';
+    -- ] (VK 221)
+    elseif keyCode == 221 then
+        keyName = ']';
+    -- \ (VK 220)
+    elseif keyCode == 220 then
+        keyName = '\\';
+    -- ; (VK 186)
+    elseif keyCode == 186 then
+        keyName = ';';
+    -- ' (VK 222)
+    elseif keyCode == 222 then
+        keyName = "'";
+    -- , (VK 188)
+    elseif keyCode == 188 then
+        keyName = ',';
+    -- . (VK 190)
+    elseif keyCode == 190 then
+        keyName = '.';
+    -- / (VK 191)
+    elseif keyCode == 191 then
+        keyName = '/';
     end
 
-    return false;
+    if not keyName then
+        return nil;
+    end
+
+    return prefix .. keyName;
+end
+
+--- Register all configured keybinds with Ashita's /bind system
+--- This blocks native FFXI macros from firing on those keys
+function M.RegisterKeybinds()
+    -- Safety checks
+    if not ENABLE_ASHITA_BINDS then return; end
+    if isCleaningUp then return; end
+
+    -- Wrap everything in pcall for safety
+    local ok, err = pcall(function()
+        local chatManager = AshitaCore:GetChatManager();
+        if not chatManager then return; end
+
+        -- Enable silent mode once and leave it on permanently
+        -- This avoids timing issues with async command queue
+        if not silentModeEnabled then
+            chatManager:QueueCommand(-1, '/bind silent 1');
+            silentModeEnabled = true;
+        end
+
+        -- Build list of new binds we want to register
+        local newBinds = {};
+
+        if gConfig then
+            for barIndex = 1, 6 do
+                local configKey = 'hotbarBar' .. barIndex;
+                local barSettings = gConfig[configKey];
+
+                if barSettings and barSettings.enabled and barSettings.keyBindings then
+                    for slotIndex, binding in pairs(barSettings.keyBindings) do
+                        if binding and binding.key then
+                            local bindKey = FormatBindKey(
+                                binding.key,
+                                binding.ctrl or false,
+                                binding.alt or false,
+                                binding.shift or false
+                            );
+
+                            if bindKey then
+                                table.insert(newBinds, {
+                                    key = bindKey,
+                                    barIndex = barIndex,
+                                    slotIndex = slotIndex,
+                                });
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        -- Unbind old binds that aren't in the new set
+        local newBindSet = {};
+        for _, bind in ipairs(newBinds) do
+            newBindSet[bind.key] = true;
+        end
+
+        for _, bindKey in ipairs(registeredBinds) do
+            if not newBindSet[bindKey] then
+                chatManager:QueueCommand(-1, '/unbind ' .. bindKey);
+            end
+        end
+
+        -- Register new binds (overwrites existing binds with same key)
+        registeredBinds = {};
+        for _, bind in ipairs(newBinds) do
+            local bindCommand = string.format(
+                '/bind %s /xiui hotbar %d %d',
+                bind.key, bind.barIndex, bind.slotIndex
+            );
+            chatManager:QueueCommand(-1, bindCommand);
+            table.insert(registeredBinds, bind.key);
+        end
+    end);
+
+    if not ok then
+        print('[XIUI] Warning: Failed to register keybinds: ' .. tostring(err));
+    end
+end
+
+--- Unregister all previously registered keybinds (called on addon unload)
+--- NOTE: This is intentionally minimal to avoid command queue issues during reload.
+--- The binds will either be overwritten by the next load or cleaned up manually.
+function M.UnregisterKeybinds()
+    -- Set cleanup flag to prevent re-registration during unload
+    isCleaningUp = true;
+
+    -- Clear local tracking only
+    -- We intentionally DON'T send /unbind commands here because:
+    -- 1. During addon reload, commands can interleave unpredictably
+    -- 2. The new module will overwrite binds with same keys anyway
+    -- 3. Sending many commands during unload can cause instability
+    registeredBinds = {};
+
+    -- Reset silent mode tracking so the next load will re-enable it
+    silentModeEnabled = false;
 end
 
 return M

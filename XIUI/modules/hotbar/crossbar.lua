@@ -211,10 +211,10 @@ local iconCache = {};
 -- Build a cache key that includes all fields that affect the icon
 local function BuildCrossbarBindKey(slotData)
     if not slotData then return 'nil'; end
-    -- Include customIconType and customIconId so icon changes invalidate the cache
+    -- Include customIconType, customIconId, and customIconPath so icon changes invalidate the cache
     local iconPart = '';
-    if slotData.customIconType or slotData.customIconId then
-        iconPart = ':icon:' .. (slotData.customIconType or '') .. ':' .. tostring(slotData.customIconId or '');
+    if slotData.customIconType or slotData.customIconId or slotData.customIconPath then
+        iconPart = ':icon:' .. (slotData.customIconType or '') .. ':' .. tostring(slotData.customIconId or '') .. ':' .. (slotData.customIconPath or '');
     end
     return (slotData.actionType or '') .. ':' .. (slotData.action or '') .. ':' .. (slotData.target or '') .. iconPart;
 end

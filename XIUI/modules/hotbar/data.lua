@@ -57,6 +57,10 @@ M.iconPrims = {};
 -- Dark overlay shown when action is on cooldown
 M.cooldownPrims = {};
 
+-- Frame overlay primitives (per bar, per slot)
+-- Decorative frame rendered above icons
+M.framePrims = {};
+
 -- Cooldown timer fonts (per bar, per slot)
 -- Shows remaining recast time (e.g., "2:30", "45s")
 M.timerFonts = {};
@@ -262,6 +266,7 @@ function M.GetBarSettings(barIndex)
             backgroundTheme = '-None-',
             showHotbarNumber = true,
             showSlotFrame = false,
+            customFramePath = '',
             showActionLabels = false,
             actionLabelOffsetX = 0,
             actionLabelOffsetY = 0,
@@ -463,6 +468,7 @@ function M.GetKeybindForSlot(barIndex, slotIndex)
                     itemId = macroData.itemId,
                     customIconType = macroData.customIconType,
                     customIconId = macroData.customIconId,
+                    customIconPath = macroData.customIconPath,
                 };
             end
         end
@@ -562,6 +568,7 @@ function M.GetCrossbarSlotData(comboMode, slotIndex)
                 itemId = liveMacro.itemId,
                 customIconType = liveMacro.customIconType,
                 customIconId = liveMacro.customIconId,
+                customIconPath = liveMacro.customIconPath,
                 macroRef = slotAction.macroRef,
                 macroPaletteKey = slotAction.macroPaletteKey,
             };
@@ -575,7 +582,7 @@ end
 -- Set slot data for a crossbar slot
 -- comboMode: 'L2', 'R2', 'L2R2', 'R2L2', 'L2x2', or 'R2x2'
 -- slotIndex: 1-8
--- slotData: { actionType, action, target, displayName, equipSlot, macroText, itemId, customIconType, customIconId }
+-- slotData: { actionType, action, target, displayName, equipSlot, macroText, itemId, customIconType, customIconId, customIconPath }
 --           or nil to clear the slot
 function M.SetCrossbarSlotData(comboMode, slotIndex, slotData)
     local jobId = M.jobId or 1;
@@ -606,6 +613,7 @@ function M.SetCrossbarSlotData(comboMode, slotIndex, slotData)
         itemId = slotData.itemId,
         customIconType = slotData.customIconType,
         customIconId = slotData.customIconId,
+        customIconPath = slotData.customIconPath,
         macroRef = slotData.macroRef or slotData.id,  -- Store reference to source macro for live updates
         macroPaletteKey = slotData.macroPaletteKey,  -- Store which palette the macro came from
     };
@@ -675,6 +683,7 @@ function M.SetSlotData(barIndex, slotIndex, slotData)
             itemId = slotData.itemId,
             customIconType = slotData.customIconType,
             customIconId = slotData.customIconId,
+            customIconPath = slotData.customIconPath,
             macroRef = slotData.macroRef or slotData.id,
             macroPaletteKey = slotData.macroPaletteKey,  -- Store which palette the macro came from
         };
@@ -850,6 +859,7 @@ function M.Cleanup()
     M.slotPrims = {};
     M.iconPrims = {};
     M.cooldownPrims = {};
+    M.framePrims = {};
     M.keybindFonts = {};
     M.labelFonts = {};
     M.timerFonts = {};

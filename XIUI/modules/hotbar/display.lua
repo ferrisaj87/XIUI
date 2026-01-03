@@ -45,10 +45,10 @@ local iconCache = {};
 -- Build a cache key that includes all fields that affect the icon
 local function BuildBindKey(bind)
     if not bind then return 'nil'; end
-    -- Include customIconType and customIconId so icon changes invalidate the cache
+    -- Include customIconType, customIconId, and customIconPath so icon changes invalidate the cache
     local iconPart = '';
-    if bind.customIconType or bind.customIconId then
-        iconPart = ':icon:' .. (bind.customIconType or '') .. ':' .. tostring(bind.customIconId or '');
+    if bind.customIconType or bind.customIconId or bind.customIconPath then
+        iconPart = ':icon:' .. (bind.customIconType or '') .. ':' .. tostring(bind.customIconId or '') .. ':' .. (bind.customIconPath or '');
     end
     return (bind.actionType or '') .. ':' .. (bind.action or '') .. ':' .. (bind.target or '') .. iconPart;
 end
@@ -151,6 +151,7 @@ local function DrawSlot(barIndex, slotIndex, x, y, buttonSize, bind, barSettings
     local resources = {
         slotPrim = data.slotPrims[barIndex] and data.slotPrims[barIndex][slotIndex],
         iconPrim = data.iconPrims[barIndex] and data.iconPrims[barIndex][slotIndex],
+        framePrim = data.framePrims[barIndex] and data.framePrims[barIndex][slotIndex],
         timerFont = data.timerFonts[barIndex] and data.timerFonts[barIndex][slotIndex],
         keybindFont = data.keybindFonts[barIndex] and data.keybindFonts[barIndex][slotIndex],
         labelFont = data.labelFonts[barIndex] and data.labelFonts[barIndex][slotIndex],
@@ -165,6 +166,7 @@ local function DrawSlot(barIndex, slotIndex, x, y, buttonSize, bind, barSettings
     -- Get per-bar display settings
     local showActionLabels = barSettings and barSettings.showActionLabels or false;
     local showSlotFrame = barSettings and barSettings.showSlotFrame or false;
+    local customFramePath = barSettings and barSettings.customFramePath or '';
 
     -- NOTE: Keybind font settings are now applied in slotrenderer with caching
     -- (removed redundant set_font_height/set_font_color calls that happened every frame)
@@ -194,6 +196,9 @@ local function DrawSlot(barIndex, slotIndex, x, y, buttonSize, bind, barSettings
         keybindText = (barSettings and barSettings.showKeybinds ~= false) and data.GetKeybindDisplay(barIndex, slotIndex) or nil,
         keybindFontSize = barSettings and barSettings.keybindFontSize or 10,
         keybindFontColor = barSettings and barSettings.keybindFontColor or 0xFFFFFFFF,
+        keybindAnchor = barSettings and barSettings.keybindAnchor or 'topLeft',
+        keybindOffsetX = barSettings and barSettings.keybindOffsetX or 0,
+        keybindOffsetY = barSettings and barSettings.keybindOffsetY or 0,
         showLabel = showActionLabels,
         labelText = labelText,
         labelOffsetX = barSettings and barSettings.actionLabelOffsetX or 0,
@@ -203,14 +208,21 @@ local function DrawSlot(barIndex, slotIndex, x, y, buttonSize, bind, barSettings
         labelCooldownColor = barSettings and barSettings.labelCooldownColor or 0xFF888888,
         labelNoMpColor = barSettings and barSettings.labelNoMpColor or 0xFFFF4444,
         showFrame = showSlotFrame,
+        customFramePath = customFramePath,
         isPressed = isPressed,
         showMpCost = barSettings and barSettings.showMpCost ~= false,
         mpCostFontSize = barSettings and barSettings.mpCostFontSize or 10,
         mpCostFontColor = barSettings and barSettings.mpCostFontColor or 0xFFD4FF97,
         mpCostNoMpColor = barSettings and barSettings.labelNoMpColor or 0xFFFF4444,
+        mpCostAnchor = barSettings and barSettings.mpCostAnchor or 'topRight',
+        mpCostOffsetX = barSettings and barSettings.mpCostOffsetX or 0,
+        mpCostOffsetY = barSettings and barSettings.mpCostOffsetY or 0,
         showQuantity = barSettings and barSettings.showQuantity ~= false,
         quantityFontSize = barSettings and barSettings.quantityFontSize or 10,
         quantityFontColor = barSettings and barSettings.quantityFontColor or 0xFFFFFFFF,
+        quantityAnchor = barSettings and barSettings.quantityAnchor or 'bottomRight',
+        quantityOffsetX = barSettings and barSettings.quantityOffsetX or 0,
+        quantityOffsetY = barSettings and barSettings.quantityOffsetY or 0,
 
         -- Interaction Config
         buttonId = string.format('##hotbarslot_%d_%d', barIndex, slotIndex),
@@ -245,7 +257,7 @@ local function DrawBarWindow(barIndex, settings)
         if data.bgHandles[barIndex] then
             windowBg.hide(data.bgHandles[barIndex]);
         end
-        -- Hide unused slot, icon, and cooldown primitives
+        -- Hide unused slot, icon, cooldown, and frame primitives
         for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
             if data.slotPrims[barIndex] and data.slotPrims[barIndex][slotIndex] then
                 data.slotPrims[barIndex][slotIndex].visible = false;
@@ -255,6 +267,9 @@ local function DrawBarWindow(barIndex, settings)
             end
             if data.cooldownPrims[barIndex] and data.cooldownPrims[barIndex][slotIndex] then
                 data.cooldownPrims[barIndex][slotIndex].visible = false;
+            end
+            if data.framePrims[barIndex] and data.framePrims[barIndex][slotIndex] then
+                data.framePrims[barIndex][slotIndex].visible = false;
             end
         end
         return;
@@ -292,6 +307,9 @@ local function DrawBarWindow(barIndex, settings)
         end
         if data.cooldownPrims[barIndex] and data.cooldownPrims[barIndex][hiddenSlot] then
             data.cooldownPrims[barIndex][hiddenSlot].visible = false;
+        end
+        if data.framePrims[barIndex] and data.framePrims[barIndex][hiddenSlot] then
+            data.framePrims[barIndex][hiddenSlot].visible = false;
         end
         if data.keybindFonts[barIndex] and data.keybindFonts[barIndex][hiddenSlot] then
             data.keybindFonts[barIndex][hiddenSlot]:set_visible(false);
@@ -362,9 +380,11 @@ local function DrawBarWindow(barIndex, settings)
             if showNumber == nil then showNumber = true; end
             if showNumber then
                 data.hotbarNumberFonts[barIndex]:set_text(tostring(barIndex));
-                -- Position to the left of the bar
-                data.hotbarNumberFonts[barIndex]:set_position_x(windowPosX - 16);
-                data.hotbarNumberFonts[barIndex]:set_position_y(windowPosY + (barHeight / 2) - 6);
+                -- Position to the left of the bar with optional offsets
+                local hbnOffsetX = barSettings.hotbarNumberOffsetX or 0;
+                local hbnOffsetY = barSettings.hotbarNumberOffsetY or 0;
+                data.hotbarNumberFonts[barIndex]:set_position_x(windowPosX - 16 + hbnOffsetX);
+                data.hotbarNumberFonts[barIndex]:set_position_y(windowPosY + (barHeight / 2) - 6 + hbnOffsetY);
                 data.hotbarNumberFonts[barIndex]:set_visible(true);
             else
                 data.hotbarNumberFonts[barIndex]:set_visible(false);
@@ -401,6 +421,9 @@ local function DrawBarWindow(barIndex, settings)
                         end
                         if data.iconPrims[barIndex] and data.iconPrims[barIndex][slotIndex] then
                             data.iconPrims[barIndex][slotIndex].visible = false;
+                        end
+                        if data.framePrims[barIndex] and data.framePrims[barIndex][slotIndex] then
+                            data.framePrims[barIndex][slotIndex].visible = false;
                         end
                         if data.keybindFonts[barIndex] and data.keybindFonts[barIndex][slotIndex] then
                             data.keybindFonts[barIndex][slotIndex]:set_visible(false);
@@ -573,6 +596,17 @@ function M.HideWindow()
             for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
                 if data.cooldownPrims[barIndex][slotIndex] then
                     data.cooldownPrims[barIndex][slotIndex].visible = false;
+                end
+            end
+        end
+    end
+
+    -- Hide frame primitives
+    for barIndex = 1, data.NUM_BARS do
+        if data.framePrims[barIndex] then
+            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
+                if data.framePrims[barIndex][slotIndex] then
+                    data.framePrims[barIndex][slotIndex].visible = false;
                 end
             end
         end

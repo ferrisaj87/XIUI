@@ -281,6 +281,7 @@ function M.createHotbarGlobalDefaults()
         backgroundTheme = '-None-',
         showHotbarNumber = true,
         showSlotFrame = false,
+        customFramePath = '',   -- Custom frame image path (empty = use default)
         showActionLabels = false,
         actionLabelOffsetX = 0,
         actionLabelOffsetY = 0,
@@ -304,6 +305,22 @@ function M.createHotbarGlobalDefaults()
         labelFontColor = 0xFFFFFFFF,
         labelCooldownColor = 0xFF888888,
         labelNoMpColor = 0xFFFF4444,
+        
+        -- Text position settings
+        showKeybinds = true,
+        keybindAnchor = 'topLeft',      -- topLeft, topRight, bottomLeft, bottomRight
+        keybindOffsetX = 0,
+        keybindOffsetY = 0,
+        showMpCost = true,
+        mpCostAnchor = 'topRight',
+        mpCostOffsetX = 0,
+        mpCostOffsetY = 0,
+        showQuantity = true,
+        quantityAnchor = 'bottomRight',
+        quantityOffsetX = 0,
+        quantityOffsetY = 0,
+        hotbarNumberOffsetX = 0,
+        hotbarNumberOffsetY = 0,
     };
 end
 
@@ -335,6 +352,7 @@ function M.createHotbarBarDefaults(overrides)
         backgroundTheme = '-None-',
         showHotbarNumber = true,
         showSlotFrame = false,
+        customFramePath = '',       -- Custom frame image path (empty = use default)
         showActionLabels = false,
         actionLabelOffsetX = 0,     -- X offset for action labels
         actionLabelOffsetY = 0,     -- Y offset for action labels
@@ -358,6 +376,22 @@ function M.createHotbarBarDefaults(overrides)
         labelFontColor = 0xFFFFFFFF,       -- Action label text color (ARGB)
         labelCooldownColor = 0xFF888888,   -- Action label color when on cooldown (grey)
         labelNoMpColor = 0xFFFF4444,       -- Action label color when not enough MP (red)
+        
+        -- Text position settings
+        showKeybinds = true,
+        keybindAnchor = 'topLeft',         -- topLeft, topRight, bottomLeft, bottomRight
+        keybindOffsetX = 0,
+        keybindOffsetY = 0,
+        showMpCost = true,
+        mpCostAnchor = 'topRight',
+        mpCostOffsetX = 0,
+        mpCostOffsetY = 0,
+        showQuantity = true,
+        quantityAnchor = 'bottomRight',
+        quantityOffsetX = 0,
+        quantityOffsetY = 0,
+        hotbarNumberOffsetX = 0,
+        hotbarNumberOffsetY = 0,
 
         -- Keybind assignments per job (nil = use job file defaults)
         -- Structure: keybinds[jobId][slotIndex] = { type, action, target, display }

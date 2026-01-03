@@ -9,11 +9,16 @@ local components = require('config.components');
 local statusHandler = require('handlers.statushandler');
 local imgui = require('imgui');
 local data = require('modules.hotbar.data');
+local actions = require('modules.hotbar.actions');
 local jobs = require('libs.jobs');
 local macropalette = require('modules.hotbar.macropalette');
 local playerdata = require('modules.hotbar.playerdata');
 
 local M = {};
+
+-- Icon textures for UI buttons (loaded lazily)
+local folderIcon = nil;
+local refreshIcon = nil;
 
 -- Confirmation popup state for job-specific toggle
 local jobSpecificConfirmState = {
@@ -147,6 +152,68 @@ end
 
 -- Input buffer sizes
 local INPUT_BUFFER_SIZE = 64;
+
+-- ============================================
+-- Custom Frame Helpers
+-- ============================================
+
+-- Cache for available frames (scanned on first use and when folder is opened)
+local availableFrames = nil;
+local framesDirectory = nil;
+
+-- Get the frames directory path
+local function GetFramesDirectory()
+    if not framesDirectory then
+        framesDirectory = string.format('%saddons\\XIUI\\assets\\hotbar\\frames\\', AshitaCore:GetInstallPath());
+    end
+    return framesDirectory;
+end
+
+-- Scan frames directory for available PNG files
+local function ScanAvailableFrames()
+    local framesDir = GetFramesDirectory();
+    local frames = { '-Default-' };  -- Default option uses original frame.png
+    
+    -- Ensure directory exists
+    if not ashita.fs.exists(framesDir) then
+        ashita.fs.create_directory(framesDir);
+    end
+    
+    -- Scan for PNG files
+    local files = ashita.fs.get_directory(framesDir, '.*\\.png$');
+    if files then
+        for _, file in pairs(files) do
+            -- Get filename without extension
+            local name = file:match('(.+)%.png$');
+            if name then
+                table.insert(frames, name);
+            end
+        end
+    end
+    
+    availableFrames = frames;
+    return frames;
+end
+
+-- Get cached available frames (or scan if not cached)
+local function GetAvailableFrames()
+    if not availableFrames then
+        return ScanAvailableFrames();
+    end
+    return availableFrames;
+end
+
+-- Open the frames folder in Windows Explorer
+local function OpenFramesFolder()
+    local framesDir = GetFramesDirectory();
+    -- Ensure directory exists before opening
+    if not ashita.fs.exists(framesDir) then
+        ashita.fs.create_directory(framesDir);
+    end
+    os.execute('explorer "' .. framesDir .. '"');
+    -- Rescan after opening folder (user might add files)
+    availableFrames = nil;
+end
 
 -- Bar type definitions for sub-tabs (Global first, then per-bar)
 local BAR_TYPES = {
@@ -516,6 +583,8 @@ function M.DrawKeybindModal()
                         barSettings.keyBindings[selectedSlot] = nil;
                         barSettings.keyBindings[tostring(selectedSlot)] = nil;
                         SaveSettingsOnly();
+                        -- Re-register Ashita keybinds
+                        actions.RegisterKeybinds();
                     end
                 end
             end
@@ -600,6 +669,9 @@ function M.HandleKeybindCapture(keyCode, ctrl, alt, shift)
 
         SaveSettingsOnly();
         keybindModal.waitingForKey = false;
+
+        -- Re-register Ashita keybinds to apply the change
+        actions.RegisterKeybinds();
     end
 
     return true;
@@ -640,31 +712,111 @@ local function DrawVisualSettingsContent(settings, configKey)
         components.DrawPartySliderInt(settings, 'Slot Y Padding##' .. configKey, 'slotYPadding', 0, 32, '%d', nil, 6);
         imgui.ShowHelp('Vertical gap between rows.');
 
-        components.DrawPartyCheckbox(settings, 'Show Action Labels##' .. configKey, 'showActionLabels');
-        imgui.ShowHelp('Show spell/ability names below slots (outside the bar).');
-
-        if settings.showActionLabels then
-            components.DrawPartySliderInt(settings, 'Label X Offset##' .. configKey, 'actionLabelOffsetX', -50, 50, '%d', nil, 0);
-            imgui.ShowHelp('Horizontal offset for action labels.');
-
-            components.DrawPartySliderInt(settings, 'Label Y Offset##' .. configKey, 'actionLabelOffsetY', -50, 50, '%d', nil, 0);
-            imgui.ShowHelp('Vertical offset for action labels.');
-        end
-
+        -- Show Hotbar Number with inline offsets
         components.DrawPartyCheckbox(settings, 'Show Hotbar Number##' .. configKey, 'showHotbarNumber');
-        imgui.ShowHelp('Show the bar number (1-6) on the left side of the hotbar.');
+        if settings.showHotbarNumber then
+            imgui.SameLine();
+            components.DrawInlineOffsets(settings, configKey .. 'hbn', 'hotbarNumberOffsetX', 'hotbarNumberOffsetY', 35);
+        end
+        imgui.ShowHelp('Show the bar number (1-6) on the left side of the hotbar. X/Y offsets adjust position.');
 
+        -- Show Keybinds with anchor and offsets
         components.DrawPartyCheckbox(settings, 'Show Keybinds##' .. configKey, 'showKeybinds');
-        imgui.ShowHelp('Show keybind labels on slots (e.g., "1", "C2").');
+        if settings.showKeybinds then
+            imgui.SameLine();
+            components.DrawAnchorDropdown(settings, configKey .. 'kb', 'keybindAnchor', 85);
+            imgui.SameLine();
+            components.DrawInlineOffsets(settings, configKey .. 'kb', 'keybindOffsetX', 'keybindOffsetY', 35);
+        end
+        imgui.ShowHelp('Show keybind labels on slots (e.g., "1", "C2"). Choose anchor position and fine-tune with X/Y offsets.');
 
+        -- Show MP Cost with anchor and offsets
         components.DrawPartyCheckbox(settings, 'Show MP Cost##' .. configKey, 'showMpCost');
-        imgui.ShowHelp('Display MP cost in top-right corner of spell slots.');
+        if settings.showMpCost then
+            imgui.SameLine();
+            components.DrawAnchorDropdown(settings, configKey .. 'mp', 'mpCostAnchor', 85);
+            imgui.SameLine();
+            components.DrawInlineOffsets(settings, configKey .. 'mp', 'mpCostOffsetX', 'mpCostOffsetY', 35);
+        end
+        imgui.ShowHelp('Display MP cost on spell slots. Choose anchor position and fine-tune with X/Y offsets.');
 
+        -- Show Item Quantity with anchor and offsets
         components.DrawPartyCheckbox(settings, 'Show Item Quantity##' .. configKey, 'showQuantity');
-        imgui.ShowHelp('Display item quantity in bottom-right corner of item slots.');
+        if settings.showQuantity then
+            imgui.SameLine();
+            components.DrawAnchorDropdown(settings, configKey .. 'qty', 'quantityAnchor', 85);
+            imgui.SameLine();
+            components.DrawInlineOffsets(settings, configKey .. 'qty', 'quantityOffsetX', 'quantityOffsetY', 35);
+        end
+        imgui.ShowHelp('Display item quantity on item slots. Choose anchor position and fine-tune with X/Y offsets.');
+
+        -- Show Action Labels with offsets
+        components.DrawPartyCheckbox(settings, 'Show Action Labels##' .. configKey, 'showActionLabels');
+        if settings.showActionLabels then
+            imgui.SameLine();
+            components.DrawInlineOffsets(settings, configKey .. 'lbl', 'actionLabelOffsetX', 'actionLabelOffsetY', 35);
+        end
+        imgui.ShowHelp('Show spell/ability names below slots. X/Y offsets adjust position.');
 
         components.DrawPartyCheckbox(settings, 'Show Slot Frame##' .. configKey, 'showSlotFrame');
-        imgui.ShowHelp('Show a frame overlay around each slot.');
+        
+        -- Frame selection controls (same row as checkbox when enabled)
+        if settings.showSlotFrame then
+            -- Load icon textures if not loaded
+            if folderIcon == nil then
+                folderIcon = LoadTexture("icons/folder");
+            end
+            if refreshIcon == nil then
+                refreshIcon = LoadTexture("icons/refresh");
+            end
+            
+            -- Get available frames
+            local frames = GetAvailableFrames();
+            local currentFrame = settings.customFramePath or '';
+            local currentDisplay = '-Default-';
+            
+            -- Find current selection in list
+            if currentFrame ~= '' then
+                local name = currentFrame:match('frames\\(.+)%.png$');
+                if name then
+                    currentDisplay = name;
+                end
+            end
+            
+            imgui.SameLine();
+            imgui.SetNextItemWidth(120);
+            if imgui.BeginCombo('##frameStyle' .. configKey, currentDisplay) then
+                for _, frameName in ipairs(frames) do
+                    local isSelected = (frameName == currentDisplay);
+                    if imgui.Selectable(frameName, isSelected) then
+                        if frameName == '-Default-' then
+                            settings.customFramePath = '';
+                        else
+                            settings.customFramePath = 'frames\\' .. frameName .. '.png';
+                        end
+                        SaveSettingsOnly();
+                        DeferredUpdateVisuals();
+                    end
+                    if isSelected then
+                        imgui.SetItemDefaultFocus();
+                    end
+                end
+                imgui.EndCombo();
+            end
+            
+            -- Open folder icon button
+            imgui.SameLine();
+            if components.DrawIconButton('##openFolder' .. configKey, folderIcon, 22, 'Open frames folder\n\nAdd your own 40x40 PNG images here,\nthen click Refresh to select them.') then
+                OpenFramesFolder();
+            end
+            
+            -- Refresh icon button
+            imgui.SameLine();
+            if components.DrawIconButton('##refreshFrames' .. configKey, refreshIcon, 22, 'Refresh frame list') then
+                availableFrames = nil;  -- Force rescan
+            end
+        end
+        imgui.ShowHelp('Show a frame overlay around each slot. Select a custom frame style or add your own.');
 
         components.DrawPartyCheckbox(settings, 'Hide Empty Slots##' .. configKey, 'hideEmptySlots');
         imgui.ShowHelp('Hide slots that have no action assigned. Empty slots are shown when macro palette is open.');
