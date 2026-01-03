@@ -121,21 +121,29 @@ function M.FormatRecast(seconds)
         return nil;
     end
 
-    local hours = math.floor(seconds / 3600);
+    local days = math.floor(seconds / 86400);
+    local hours = math.floor((seconds % 86400) / 3600);
     local mins = math.floor((seconds % 3600) / 60);
     local secs = math.floor(seconds % 60);
 
-    if hours >= 1 then
-        -- Show as Hh:Mm for times >= 1 hour (e.g. "1h:45m")
-        return string.format('%dh:%02dm', hours, mins);
+    if days >= 1 then
+        -- Show as Xd Yh for times >= 24 hours (e.g. "7d 5h" or "1d")
+        if hours > 0 then
+            return string.format('%dd %dh', days, hours);
+        else
+            return string.format('%dd', days);
+        end
+    elseif hours >= 1 then
+        -- Show as Xh Ym for times >= 1 hour (e.g. "1h 30m")
+        return string.format('%dh %dm', hours, mins);
     elseif seconds >= 60 then
-        -- Show as Mm:SSs for times >= 1 minute (e.g. "5m:30s")
-        return string.format('%dm:%02ds', mins, secs);
+        -- Show as MM:SS for times >= 1 minute (e.g. "14:49")
+        return string.format('%d:%02d', mins, secs);
     elseif seconds >= 10 then
-        -- Show as whole seconds for 10-59s
-        return string.format('%ds', secs);
+        -- Show as whole seconds for 10-59s (e.g. "45")
+        return string.format('%d', secs);
     else
-        -- Show with decimal for < 10s
+        -- Show with decimal for < 10s (e.g. "5.2")
         return string.format('%.1f', seconds);
     end
 end

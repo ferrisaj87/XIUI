@@ -906,6 +906,18 @@ local function DrawBarVisualSettings(configKey, barLabel)
         end
         imgui.ShowHelp('Pet Palettes: Each summoned pet can have its own hotbar configuration.\nSMN: Per-avatar palettes (Ifrit, Shiva, etc.)\nDRG: Wyvern palette\nBST: Jug pet / Charm palettes\nPUP: Automaton palette\n\nWhen disabled, uses base job palette only.');
 
+        -- Show indicator checkbox (only visible when petAware is enabled)
+        if petAware then
+            imgui.SameLine();
+            imgui.SetCursorPosX(imgui.GetCursorPosX() + 10);
+            local showIndicator = { barSettings.showPetIndicator ~= false };
+            if imgui.Checkbox('Show Indicator##' .. configKey, showIndicator) then
+                barSettings.showPetIndicator = showIndicator[1];
+                SaveSettingsOnly();
+            end
+            imgui.ShowHelp('Show a small dot indicator next to the bar number when pet palettes are active.');
+        end
+
         imgui.Spacing();
     end
 

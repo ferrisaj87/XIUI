@@ -456,7 +456,7 @@ local function DrawBarWindow(barIndex, settings)
 
     -- Draw pet indicator dot OUTSIDE window bounds (above bar number)
     -- Must be after End() and use ForegroundDrawList to avoid clipping
-    if windowPosX and barSettings.petAware then
+    if windowPosX and barSettings.petAware and barSettings.showPetIndicator ~= false then
         local dotX = windowPosX - 12;  -- Centered above bar number
         local dotY = windowPosY + (barHeight / 2) - 20;  -- Above the number
         local dotRadius = 5;

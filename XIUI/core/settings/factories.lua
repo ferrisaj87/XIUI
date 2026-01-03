@@ -336,6 +336,7 @@ function M.createHotbarBarDefaults(overrides)
 
         -- Pet-aware toggle (when true, hotbar can have different palettes per pet for SMN/BST/DRG/PUP)
         petAware = false,
+        showPetIndicator = true,  -- Show indicator dot when petAware is enabled
 
         -- Layout settings (always per-bar)
         enabled = true,

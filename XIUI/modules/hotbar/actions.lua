@@ -786,6 +786,12 @@ function M.HandleKey(event)
    -- Get current modifier states
    local controlPressed, altPressed, shiftPressed = GetModifierStates();
 
+   -- Skip main keyboard minus (VK 189) WITHOUT modifiers - conflicts with native FFXI menus
+   -- Ctrl+- and Alt+- are allowed for hotbar binds
+   if keyCode == 189 and not controlPressed and not altPressed and not shiftPressed then
+       return;
+   end
+
    -- Check if keybind editor is capturing input
    local hotbarConfig = require('config.hotbar');
    if hotbarConfig.IsCapturingKeybind() then
@@ -893,9 +899,13 @@ local function FormatBindKey(keyCode, ctrl, alt, shift)
     -- Numpad 0-9 (VK 96-105)
     elseif keyCode >= 96 and keyCode <= 105 then
         keyName = 'NUMPAD' .. tostring(keyCode - 96);
-    -- Main keyboard minus (VK 189)
+    -- Main keyboard minus (VK 189) - only supported WITH modifiers (Ctrl/Alt/Shift)
+    -- Bare minus conflicts with native FFXI menus, but modifier combos are fine
     elseif keyCode == 189 then
-        keyName = '-';
+        -- Only allow if a modifier is present (checked via prefix)
+        if ctrl or alt or shift then
+            keyName = '-';
+        end
     -- Numpad minus (VK 109)
     elseif keyCode == 109 then
         keyName = 'NUMPAD-';
@@ -982,6 +992,11 @@ function M.RegisterKeybinds()
         if not silentModeEnabled then
             chatManager:QueueCommand(-1, '/bind silent 1');
             silentModeEnabled = true;
+
+            -- Explicitly unbind bare minus key to clear any stale binds
+            -- The minus key without modifiers conflicts with native FFXI menus
+            -- Ctrl+- and Alt+- are allowed
+            chatManager:QueueCommand(-1, '/unbind -');
         end
 
         -- Build list of new binds we want to register
