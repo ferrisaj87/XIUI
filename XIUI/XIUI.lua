@@ -77,6 +77,8 @@ local debuffHandler = require('handlers.debuffhandler');
 local actionTracker = require('handlers.actiontracker');
 local mobInfo = require('modules.mobinfo.init');
 local statusHandler = require('handlers.statushandler');
+local progressbar = require('libs.progressbar');
+local diagnostics = require('libs.diagnostics');
 
 -- Global switch to hard-disable functionality that is limited on HX servers
 HzLimitedMode = false;
@@ -454,6 +456,7 @@ ashita.events.register('unload', 'unload_cb', function ()
     ashita.events.unregister('xinput_button', 'xinput_button_cb');
 
     statusHandler.clear_cache();
+    progressbar.ClearCache();
     if ClearDebuffFontCache then ClearDebuffFontCache(); end
 
     uiModules.CleanupAll();
@@ -547,6 +550,25 @@ ashita.events.register('command', 'command_cb', function (e)
             end
             return;
         end
+
+        -- Diagnostics commands: /xiui diag [on|off|stats|reset]
+        if (command_args[2] == 'diag') then
+            local subCmd = command_args[3] or 'stats';
+            if subCmd == 'on' or subCmd == 'enable' then
+                diagnostics.Enable();
+                print('[XIUI] Diagnostics enabled - resource tracking active');
+            elseif subCmd == 'off' or subCmd == 'disable' then
+                diagnostics.Disable();
+                print('[XIUI] Diagnostics disabled');
+            elseif subCmd == 'reset' then
+                diagnostics.ResetStats();
+                print('[XIUI] Diagnostics counters reset');
+            else
+                -- Default: print stats
+                diagnostics.PrintStats();
+            end
+            return;
+        end
     end
 end);
 
@@ -589,6 +611,7 @@ ashita.events.register('packet_in', 'packet_in_cb', function (e)
         debuffHandler.HandleZonePacket(e);
         actionTracker.HandleZonePacket();
         mobInfo.data.HandleZonePacket(e);
+        statusHandler.clear_zone_cache();  -- Clear status icon cache to prevent accumulation
         MarkPartyCacheDirty();
         ClearEntityCache();
         bLoggedIn = true;

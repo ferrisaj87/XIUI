@@ -19,6 +19,7 @@
 
 require('common');
 local primitives = require('primitives');
+local diagnostics = require('libs.diagnostics');
 
 local M = {};
 
@@ -68,6 +69,7 @@ function M.createBackground(primData, themeName, bgScale)
     bgScale = bgScale or DEFAULT_BG_SCALE;
 
     local bgPrim = primitives:new(primData);
+    diagnostics.TrackPrimitiveCreate();  -- Track primitive creation
     bgPrim.visible = false;
     bgPrim.can_focus = false;
     bgPrim.exists = false;
@@ -106,6 +108,7 @@ function M.createBorders(primData, themeName, borderScale)
 
     for _, k in ipairs(M.BORDER_KEYS) do
         local prim = primitives:new(primData);
+        diagnostics.TrackPrimitiveCreate();  -- Track primitive creation
         prim.visible = false;
         prim.can_focus = false;
         prim.exists = false;
@@ -519,6 +522,7 @@ function M.destroyBackground(bgHandle)
     if bgHandle and bgHandle.bg then
         bgHandle.bg:destroy();
         bgHandle.bg = nil;
+        diagnostics.TrackPrimitiveDestroy();
     end
 end
 
@@ -532,6 +536,7 @@ function M.destroyBorders(borderHandle)
             if borderHandle[k] then
                 borderHandle[k]:destroy();
                 borderHandle[k] = nil;
+                diagnostics.TrackPrimitiveDestroy();
             end
         end
     end
