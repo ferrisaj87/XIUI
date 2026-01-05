@@ -490,4 +490,12 @@ function M.ClearPreview()
     data.ClearPreview();
 end
 
+-- ============================================
+-- ResetPositions
+-- ============================================
+
+function M.ResetPositions()
+    display.ResetPositions();
+end
+
 return M;

@@ -1324,6 +1324,26 @@ function M.DrawSettings(state)
     imgui.SameLine();
     -- Get diagnostic info for tooltip
     local diag = macrosLib.get_diagnostics();
+
+    -- Show warning icon if macrofix addon conflict detected
+    if diag.macrofixConflict then
+        imgui.TextColored({1.0, 0.4, 0.0, 1.0}, '(!)');
+        if imgui.IsItemHovered() then
+            imgui.BeginTooltip();
+            imgui.TextColored({1.0, 0.6, 0.0, 1.0}, 'Macrofix Addon Conflict Detected');
+            imgui.Separator();
+            imgui.TextWrapped('The macrofix addon was loaded before XIUI and altered memory signatures.');
+            imgui.Spacing();
+            imgui.TextWrapped('To fix this:');
+            imgui.TextWrapped('1. Unload macrofix: /addon unload macrofix');
+            imgui.TextWrapped('2. Restart the game');
+            imgui.TextWrapped('3. Load XIUI first (before macrofix)');
+            imgui.Spacing();
+            imgui.TextColored({0.7, 0.7, 0.7, 1.0}, 'XIUI includes macrofix functionality - you do not need the separate addon.');
+            imgui.EndTooltip();
+        end
+        imgui.SameLine();
+    end
     -- Show status indicator with color based on mode
     if diag.mode == 'hide' then
         imgui.TextColored({0.5, 1.0, 0.5, 1.0}, '(hidden)');  -- Green when hidden
@@ -1360,12 +1380,24 @@ function M.DrawSettings(state)
         end
 
         imgui.Spacing();
-        imgui.Text('Hide patches (nomacrobars):');
+        imgui.Text('Hide patches (keyboard):');
         for _, p in ipairs(diag.hidePatches) do
             local color = p.status == 'active' and {0.5, 1.0, 0.5, 1.0} or
                           p.status == 'ready' and {0.7, 0.7, 0.7, 1.0} or
                           {1.0, 0.5, 0.3, 1.0};
             imgui.TextColored(color, '  ' .. p.name .. ': ' .. p.status);
+        end
+        imgui.Spacing();
+        imgui.Text('Hide patches (controller):');
+        if diag.hidePatchesController and #diag.hidePatchesController > 0 then
+            for _, p in ipairs(diag.hidePatchesController) do
+                local color = p.status == 'active' and {0.5, 1.0, 0.5, 1.0} or
+                              p.status == 'ready' and {0.7, 0.7, 0.7, 1.0} or
+                              {1.0, 0.5, 0.3, 1.0};
+                imgui.TextColored(color, '  ' .. p.name .. ': ' .. p.status);
+            end
+        else
+            imgui.TextColored({0.7, 0.7, 0.7, 1.0}, '  (none configured)');
         end
         imgui.Spacing();
         imgui.Text('Macrofix patches (speed fix):');

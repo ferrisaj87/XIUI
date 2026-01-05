@@ -40,6 +40,10 @@ local _XIUI_DEV_HOT_RELOAD_POLL_TIME_SECONDS = 1;
 local _XIUI_DEV_HOT_RELOAD_LAST_RELOAD_TIME;
 local _XIUI_DEV_HOT_RELOAD_FILES = {};
 
+-- Debug flag for raw controller input (enable with /xiui debug rawinput)
+-- This logs ALL xinput/dinput events from Ashita before any XIUI processing
+DEBUG_RAW_INPUT = false;
+
 require('common');
 local settings = require('settings');
 local gdi = require('submodules.gdifonts.include');
@@ -331,7 +335,20 @@ function ResetSettings()
     config.userSettings = gConfig;
     UpdateSettings();
     settings.save();
-    -- Reset hotbar positions to defaults
+
+    -- Reset all module positions to defaults
+    uiMods.playerbar.ResetPositions();
+    uiMods.targetbar.ResetPositions();
+    uiMods.castbar.ResetPositions();
+    uiMods.enemylist.ResetPositions();
+    uiMods.expbar.ResetPositions();
+    uiMods.giltracker.ResetPositions();
+    uiMods.partylist.ResetPositions();
+    uiMods.inventory.ResetPositions();
+    uiMods.castcost.ResetPositions();
+    uiMods.petbar.ResetPositions();
+    uiMods.notifications.ResetPositions();
+    uiMods.treasurepool.ResetPositions();
     hotbar.ResetPositions();
 end
 
@@ -601,8 +618,13 @@ ashita.events.register('command', 'command_cb', function (e)
                 local newState = not currentState;
                 macrosLib.set_debug_enabled(newState);
                 controller.SetMacroBlockDebugEnabled(newState);
+            elseif moduleName == 'rawinput' then
+                -- Toggle raw input debug (logs ALL controller events from Ashita)
+                DEBUG_RAW_INPUT = not DEBUG_RAW_INPUT;
+                print('[XIUI] Raw input debug: ' .. (DEBUG_RAW_INPUT and 'ON' or 'OFF'));
+                print('[XIUI] This logs ALL xinput/dinput events from Ashita before any processing.');
             else
-                print('[XIUI] Debug modules: hotbar, macroblock');
+                print('[XIUI] Debug modules: hotbar, macroblock, rawinput');
                 print('[XIUI] Usage: /xiui debug <module>');
             end
             return;
@@ -809,8 +831,15 @@ ashita.events.register('key', 'key_cb', function (event)
     hotbar.HandleKey(event);
 end);
 
--- XInput controller state event (for crossbar mode)
+-- ============================================
+-- Controller Input Event Handlers
+-- ============================================
+
+-- XInput controller state event (for crossbar mode - analog triggers)
 ashita.events.register('xinput_state', 'xinput_state_cb', function (e)
+    if DEBUG_RAW_INPUT then
+        print('[XIUI RawInput] xinput_state event received');
+    end
     hotbar.HandleXInputState(e);
 end);
 
@@ -822,7 +851,9 @@ end);
     e.injected  - (ReadOnly) Flag that states if the button was injected by Ashita or an addon/plugin.
 --]]
 ashita.events.register('xinput_button', 'xinput_button_cb', function (e)
-    -- Debug: print('[XIUI Debug] xinput_button event: button=' .. tostring(e.button) .. ' state=' .. tostring(e.state));
+    if DEBUG_RAW_INPUT then
+        print(string.format('[XIUI RawInput] xinput_button: button=%d state=%d', e.button or -1, e.state or -1));
+    end
     local shouldBlock = hotbar.HandleXInputButton(e);
     if shouldBlock then
         e.blocked = true;
@@ -832,7 +863,9 @@ end);
 -- DirectInput controller button event (for crossbar mode with DirectInput controllers)
 -- Used by: DualSense, Switch Pro, Stadia controllers
 ashita.events.register('dinput_button', 'dinput_button_cb', function (e)
-    -- Debug: print('[XIUI Debug] dinput_button event: button=' .. tostring(e.button) .. ' state=' .. tostring(e.state));
+    if DEBUG_RAW_INPUT then
+        print(string.format('[XIUI RawInput] dinput_button: button=%d state=%d', e.button or -1, e.state or -1));
+    end
     local shouldBlock = hotbar.HandleDInputButton(e);
     if shouldBlock then
         e.blocked = true;
@@ -841,6 +874,9 @@ end);
 
 -- DirectInput controller state event (for D-pad POV on DirectInput controllers)
 ashita.events.register('dinput_state', 'dinput_state_cb', function (e)
+    if DEBUG_RAW_INPUT then
+        print('[XIUI RawInput] dinput_state event received');
+    end
     hotbar.HandleDInputState(e);
 end);
 

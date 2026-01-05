@@ -385,4 +385,8 @@ petbar.HandlePacket = function(e)
     end
 end
 
+petbar.ResetPositions = function()
+    display.ResetPositions();
+end
+
 return petbar;

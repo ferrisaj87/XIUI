@@ -12,6 +12,7 @@ local drawing = require('libs.drawing');
 
 local data = require('modules.petbar.data');
 local color = require('libs.color');
+local defaultPositions = require('libs.defaultpositions');
 
 local display = {};
 
@@ -26,6 +27,9 @@ local windowState = {
 local hasAppliedSavedPosition = false;
 local lastSavedPosX = nil;
 local lastSavedPosY = nil;
+
+-- Force reset flag for default position restore
+local forcePositionReset = false;
 
 -- ============================================
 -- Per-Pet-Type Settings Helpers
@@ -650,8 +654,15 @@ function display.DrawWindow(settings)
         windowFlags = bit.bor(windowFlags, ImGuiWindowFlags_NoMove);
     end
 
-    -- Apply saved position on first render
-    if not hasAppliedSavedPosition and gConfig.petBarWindowPosX ~= nil and gConfig.petBarWindowPosY ~= nil then
+    -- Apply saved position on first render, or force reset to default
+    if forcePositionReset then
+        local defX, defY = defaultPositions.GetPetBarPosition();
+        imgui.SetNextWindowPos({defX, defY}, ImGuiCond_Always);
+        forcePositionReset = false;
+        hasAppliedSavedPosition = true;
+        lastSavedPosX = defX;
+        lastSavedPosY = defY;
+    elseif not hasAppliedSavedPosition and gConfig.petBarWindowPosX ~= nil and gConfig.petBarWindowPosY ~= nil then
         imgui.SetNextWindowPos({gConfig.petBarWindowPosX, gConfig.petBarWindowPosY}, ImGuiCond_Once);
         hasAppliedSavedPosition = true;
         lastSavedPosX = gConfig.petBarWindowPosX;
@@ -1214,15 +1225,20 @@ function display.DrawWindow(settings)
                 gConfig.petBarWindowPosY = windowPosY;
                 lastSavedPosX = windowPosX;
                 lastSavedPosY = windowPosY;
-                if SaveSettingsToDisk then
-                    SaveSettingsToDisk();
-                end
             end
         end
     end
     imgui.End();
 
     return true;  -- Pet exists (or preview mode), target window can render
+end
+
+-- ============================================
+-- ResetPositions - Reset window to default position
+-- ============================================
+display.ResetPositions = function()
+    forcePositionReset = true;
+    hasAppliedSavedPosition = false;
 end
 
 return display;

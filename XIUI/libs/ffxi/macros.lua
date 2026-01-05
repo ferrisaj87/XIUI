@@ -345,10 +345,16 @@ end
 
 -- Macrofix patch data - NOPs out the macro bar delay timer
 -- These are the core patches that make built-in macros instant (same pattern as hide, different offset)
+-- NOTE: Unlike hide patches, macrofix original bytes vary by game version (wildcards in pattern)
+-- We cache original bytes on first successful read and store in settings for future restores
 local macrofixData = {
-    { name = 'macrofix_ctrl', pattern = '2B46103BC3????????????68????????B9', altPattern = '2B4610F990????????????68????????B9', offset = 0x05, count = 0, patch = { 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 }, addr = 0, backup = {} },
-    { name = 'macrofix_alt', pattern = '2B46103BC3????68????????B9', altPattern = '2B4610F990????68????????B9', offset = 0x05, count = 0, patch = { 0x90, 0x90 }, addr = 0, backup = {} },
+    { name = 'macrofix_ctrl', pattern = '2B46103BC3????????????68????????B9', altPattern = '2B4610F990????????????68????????B9', offset = 0x05, count = 0, patch = { 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 }, original = nil, addr = 0, backup = {} },
+    { name = 'macrofix_alt', pattern = '2B46103BC3????68????????B9', altPattern = '2B4610F990????68????????B9', offset = 0x05, count = 0, patch = { 0x90, 0x90 }, original = nil, addr = 0, backup = {} },
 };
+
+-- Cached original bytes (loaded from/saved to settings)
+-- Format: { macrofix_ctrl = {byte1, byte2, ...}, macrofix_alt = {byte1, byte2, ...} }
+local cachedOriginalBytes = nil;
 
 -- Hide patch data (nomacrobars) - addresses and backups stored here
 -- Also includes alternative patterns for when hide patches are already applied (F990 instead of 3BC3)
@@ -357,9 +363,26 @@ local hideData = {
     { name = 'hide_alt', pattern = '2B46103BC3????68????????B9', altPattern = '2B4610F990????68????????B9', offset = 0x03, count = 0, patch = { 0xF9, 0x90 }, original = { 0x3B, 0xC3 }, addr = 0, backup = {} },
 };
 
+-- Controller hide patch data (from macrofix addon by atom0s)
+-- These patches target controller L2/R2 trigger code paths that are separate from keyboard Ctrl/Alt
+local hideDataController = {
+    -- Pattern [1] - handles controller L2 trigger: change JZ (0x74) to JMP (0xEB)
+    { name = 'hide_controller_1', pattern = '83C41084C074??8BCEE8????????84C074??8A460CB9????????3AC3', offset = 0x05, count = 0, patch = { 0xEB }, original = { 0x74 }, addr = 0, backup = {} },
+
+    -- Pattern [2] - handles controller R2 trigger: change JZ (0x74) to JMP (0xEB)
+    { name = 'hide_controller_2', pattern = '83C41084C074??8BCEE8????????84C074??807E0C02', offset = 0x05, count = 0, patch = { 0xEB }, original = { 0x74 }, addr = 0, backup = {} },
+
+    -- Pattern [5] - complex jump patch (first instance): JMP +0x9B to skip macro bar activation
+    { name = 'hide_controller_5', pattern = '83C41084C0????8BCEE8????????84C0????8A460C84C0????8B461485C0', offset = 0x07, count = 0, patch = { 0xE9, 0x9B, 0x00, 0x00, 0x00, 0xCC, 0xCC }, original = nil, addr = 0, backup = {} },
+
+    -- Pattern [6] - complex jump patch (second instance): JMP +0xCD to skip macro bar activation
+    { name = 'hide_controller_6', pattern = '83C41084C0????8BCEE8????????84C0????8A460C84C0????8B461485C0', offset = 0x07, count = 1, patch = { 0xE9, 0xCD, 0x00, 0x00, 0x00, 0xCC, 0xCC }, original = nil, addr = 0, backup = {} },
+};
+
 -- Current state
 local currentMode = nil;  -- 'macrofix' or 'hide'
 local initialized = false;
+local macrofixConflictDetected = false;  -- True if NOPs detected but no cache (macrofix addon loaded first)
 
 -- Find a pattern and return the address (0 if not found)
 local function findPattern(pattern, offset, count)
@@ -378,6 +401,37 @@ local function findPatternWithFallback(pattern, altPattern, offset, count)
         end
     end
     return ptr;
+end
+
+-- Check if all bytes in a table are NOPs (0x90)
+local function areAllNops(bytes)
+    if not bytes or #bytes == 0 then return false; end
+    for _, b in ipairs(bytes) do
+        if b ~= 0x90 then return false; end
+    end
+    return true;
+end
+
+-- Load cached original bytes from gConfig
+local function loadCachedOriginalBytes()
+    if cachedOriginalBytes then return; end
+    if gConfig and gConfig.macrofixOriginalBytes then
+        cachedOriginalBytes = gConfig.macrofixOriginalBytes;
+        MacroBlockLog('  Loaded cached original bytes from settings');
+    else
+        cachedOriginalBytes = {};
+    end
+end
+
+-- Save cached original bytes to gConfig and persist to disk
+local function saveCachedOriginalBytes()
+    if not gConfig then return; end
+    gConfig.macrofixOriginalBytes = cachedOriginalBytes;
+
+    -- Persist to disk via settings module
+    local settings = require('settings');
+    settings.save();
+    MacroBlockLog('  Saved original bytes to settings cache (persisted to disk)');
 end
 
 -- Initialize: find all patterns and backup original bytes
@@ -417,27 +471,108 @@ local function initializePatches()
         MacroBlockLog('  Leftover hide patches cleaned up - searching patterns again...');
     end
 
+    -- Load cached original bytes from settings (for macrofix patches)
+    loadCachedOriginalBytes();
+
     -- Now find macrofix patterns (should work better if we cleaned up hide patches)
+    local needCacheSave = false;
     for _, p in ipairs(macrofixData) do
         -- Try primary pattern first, then alt
         p.addr = findPatternWithFallback(p.pattern, p.altPattern, p.offset, p.count);
+        if p.addr ~= 0 then
+            -- Read current bytes at this address
+            local currentBytes = {};
+            for i = 1, #p.patch do
+                currentBytes[i] = ashita.memory.read_uint8(p.addr + i - 1);
+            end
+
+            -- Check if current bytes are all NOPs (leftover from macrofix addon)
+            if areAllNops(currentBytes) then
+                -- Memory is already patched with NOPs - check cache for original
+                if cachedOriginalBytes[p.name] and #cachedOriginalBytes[p.name] == #p.patch then
+                    -- Use cached original bytes
+                    p.backup = cachedOriginalBytes[p.name];
+                    p.original = cachedOriginalBytes[p.name];
+                    MacroBlockLog(string.format('  %s: found at 0x%08X, NOPS detected - using cached original: [%s]', p.name, p.addr, table.concat(p.backup, ',')));
+
+                    -- Restore original bytes immediately (so we start from clean state)
+                    for i = 1, #p.backup do
+                        ashita.memory.write_uint8(p.addr + i - 1, p.backup[i]);
+                    end
+                    MacroBlockLog(string.format('  %s: restored to original from cache', p.name));
+                else
+                    -- No cache available - we can't know original bytes
+                    p.backup = currentBytes;
+                    macrofixConflictDetected = true;
+                    MacroBlockLog(string.format('  %s: found at 0x%08X, NOPS detected but NO CACHE available', p.name, p.addr));
+                    MacroBlockLog(string.format('    WARNING: Cannot restore to original - macrofix addon may have patched before XIUI'));
+                end
+            else
+                -- Current bytes are NOT NOPs - these are original game bytes
+                p.backup = currentBytes;
+                p.original = currentBytes;
+
+                -- Cache them for future use
+                if not cachedOriginalBytes[p.name] or not areAllNops(currentBytes) then
+                    cachedOriginalBytes[p.name] = {};
+                    for i = 1, #currentBytes do
+                        cachedOriginalBytes[p.name][i] = currentBytes[i];
+                    end
+                    needCacheSave = true;
+                    MacroBlockLog(string.format('  %s: found at 0x%08X, caching original: [%s]', p.name, p.addr, table.concat(p.backup, ',')));
+                else
+                    MacroBlockLog(string.format('  %s: found at 0x%08X, backup: [%s]', p.name, p.addr, table.concat(p.backup, ',')));
+                end
+            end
+        else
+            MacroBlockLog(string.format('  %s: pattern not found', p.name));
+        end
+    end
+
+    -- Save cache if we found new original bytes
+    if needCacheSave then
+        saveCachedOriginalBytes();
+    end
+
+    -- Warn user if conflict detected
+    if macrofixConflictDetected then
+        print('[XIUI] WARNING: Macrofix addon conflict detected!');
+        print('[XIUI] The macrofix addon was loaded before XIUI and altered memory.');
+        print('[XIUI] To fix: 1) /addon unload macrofix  2) Restart game  3) Load XIUI first');
+        print('[XIUI] Note: XIUI includes macrofix functionality - you don\'t need both.');
+    end
+
+    -- Find controller hide patterns (from macrofix addon - targets L2/R2 code paths)
+    MacroBlockLog('  Searching for controller hide patterns in FFXiMain.dll...');
+    local controllerPatternsFound = 0;
+    for _, p in ipairs(hideDataController) do
+        -- Use ashita.memory.find directly with FFXiMain.dll
+        local ptr = ashita.memory.find('FFXiMain.dll', 0, p.pattern, p.offset, p.count);
+        p.addr = ptr or 0;
         if p.addr ~= 0 then
             -- Backup current bytes
             p.backup = {};
             for i = 1, #p.patch do
                 p.backup[i] = ashita.memory.read_uint8(p.addr + i - 1);
             end
+            controllerPatternsFound = controllerPatternsFound + 1;
             MacroBlockLog(string.format('  %s: found at 0x%08X, backup: %s', p.name, p.addr, table.concat(p.backup, ',')));
         else
-            MacroBlockLog(string.format('  %s: pattern not found', p.name));
+            MacroBlockLog(string.format('  %s: pattern not found (pattern may not exist in this game version)', p.name));
         end
+    end
+    if controllerPatternsFound == 0 then
+        print('[XIUI] Warning: Controller macro patches not found - controller trigger blocking may not work');
+        print('[XIUI] This may be normal if game version differs from when patterns were created');
+    else
+        MacroBlockLog(string.format('  Found %d/%d controller patterns', controllerPatternsFound, #hideDataController));
     end
 
     initialized = true;
     MacroBlockLog('initializePatches: done');
 end
 
--- Apply macrofix patches
+-- Apply macrofix patches (NOPs out delay timer)
 local function applyMacrofix()
     local count = 0;
     for _, p in ipairs(macrofixData) do
@@ -446,6 +581,7 @@ local function applyMacrofix()
                 ashita.memory.write_uint8(p.addr + i - 1, p.patch[i]);
             end
             count = count + 1;
+            MacroBlockLog(string.format('  %s: applied', p.name));
         end
     end
     return count;
@@ -472,6 +608,9 @@ local function restoreMacrofix()
             for i = 1, #p.backup do
                 ashita.memory.write_uint8(p.addr + i - 1, p.backup[i]);
             end
+            MacroBlockLog(string.format('    %s: restored to [%s]', p.name, table.concat(p.backup, ',')));
+        else
+            MacroBlockLog(string.format('    %s: skipped (addr=0x%08X, backup=%d bytes)', p.name, p.addr, #p.backup));
         end
     end
 end
@@ -482,6 +621,37 @@ local function restoreHide()
         if p.addr ~= 0 and p.original then
             for i = 1, #p.original do
                 ashita.memory.write_uint8(p.addr + i - 1, p.original[i]);
+            end
+        end
+    end
+end
+
+-- Apply controller hide patches (from macrofix addon - targets L2/R2)
+local function applyHideController()
+    local count = 0;
+    for _, p in ipairs(hideDataController) do
+        if p.addr ~= 0 and #p.backup > 0 then
+            for i = 1, #p.patch do
+                ashita.memory.write_uint8(p.addr + i - 1, p.patch[i]);
+            end
+            count = count + 1;
+            MacroBlockLog(string.format('  %s: applied', p.name));
+        end
+    end
+    return count;
+end
+
+-- Restore controller hide patches to original bytes
+local function restoreHideController()
+    for _, p in ipairs(hideDataController) do
+        if p.addr ~= 0 then
+            -- Use original if known, otherwise use backup
+            local restoreBytes = p.original or p.backup;
+            if restoreBytes and #restoreBytes > 0 then
+                for i = 1, #restoreBytes do
+                    ashita.memory.write_uint8(p.addr + i - 1, restoreBytes[i]);
+                end
+                MacroBlockLog(string.format('  %s: restored', p.name));
             end
         end
     end
@@ -518,27 +688,37 @@ macrolib.set_macro_bar_mode = function(mode)
     end
 
     if currentMode == mode then
+        MacroBlockLog(string.format('set_macro_bar_mode: already in %s mode, skipping', mode));
         return true;
     end
 
+    MacroBlockLog(string.format('set_macro_bar_mode: switching from %s to %s', tostring(currentMode), mode));
+
     -- Restore current mode to original
     if currentMode == 'hide' then
+        MacroBlockLog('  Restoring hide patches...');
         restoreHide();
+        restoreHideController();
     elseif currentMode == 'macrofix' then
+        MacroBlockLog('  Restoring macrofix patches...');
         restoreMacrofix();
     end
 
     -- Apply new mode
     local count = 0;
+    local controllerCount = 0;
     if mode == 'hide' then
+        MacroBlockLog('  Applying hide patches...');
         count = applyHide();
+        controllerCount = applyHideController();
     else
+        MacroBlockLog('  Applying macrofix patches...');
         count = applyMacrofix();
     end
 
-    if count > 0 then
+    if count > 0 or controllerCount > 0 then
         currentMode = mode;
-        MacroBlockLog(string.format('set_macro_bar_mode: switched to %s (%d patches)', mode, count));
+        MacroBlockLog(string.format('set_macro_bar_mode: switched to %s (%d keyboard + %d controller patches)', mode, count, controllerCount));
         return true;
     end
     return false;
@@ -556,6 +736,7 @@ macrolib.restore_default = function()
     if not initialized then return true; end
     if currentMode == 'hide' then
         restoreHide();
+        restoreHideController();  -- Also restore controller patches
     elseif currentMode == 'macrofix' then
         restoreMacrofix();
     end
@@ -585,7 +766,9 @@ macrolib.get_diagnostics = function()
     local diag = {
         mode = currentMode,
         hidePatches = {},
+        hidePatchesController = {},
         macrofixPatches = {},
+        macrofixConflict = macrofixConflictDetected,  -- True if macrofix addon was loaded first
     };
 
     for _, p in ipairs(hideData) do
@@ -602,6 +785,22 @@ macrolib.get_diagnostics = function()
             status = isActive and 'active' or 'ready';
         end
         table.insert(diag.hidePatches, { name = p.name, status = status });
+    end
+
+    -- Controller hide patches
+    for _, p in ipairs(hideDataController) do
+        local status = 'not found';
+        if p.addr ~= 0 then
+            local isActive = true;
+            for i = 1, #p.patch do
+                if ashita.memory.read_uint8(p.addr + i - 1) ~= p.patch[i] then
+                    isActive = false;
+                    break;
+                end
+            end
+            status = isActive and 'active' or 'ready';
+        end
+        table.insert(diag.hidePatchesController, { name = p.name, status = status });
     end
 
     for _, p in ipairs(macrofixData) do

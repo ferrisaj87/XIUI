@@ -15,10 +15,17 @@ local windowBg = require('libs.windowbackground');
 local encoding = require('submodules.gdifonts.encoding');
 local ashita_settings = require('settings');
 local castcostShared = require('modules.castcost.shared');
+local defaultPositions = require('libs.defaultpositions');
 
 local data = require('modules.partylist.data');
 
 local display = {};
+
+-- Position save/restore state (per-party)
+local hasAppliedSavedPosition = { false, false, false };
+local forcePositionReset = { false, false, false };
+local lastSavedPosX = { nil, nil, nil };
+local lastSavedPosY = { nil, nil, nil };
 
 -- Helper: Set font text only if changed (avoids texture regeneration)
 local function setCachedText(memIdx, fontKey, font, text)
@@ -1216,6 +1223,42 @@ function display.DrawPartyWindow(settings, party, partyIndex)
 
     imgui.PushStyleVar(ImGuiStyleVar_FramePadding, {0,0});
     imgui.PushStyleVar(ImGuiStyleVar_ItemSpacing, { settings.barSpacing * scale.x, 0 });
+
+    -- Handle position reset or restore (for all party windows)
+    if forcePositionReset[partyIndex] then
+        local defX, defY;
+        if partyIndex == 1 then
+            defX, defY = defaultPositions.GetPartyListPosition();
+        elseif partyIndex == 2 then
+            defX, defY = defaultPositions.GetPartyList2Position();
+        else
+            defX, defY = defaultPositions.GetPartyList3Position();
+        end
+        imgui.SetNextWindowPos({defX, defY}, ImGuiCond_Always);
+        forcePositionReset[partyIndex] = false;
+        hasAppliedSavedPosition[partyIndex] = true;
+        lastSavedPosX[partyIndex] = defX;
+        lastSavedPosY[partyIndex] = defY;
+    elseif not hasAppliedSavedPosition[partyIndex] then
+        local savedPosX, savedPosY;
+        if partyIndex == 1 then
+            savedPosX = gConfig.partyListWindowPosX;
+            savedPosY = gConfig.partyListWindowPosY;
+        elseif partyIndex == 2 then
+            savedPosX = gConfig.partyList2WindowPosX;
+            savedPosY = gConfig.partyList2WindowPosY;
+        else
+            savedPosX = gConfig.partyList3WindowPosX;
+            savedPosY = gConfig.partyList3WindowPosY;
+        end
+        if savedPosX ~= nil then
+            imgui.SetNextWindowPos({savedPosX, savedPosY}, ImGuiCond_Once);
+            hasAppliedSavedPosition[partyIndex] = true;
+            lastSavedPosX[partyIndex] = savedPosX;
+            lastSavedPosY[partyIndex] = savedPosY;
+        end
+    end
+
     if (imgui.Begin(windowName, true, windowFlags)) then
         imguiPosX, imguiPosY = imgui.GetWindowPos();
 
@@ -1310,6 +1353,28 @@ function display.DrawPartyWindow(settings, party, partyIndex)
             {titleUV[1], titleUV[2]}, {titleUV[3], titleUV[4]},
             IM_COL32_WHITE
         );
+    end
+
+    -- Save position if moved (with change detection to avoid spam) - all party windows
+    local winPosX, winPosY = imgui.GetWindowPos();
+    if not gConfig.lockPositions then
+        if lastSavedPosX[partyIndex] == nil or
+           math.abs(winPosX - lastSavedPosX[partyIndex]) > 1 or
+           math.abs(winPosY - lastSavedPosY[partyIndex]) > 1 then
+            if partyIndex == 1 then
+                gConfig.partyListWindowPosX = winPosX;
+                gConfig.partyListWindowPosY = winPosY;
+            elseif partyIndex == 2 then
+                gConfig.partyList2WindowPosX = winPosX;
+                gConfig.partyList2WindowPosY = winPosY;
+            else
+                gConfig.partyList3WindowPosX = winPosX;
+                gConfig.partyList3WindowPosY = winPosY;
+            end
+            lastSavedPosX[partyIndex] = winPosX;
+            lastSavedPosY[partyIndex] = winPosY;
+            -- Position will be persisted on addon unload
+        end
     end
 
     imgui.End();
@@ -1434,6 +1499,13 @@ function display.DrawWindow(settings)
     else
         data.UpdateTextVisibility(false, 2);
         data.UpdateTextVisibility(false, 3);
+    end
+end
+
+display.ResetPositions = function()
+    for i = 1, 3 do
+        forcePositionReset[i] = true;
+        hasAppliedSavedPosition[i] = false;
     end
 end
 
