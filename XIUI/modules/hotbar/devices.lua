@@ -242,11 +242,12 @@ end
 local function CreateSwitchProDevice()
     local buttons = {
         -- Face buttons (Nintendo layout - DirectInput button IDs)
-        -- Physical position -> DirectInput ID
-        A = 48,      -- Right button (like Circle on PS)
-        Y = 49,      -- Left button (like Square on PS)
-        B = 50,      -- Bottom button (like Cross on PS)
-        X = 51,      -- Top button (like Triangle on PS)
+        -- DirectInput ID -> Physical button position
+        -- Note: Switch Pro sends these button IDs in this order via DirectInput:
+        Y = 48,      -- Left button (like Square on PS, X on Xbox)
+        B = 49,      -- Bottom button (like Cross on PS, A on Xbox)
+        A = 50,      -- Right button (like Circle on PS, B on Xbox)
+        X = 51,      -- Top button (like Triangle on PS, Y on Xbox)
         -- Shoulder buttons
         L = 52,
         R = 53,
@@ -287,10 +288,10 @@ local function CreateSwitchProDevice()
     -- Slot 7 = Bottom button (B on Switch, Cross on PS, A on Xbox)
     -- Slot 8 = Left button (Y on Switch, Square on PS, X on Xbox)
     device.ButtonToSlot = {
-        [buttons.X] = 5,  -- Top
-        [buttons.A] = 6,  -- Right
-        [buttons.B] = 7,  -- Bottom
-        [buttons.Y] = 8,  -- Left
+        [buttons.X] = 5,  -- Top (ID 51)
+        [buttons.A] = 6,  -- Right (ID 50)
+        [buttons.B] = 7,  -- Bottom (ID 49)
+        [buttons.Y] = 8,  -- Left (ID 48)
     };
 
     -- Crossbar buttons

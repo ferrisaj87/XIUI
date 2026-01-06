@@ -581,6 +581,7 @@ local BAR_TYPES = {
 
 -- Crossbar bar type definitions (each combo mode is a separate bar)
 local CROSSBAR_TYPES = {
+    { key = 'Global', label = 'Global', isGlobal = true },
     { key = 'L2', settingsKey = 'L2', label = 'L2' },
     { key = 'R2', settingsKey = 'R2', label = 'R2' },
     { key = 'L2R2', settingsKey = 'L2R2', label = 'L2+R2' },
@@ -1497,6 +1498,10 @@ local function DrawCrossbarSettings(selectedCrossbarTab)
 
     selectedCrossbarTab = selectedCrossbarTab or 1;
 
+    -- Controller Settings section
+    imgui.TextColored(components.TAB_STYLE.gold, 'Controller Settings');
+    imgui.Spacing();
+
     -- Controller Status (auto-detected)
     local devices = require('modules.hotbar.devices');
     local deviceInfo = controller.GetDetectedDeviceInfo();
@@ -1653,166 +1658,168 @@ local function DrawCrossbarSettings(selectedCrossbarTab)
     imgui.Separator();
     imgui.Spacing();
 
-    -- Draw settings for selected crossbar
+    -- Draw settings based on selected tab
     local currentCrossbar = CROSSBAR_TYPES[selectedCrossbarTab];
     if currentCrossbar then
-        DrawCrossbarBarSettings(crossbarSettings, currentCrossbar, currentCrossbar.settingsKey);
-    end
+        if currentCrossbar.isGlobal then
+            -- Global Visual Settings
+            imgui.TextColored(components.TAB_STYLE.gold, 'Global Visual Settings');
+            imgui.Spacing();
 
-    imgui.Spacing();
-    imgui.Separator();
-    imgui.Spacing();
+            if components.CollapsingSection('Slot Settings##crossbar', false) then
+                components.DrawPartySliderInt(crossbarSettings, 'Slot Size (px)##crossbar', 'slotSize', 32, 64, '%d', nil, 48);
+                imgui.ShowHelp('Size of each slot in pixels.');
 
-    -- Global crossbar visual settings (collapsing sections)
-    if components.CollapsingSection('Slot Settings##crossbar', false) then
-        components.DrawPartySliderInt(crossbarSettings, 'Slot Size (px)##crossbar', 'slotSize', 32, 64, '%d', nil, 48);
-        imgui.ShowHelp('Size of each slot in pixels.');
+                components.DrawPartySliderInt(crossbarSettings, 'Slot Gap (Vertical)##crossbar', 'slotGapV', 0, 128, '%d', nil, 4);
+                imgui.ShowHelp('Vertical gap between top and bottom slots in each diamond.');
 
-        components.DrawPartySliderInt(crossbarSettings, 'Slot Gap (Vertical)##crossbar', 'slotGapV', 0, 128, '%d', nil, 4);
-        imgui.ShowHelp('Vertical gap between top and bottom slots in each diamond.');
+                components.DrawPartySliderInt(crossbarSettings, 'Slot Gap (Horizontal)##crossbar', 'slotGapH', 0, 128, '%d', nil, 4);
+                imgui.ShowHelp('Horizontal gap between left and right slots in each diamond.');
 
-        components.DrawPartySliderInt(crossbarSettings, 'Slot Gap (Horizontal)##crossbar', 'slotGapH', 0, 128, '%d', nil, 4);
-        imgui.ShowHelp('Horizontal gap between left and right slots in each diamond.');
+                components.DrawPartySliderInt(crossbarSettings, 'Diamond Spacing##crossbar', 'diamondSpacing', 0, 128, '%d', nil, 20);
+                imgui.ShowHelp('Horizontal space between D-pad and face button diamonds.');
 
-        components.DrawPartySliderInt(crossbarSettings, 'Diamond Spacing##crossbar', 'diamondSpacing', 0, 128, '%d', nil, 20);
-        imgui.ShowHelp('Horizontal space between D-pad and face button diamonds.');
+                components.DrawPartySliderInt(crossbarSettings, 'Group Spacing##crossbar', 'groupSpacing', 0, 128, '%d', nil, 40);
+                imgui.ShowHelp('Space between L2 and R2 groups.');
 
-        components.DrawPartySliderInt(crossbarSettings, 'Group Spacing##crossbar', 'groupSpacing', 0, 128, '%d', nil, 40);
-        imgui.ShowHelp('Space between L2 and R2 groups.');
+                components.DrawPartyCheckbox(crossbarSettings, 'Show Divider##crossbar', 'showDivider');
+                imgui.ShowHelp('Show a divider line between L2 and R2 groups.');
 
-        components.DrawPartyCheckbox(crossbarSettings, 'Show Divider##crossbar', 'showDivider');
-        imgui.ShowHelp('Show a divider line between L2 and R2 groups.');
+                -- Show MP Cost with X/Y offsets
+                components.DrawPartyCheckbox(crossbarSettings, 'Show MP Cost##crossbar', 'showMpCost');
+                if crossbarSettings.showMpCost then
+                    imgui.SameLine();
+                    components.DrawInlineOffsets(crossbarSettings, 'crossbarmp', 'mpCostOffsetX', 'mpCostOffsetY', 35);
+                end
+                imgui.ShowHelp('Display MP cost on spell slots. X/Y offsets adjust position.');
 
-        -- Show MP Cost with X/Y offsets
-        components.DrawPartyCheckbox(crossbarSettings, 'Show MP Cost##crossbar', 'showMpCost');
-        if crossbarSettings.showMpCost then
-            imgui.SameLine();
-            components.DrawInlineOffsets(crossbarSettings, 'crossbarmp', 'mpCostOffsetX', 'mpCostOffsetY', 35);
+                -- Show Item Quantity with X/Y offsets
+                components.DrawPartyCheckbox(crossbarSettings, 'Show Item Quantity##crossbar', 'showQuantity');
+                if crossbarSettings.showQuantity then
+                    imgui.SameLine();
+                    components.DrawInlineOffsets(crossbarSettings, 'crossbarqty', 'quantityOffsetX', 'quantityOffsetY', 35);
+                end
+                imgui.ShowHelp('Display item quantity on item slots. X/Y offsets adjust position.');
+
+                -- Show Combo Text with X/Y offsets
+                components.DrawPartyCheckbox(crossbarSettings, 'Show Combo Text##crossbar', 'showComboText');
+                if crossbarSettings.showComboText then
+                    imgui.SameLine();
+                    components.DrawInlineOffsets(crossbarSettings, 'crossbarcombo', 'comboTextOffsetX', 'comboTextOffsetY', 35);
+                end
+                imgui.ShowHelp('Show current combo mode text in center (L2+R2, R2+L2, L2x2, R2x2). X/Y offsets adjust position.');
+
+                -- Show Action Labels with X/Y offsets
+                components.DrawPartyCheckbox(crossbarSettings, 'Show Action Labels##crossbar', 'showActionLabels');
+                if crossbarSettings.showActionLabels then
+                    imgui.SameLine();
+                    components.DrawInlineOffsets(crossbarSettings, 'crossbarlbl', 'actionLabelOffsetX', 'actionLabelOffsetY', 35);
+                end
+                imgui.ShowHelp('Show spell/ability names below slots. X/Y offsets adjust position.');
+            end
+
+            -- Background section
+            if components.CollapsingSection('Background##crossbar', false) then
+                local bgThemes = {'-None-', 'Plain', 'Window1', 'Window2', 'Window3', 'Window4', 'Window5', 'Window6', 'Window7', 'Window8'};
+                components.DrawPartyComboBox(crossbarSettings, 'Theme##bgcrossbar', 'backgroundTheme', bgThemes, DeferredUpdateVisuals);
+                imgui.ShowHelp('Select the background window theme.');
+
+                components.DrawPartySlider(crossbarSettings, 'Background Scale##crossbar', 'bgScale', 0.1, 3.0, '%.2f', nil, 1.0);
+                imgui.ShowHelp('Scale of the background texture.');
+
+                components.DrawPartySlider(crossbarSettings, 'Border Scale##crossbar', 'borderScale', 0.1, 3.0, '%.2f', nil, 1.0);
+                imgui.ShowHelp('Scale of the window borders.');
+
+                components.DrawPartySlider(crossbarSettings, 'Background Opacity##crossbar', 'backgroundOpacity', 0.0, 1.0, '%.2f');
+                imgui.ShowHelp('Opacity of the background.');
+
+                components.DrawPartySlider(crossbarSettings, 'Border Opacity##crossbar', 'borderOpacity', 0.0, 1.0, '%.2f');
+                imgui.ShowHelp('Opacity of the window borders.');
+            end
+
+            -- Controller Icons section
+            if components.CollapsingSection('Controller Icons##crossbar', false) then
+                local controllerThemes = { 'PlayStation', 'Xbox', 'Nintendo' };
+                components.DrawPartyComboBox(crossbarSettings, 'Controller Theme##crossbar', 'controllerTheme', controllerThemes);
+                imgui.ShowHelp('Select controller button icon style. Nintendo layout: X top, A right, B bottom, Y left.');
+
+                components.DrawPartyCheckbox(crossbarSettings, 'Show Button Icons##crossbar', 'showButtonIcons');
+                imgui.ShowHelp('Show d-pad and face button icons on slots.');
+
+                if crossbarSettings.showButtonIcons then
+                    components.DrawPartySliderInt(crossbarSettings, 'Button Icon Size##crossbar', 'buttonIconSize', 8, 32, '%d', nil, 16);
+                    imgui.ShowHelp('Size of controller button icons.');
+
+                    components.DrawPartySliderInt(crossbarSettings, 'Button Icon Gap (H)##crossbar', 'buttonIconGapH', 0, 24, '%d', nil, 2);
+                    imgui.ShowHelp('Horizontal spacing between center controller icons.');
+
+                    components.DrawPartySliderInt(crossbarSettings, 'Button Icon Gap (V)##crossbar', 'buttonIconGapV', 0, 24, '%d', nil, 2);
+                    imgui.ShowHelp('Vertical spacing between center controller icons.');
+                end
+
+                imgui.Separator();
+
+                components.DrawPartyCheckbox(crossbarSettings, 'Show Trigger Icons##crossbar', 'showTriggerLabels');
+                imgui.ShowHelp('Show L2/R2 trigger icons above the crossbar groups.');
+
+                if crossbarSettings.showTriggerLabels then
+                    components.DrawPartySlider(crossbarSettings, 'Trigger Icon Scale##crossbar', 'triggerIconScale', 0.5, 2.0, '%.1f', nil, 1.0);
+                    imgui.ShowHelp('Scale for L2/R2 trigger icons above groups (base size 49x28).');
+                end
+            end
+
+            -- Text section
+            if components.CollapsingSection('Text Settings##crossbar', false) then
+                components.DrawPartySliderInt(crossbarSettings, 'Keybind Text Size##crossbar', 'keybindFontSize', 6, 24, '%d', nil, 10);
+                imgui.ShowHelp('Text size for keybind labels.');
+
+                components.DrawPartySliderInt(crossbarSettings, 'Label Text Size##crossbar', 'labelFontSize', 6, 24, '%d', nil, 10);
+                imgui.ShowHelp('Text size for action labels.');
+
+                components.DrawPartySliderInt(crossbarSettings, 'Trigger Label Text Size##crossbar', 'triggerLabelFontSize', 6, 24, '%d', nil, 14);
+                imgui.ShowHelp('Text size for combo mode labels (L2, R2, etc.).');
+
+                components.DrawPartySliderInt(crossbarSettings, 'MP Cost Text Size##crossbar', 'mpCostFontSize', 6, 24, '%d', nil, 10);
+                imgui.ShowHelp('Text size for MP cost display.');
+
+                components.DrawPartySliderInt(crossbarSettings, 'Quantity Text Size##crossbar', 'quantityFontSize', 6, 24, '%d', nil, 10);
+                imgui.ShowHelp('Text size for item quantity display.');
+
+                components.DrawPartySliderInt(crossbarSettings, 'Combo Text Size##crossbar', 'comboTextFontSize', 8, 24, '%d', nil, 12);
+                imgui.ShowHelp('Font size for combo mode text (L2+R2, R2+L2, etc.).');
+            end
+
+            -- Visual Feedback section
+            if components.CollapsingSection('Visual Feedback##crossbar', false) then
+                components.DrawPartySlider(crossbarSettings, 'Inactive Dim##crossbar', 'inactiveSlotDim', 0.0, 1.0, '%.2f', nil, 0.5);
+                imgui.ShowHelp('Dim factor for inactive trigger side (0 = black, 1 = full brightness).');
+
+                -- Default to true if not set
+                if crossbarSettings.enableTransitionAnimations == nil then
+                    crossbarSettings.enableTransitionAnimations = true;
+                end
+                local transAnimEnabled = { crossbarSettings.enableTransitionAnimations };
+                if imgui.Checkbox('Enable Transition Animations##crossbar', transAnimEnabled) then
+                    crossbarSettings.enableTransitionAnimations = transAnimEnabled[1];
+                    SaveSettingsOnly();
+                end
+                imgui.ShowHelp('Enable smooth animations when switching between crossbar modes (L2, R2, combos). Disable for instant transitions.');
+
+                -- Default to true if not set
+                if crossbarSettings.enablePressScale == nil then
+                    crossbarSettings.enablePressScale = true;
+                end
+                local pressScaleEnabled = { crossbarSettings.enablePressScale };
+                if imgui.Checkbox('Enable Press Scale##crossbar', pressScaleEnabled) then
+                    crossbarSettings.enablePressScale = pressScaleEnabled[1];
+                    SaveSettingsOnly();
+                end
+                imgui.ShowHelp('Enable icon scaling animation when pressing an action slot. Disable for no visual feedback on press.');
+            end
+        else
+            -- Per-crossbar settings (L2, R2, etc.)
+            DrawCrossbarBarSettings(crossbarSettings, currentCrossbar, currentCrossbar.settingsKey);
         end
-        imgui.ShowHelp('Display MP cost on spell slots. X/Y offsets adjust position.');
-
-        -- Show Item Quantity with X/Y offsets
-        components.DrawPartyCheckbox(crossbarSettings, 'Show Item Quantity##crossbar', 'showQuantity');
-        if crossbarSettings.showQuantity then
-            imgui.SameLine();
-            components.DrawInlineOffsets(crossbarSettings, 'crossbarqty', 'quantityOffsetX', 'quantityOffsetY', 35);
-        end
-        imgui.ShowHelp('Display item quantity on item slots. X/Y offsets adjust position.');
-
-        -- Show Combo Text with X/Y offsets
-        components.DrawPartyCheckbox(crossbarSettings, 'Show Combo Text##crossbar', 'showComboText');
-        if crossbarSettings.showComboText then
-            imgui.SameLine();
-            components.DrawInlineOffsets(crossbarSettings, 'crossbarcombo', 'comboTextOffsetX', 'comboTextOffsetY', 35);
-        end
-        imgui.ShowHelp('Show current combo mode text in center (L2+R2, R2+L2, L2x2, R2x2). X/Y offsets adjust position.');
-
-        -- Show Action Labels with X/Y offsets
-        components.DrawPartyCheckbox(crossbarSettings, 'Show Action Labels##crossbar', 'showActionLabels');
-        if crossbarSettings.showActionLabels then
-            imgui.SameLine();
-            components.DrawInlineOffsets(crossbarSettings, 'crossbarlbl', 'actionLabelOffsetX', 'actionLabelOffsetY', 35);
-        end
-        imgui.ShowHelp('Show spell/ability names below slots. X/Y offsets adjust position.');
-    end
-
-    -- Background section
-    if components.CollapsingSection('Background##crossbar', false) then
-        local bgThemes = {'-None-', 'Plain', 'Window1', 'Window2', 'Window3', 'Window4', 'Window5', 'Window6', 'Window7', 'Window8'};
-        components.DrawPartyComboBox(crossbarSettings, 'Theme##bgcrossbar', 'backgroundTheme', bgThemes, DeferredUpdateVisuals);
-        imgui.ShowHelp('Select the background window theme.');
-
-        components.DrawPartySlider(crossbarSettings, 'Background Scale##crossbar', 'bgScale', 0.1, 3.0, '%.2f', nil, 1.0);
-        imgui.ShowHelp('Scale of the background texture.');
-
-        components.DrawPartySlider(crossbarSettings, 'Border Scale##crossbar', 'borderScale', 0.1, 3.0, '%.2f', nil, 1.0);
-        imgui.ShowHelp('Scale of the window borders.');
-
-        components.DrawPartySlider(crossbarSettings, 'Background Opacity##crossbar', 'backgroundOpacity', 0.0, 1.0, '%.2f');
-        imgui.ShowHelp('Opacity of the background.');
-
-        components.DrawPartySlider(crossbarSettings, 'Border Opacity##crossbar', 'borderOpacity', 0.0, 1.0, '%.2f');
-        imgui.ShowHelp('Opacity of the window borders.');
-    end
-
-    -- Controller Icons section
-    if components.CollapsingSection('Controller Icons##crossbar', false) then
-        local controllerThemes = { 'PlayStation', 'Xbox', 'Nintendo' };
-        components.DrawPartyComboBox(crossbarSettings, 'Controller Theme##crossbar', 'controllerTheme', controllerThemes);
-        imgui.ShowHelp('Select controller button icon style. Nintendo layout: X top, A right, B bottom, Y left.');
-
-        components.DrawPartyCheckbox(crossbarSettings, 'Show Button Icons##crossbar', 'showButtonIcons');
-        imgui.ShowHelp('Show d-pad and face button icons on slots.');
-
-        if crossbarSettings.showButtonIcons then
-            components.DrawPartySliderInt(crossbarSettings, 'Button Icon Size##crossbar', 'buttonIconSize', 8, 32, '%d', nil, 16);
-            imgui.ShowHelp('Size of controller button icons.');
-
-            components.DrawPartySliderInt(crossbarSettings, 'Button Icon Gap (H)##crossbar', 'buttonIconGapH', 0, 24, '%d', nil, 2);
-            imgui.ShowHelp('Horizontal spacing between center controller icons.');
-
-            components.DrawPartySliderInt(crossbarSettings, 'Button Icon Gap (V)##crossbar', 'buttonIconGapV', 0, 24, '%d', nil, 2);
-            imgui.ShowHelp('Vertical spacing between center controller icons.');
-        end
-
-        imgui.Separator();
-
-        components.DrawPartyCheckbox(crossbarSettings, 'Show Trigger Icons##crossbar', 'showTriggerLabels');
-        imgui.ShowHelp('Show L2/R2 trigger icons above the crossbar groups.');
-
-        if crossbarSettings.showTriggerLabels then
-            components.DrawPartySlider(crossbarSettings, 'Trigger Icon Scale##crossbar', 'triggerIconScale', 0.5, 2.0, '%.1f', nil, 1.0);
-            imgui.ShowHelp('Scale for L2/R2 trigger icons above groups (base size 49x28).');
-        end
-    end
-
-    -- Text section
-    if components.CollapsingSection('Text Settings##crossbar', false) then
-        components.DrawPartySliderInt(crossbarSettings, 'Keybind Text Size##crossbar', 'keybindFontSize', 6, 24, '%d', nil, 10);
-        imgui.ShowHelp('Text size for keybind labels.');
-
-        components.DrawPartySliderInt(crossbarSettings, 'Label Text Size##crossbar', 'labelFontSize', 6, 24, '%d', nil, 10);
-        imgui.ShowHelp('Text size for action labels.');
-
-        components.DrawPartySliderInt(crossbarSettings, 'Trigger Label Text Size##crossbar', 'triggerLabelFontSize', 6, 24, '%d', nil, 14);
-        imgui.ShowHelp('Text size for combo mode labels (L2, R2, etc.).');
-
-        components.DrawPartySliderInt(crossbarSettings, 'MP Cost Text Size##crossbar', 'mpCostFontSize', 6, 24, '%d', nil, 10);
-        imgui.ShowHelp('Text size for MP cost display.');
-
-        components.DrawPartySliderInt(crossbarSettings, 'Quantity Text Size##crossbar', 'quantityFontSize', 6, 24, '%d', nil, 10);
-        imgui.ShowHelp('Text size for item quantity display.');
-
-        components.DrawPartySliderInt(crossbarSettings, 'Combo Text Size##crossbar', 'comboTextFontSize', 8, 24, '%d', nil, 12);
-        imgui.ShowHelp('Font size for combo mode text (L2+R2, R2+L2, etc.).');
-    end
-
-    -- Visual Feedback section
-    if components.CollapsingSection('Visual Feedback##crossbar', false) then
-        components.DrawPartySlider(crossbarSettings, 'Inactive Dim##crossbar', 'inactiveSlotDim', 0.0, 1.0, '%.2f', nil, 0.5);
-        imgui.ShowHelp('Dim factor for inactive trigger side (0 = black, 1 = full brightness).');
-
-        -- Default to true if not set
-        if crossbarSettings.enableTransitionAnimations == nil then
-            crossbarSettings.enableTransitionAnimations = true;
-        end
-        local transAnimEnabled = { crossbarSettings.enableTransitionAnimations };
-        if imgui.Checkbox('Enable Transition Animations##crossbar', transAnimEnabled) then
-            crossbarSettings.enableTransitionAnimations = transAnimEnabled[1];
-            SaveSettingsOnly();
-        end
-        imgui.ShowHelp('Enable smooth animations when switching between crossbar modes (L2, R2, combos). Disable for instant transitions.');
-
-        -- Default to true if not set
-        if crossbarSettings.enablePressScale == nil then
-            crossbarSettings.enablePressScale = true;
-        end
-        local pressScaleEnabled = { crossbarSettings.enablePressScale };
-        if imgui.Checkbox('Enable Press Scale##crossbar', pressScaleEnabled) then
-            crossbarSettings.enablePressScale = pressScaleEnabled[1];
-            SaveSettingsOnly();
-        end
-        imgui.ShowHelp('Enable icon scaling animation when pressing an action slot. Disable for no visual feedback on press.');
     end
 
     -- Draw confirmation popup for job-specific toggle
@@ -1923,6 +1930,133 @@ function M.DrawSettings(state)
     components.DrawCheckbox('Hide When Menu Open', 'hotbarHideOnMenuFocus');
     imgui.ShowHelp('Hide hotbars when a game menu is open (equipment, map, etc.).');
 
+    -- Disable XI macros checkbox (stored in hotbarGlobal)
+    local disableMacroBars = { gConfig.hotbarGlobal.disableMacroBars or false };
+    if imgui.Checkbox('Disable XI Macros', disableMacroBars) then
+        gConfig.hotbarGlobal.disableMacroBars = disableMacroBars[1];
+        SaveSettingsOnly();
+        DeferredUpdateVisuals();
+    end
+    imgui.SameLine();
+    -- Get diagnostic info for tooltip
+    local diag = macrosLib.get_diagnostics();
+
+    -- Show warning icon if macrofix addon conflict detected
+    if diag.macrofixConflict then
+        imgui.TextColored({1.0, 0.4, 0.0, 1.0}, '(!)');
+        if imgui.IsItemHovered() then
+            imgui.BeginTooltip();
+            imgui.TextColored({1.0, 0.6, 0.0, 1.0}, 'Macrofix Addon Conflict Detected');
+            imgui.Separator();
+            imgui.TextWrapped('The macrofix addon was loaded before XIUI and altered memory signatures.');
+            imgui.Spacing();
+            imgui.TextWrapped('To fix this:');
+            imgui.TextWrapped('1. Unload macrofix: /addon unload macrofix');
+            imgui.TextWrapped('2. Restart the game');
+            imgui.TextWrapped('3. Load XIUI first (before macrofix)');
+            imgui.Spacing();
+            imgui.TextColored({0.7, 0.7, 0.7, 1.0}, 'XIUI includes macrofix functionality - you do not need the separate addon.');
+            imgui.EndTooltip();
+        end
+        imgui.SameLine();
+    end
+    -- Show status indicator with color based on mode
+    if diag.mode == 'hide' then
+        imgui.TextColored({0.5, 1.0, 0.5, 1.0}, '(hidden)');  -- Green when hidden
+    elseif diag.mode == 'macrofix' then
+        imgui.TextColored({0.5, 0.8, 1.0, 1.0}, '(macrofix)');  -- Cyan for macrofix mode
+    else
+        imgui.TextColored({1.0, 0.7, 0.3, 1.0}, '(init...)');  -- Orange if still initializing
+    end
+    if imgui.IsItemHovered() then
+        imgui.BeginTooltip();
+        imgui.Text('Macro Patch Diagnostics');
+        imgui.Separator();
+        local modeStr = diag.mode or 'initializing';
+        if diag.mode == 'hide' then
+            modeStr = 'hide (macro bar hidden)';
+        elseif diag.mode == 'macrofix' then
+            modeStr = 'macrofix (fast built-in macros)';
+        end
+        imgui.Text('Mode: ' .. modeStr);
+
+        -- Check if macrofix addon is loaded (safely - GetAddonManager may not exist)
+        local macrofixLoaded = false;
+        local ok, addonManager = pcall(function() return AshitaCore:GetAddonManager(); end);
+        if ok and addonManager then
+            local ok2, addonState = pcall(function() return addonManager:GetAddonState('macrofix'); end);
+            if ok2 and addonState and addonState > 0 then
+                macrofixLoaded = true;
+            end
+        end
+        if macrofixLoaded then
+            imgui.Spacing();
+            imgui.TextColored({1.0, 0.6, 0.0, 1.0}, 'Warning: macrofix addon detected!');
+            imgui.TextWrapped('You can unload macrofix - XIUI includes this functionality. Use /addon unload macrofix');
+        end
+
+        imgui.Spacing();
+        imgui.Text('Hide patches (keyboard):');
+        for _, p in ipairs(diag.hidePatches) do
+            local color = p.status == 'active' and {0.5, 1.0, 0.5, 1.0} or
+                          p.status == 'ready' and {0.7, 0.7, 0.7, 1.0} or
+                          {1.0, 0.5, 0.3, 1.0};
+            imgui.TextColored(color, '  ' .. p.name .. ': ' .. p.status);
+        end
+        imgui.Spacing();
+        imgui.Text('Hide patches (controller):');
+        if diag.hidePatchesController and #diag.hidePatchesController > 0 then
+            for _, p in ipairs(diag.hidePatchesController) do
+                local color = p.status == 'active' and {0.5, 1.0, 0.5, 1.0} or
+                              p.status == 'ready' and {0.7, 0.7, 0.7, 1.0} or
+                              {1.0, 0.5, 0.3, 1.0};
+                imgui.TextColored(color, '  ' .. p.name .. ': ' .. p.status);
+            end
+        else
+            imgui.TextColored({0.7, 0.7, 0.7, 1.0}, '  (none configured)');
+        end
+        imgui.Spacing();
+        imgui.Text('Macrofix patches (speed fix):');
+        for _, p in ipairs(diag.macrofixPatches) do
+            local color = p.status == 'active' and {0.5, 1.0, 0.5, 1.0} or
+                          p.status == 'ready' and {0.7, 0.7, 0.7, 1.0} or
+                          {1.0, 0.5, 0.3, 1.0};
+            imgui.TextColored(color, '  ' .. p.name .. ': ' .. p.status);
+        end
+        imgui.Spacing();
+        imgui.TextColored({0.5, 0.5, 0.5, 1.0}, 'active = applied, ready = available');
+        imgui.EndTooltip();
+    end
+    imgui.ShowHelp('Toggle macro bar behavior:\n- OFF: Built-in macros work with speed fix (macrofix)\n- ON: Macro bar hidden, XIUI hotbar/crossbar only\n\nNote: When ON, also blocks native macro commands.');
+
+    imgui.Spacing();
+    imgui.Separator();
+    imgui.Spacing();
+
+    -- Action buttons
+    imgui.PushStyleColor(ImGuiCol_Button, components.TAB_STYLE.bgLight);
+    imgui.PushStyleColor(ImGuiCol_ButtonHovered, components.TAB_STYLE.bgLighter);
+    imgui.PushStyleColor(ImGuiCol_ButtonActive, {0.22, 0.20, 0.17, 1.0});
+
+    if imgui.Button('Macro Palette', {140, 0}) then
+        macropalette.OpenPalette();
+    end
+    imgui.SameLine();
+    -- selectedBarTab is index into BAR_TYPES where 1=Global, 2=Bar1, 3=Bar2, etc.
+    -- So actual bar index is selectedBarTab - 1 (default to 1 if Global is selected)
+    local editBarIndex = math.max(1, (selectedBarTab or 1) - 1);
+    local editConfigKey = 'hotbarBar' .. editBarIndex;
+    if imgui.Button('Keybinds', {100, 0}) then
+        OpenKeybindModal(editBarIndex, editConfigKey);
+    end
+    imgui.SameLine();
+    if imgui.Button('Import', {80, 0}) then
+        migrationWizard.Open();
+    end
+    imgui.ShowHelp('Import hotbar and crossbar bindings from tHotBar and tCrossBar addons.');
+
+    imgui.PopStyleColor(3);
+
     imgui.Spacing();
     imgui.Separator();
     imgui.Spacing();
@@ -2024,211 +2158,79 @@ function M.DrawSettings(state)
         imgui.ShowHelp('Controller shortcut to cycle through palettes.');
     end
 
-    imgui.Spacing();
-    imgui.Separator();
-    imgui.Spacing();
+    -- Conflicting Game Keys section
+    local blockedKeys = gConfig.hotbarGlobal.blockedGameKeys or {};
+    local blockedCount = #blockedKeys;
 
-    -- Global Settings collapsible section
-    if components.CollapsingSection('Global Settings##hotbar') then
-        -- Action buttons using tab style colors (dark bg, readable text)
-        imgui.PushStyleColor(ImGuiCol_Button, components.TAB_STYLE.bgLight);
-        imgui.PushStyleColor(ImGuiCol_ButtonHovered, components.TAB_STYLE.bgLighter);
-        imgui.PushStyleColor(ImGuiCol_ButtonActive, {0.22, 0.20, 0.17, 1.0});
-
-        if imgui.Button('Macro Palette', {140, 0}) then
-            macropalette.OpenPalette();
-        end
+    if blockedCount > 0 then
+        imgui.TextColored({0.7, 0.7, 0.7, 1.0}, string.format('Conflicting Keys: %d', blockedCount));
         imgui.SameLine();
-        -- selectedBarTab is index into BAR_TYPES where 1=Global, 2=Bar1, 3=Bar2, etc.
-        -- So actual bar index is selectedBarTab - 1 (default to 1 if Global is selected)
-        local editBarIndex = math.max(1, (selectedBarTab or 1) - 1);
-        local editConfigKey = 'hotbarBar' .. editBarIndex;
-        if imgui.Button('Keybinds', {100, 0}) then
-            OpenKeybindModal(editBarIndex, editConfigKey);
+        if imgui.SmallButton('Manage##blockedKeys') then
+            imgui.OpenPopup('Conflicting Game Keys##manageBlocked');
         end
+    else
+        imgui.TextColored({0.5, 0.5, 0.5, 1.0}, 'Conflicting Keys: None');
         imgui.SameLine();
-        if imgui.Button('Import', {80, 0}) then
-            migrationWizard.Open();
-        end
-        imgui.ShowHelp('Import hotbar and crossbar bindings from tHotBar and tCrossBar addons.');
+        imgui.TextColored({0.4, 0.4, 0.4, 1.0}, '(set via keybind editor)');
+    end
+    imgui.ShowHelp('Keys with known game conflicts.\n\nNote: Your hotbar keybind WILL execute, but game\nfunctions may also trigger simultaneously.\nBlocking only works during chat input.');
 
-        imgui.PopStyleColor(3);
-
+    -- Conflicting keys management popup
+    if imgui.BeginPopup('Conflicting Game Keys##manageBlocked') then
+        imgui.TextColored({1.0, 0.85, 0.4, 1.0}, 'Conflicting Game Keys');
+        imgui.Separator();
         imgui.Spacing();
 
-        -- Disable XI macros checkbox (stored in hotbarGlobal)
-        local disableMacroBars = { gConfig.hotbarGlobal.disableMacroBars or false };
-        if imgui.Checkbox('Disable XI Macros', disableMacroBars) then
-            gConfig.hotbarGlobal.disableMacroBars = disableMacroBars[1];
-            SaveSettingsOnly();
-            DeferredUpdateVisuals();
-        end
-        imgui.SameLine();
-        -- Get diagnostic info for tooltip
-        local diag = macrosLib.get_diagnostics();
-
-        -- Show warning icon if macrofix addon conflict detected
-        if diag.macrofixConflict then
-            imgui.TextColored({1.0, 0.4, 0.0, 1.0}, '(!)');
-            if imgui.IsItemHovered() then
-                imgui.BeginTooltip();
-                imgui.TextColored({1.0, 0.6, 0.0, 1.0}, 'Macrofix Addon Conflict Detected');
-                imgui.Separator();
-                imgui.TextWrapped('The macrofix addon was loaded before XIUI and altered memory signatures.');
-                imgui.Spacing();
-                imgui.TextWrapped('To fix this:');
-                imgui.TextWrapped('1. Unload macrofix: /addon unload macrofix');
-                imgui.TextWrapped('2. Restart the game');
-                imgui.TextWrapped('3. Load XIUI first (before macrofix)');
-                imgui.Spacing();
-                imgui.TextColored({0.7, 0.7, 0.7, 1.0}, 'XIUI includes macrofix functionality - you do not need the separate addon.');
-                imgui.EndTooltip();
-            end
-            imgui.SameLine();
-        end
-        -- Show status indicator with color based on mode
-        if diag.mode == 'hide' then
-            imgui.TextColored({0.5, 1.0, 0.5, 1.0}, '(hidden)');  -- Green when hidden
-        elseif diag.mode == 'macrofix' then
-            imgui.TextColored({0.5, 0.8, 1.0, 1.0}, '(macrofix)');  -- Cyan for macrofix mode
+        if blockedCount == 0 then
+            imgui.TextColored({0.5, 0.5, 0.5, 1.0}, 'No conflicting keys assigned');
         else
-            imgui.TextColored({1.0, 0.7, 0.3, 1.0}, '(init...)');  -- Orange if still initializing
-        end
-        if imgui.IsItemHovered() then
-            imgui.BeginTooltip();
-            imgui.Text('Macro Patch Diagnostics');
-            imgui.Separator();
-            local modeStr = diag.mode or 'initializing';
-            if diag.mode == 'hide' then
-                modeStr = 'hide (macro bar hidden)';
-            elseif diag.mode == 'macrofix' then
-                modeStr = 'macrofix (fast built-in macros)';
-            end
-            imgui.Text('Mode: ' .. modeStr);
+            -- List blocked keys with remove buttons
+            local toRemove = nil;
+            for i, blocked in ipairs(blockedKeys) do
+                -- Format key name
+                local parts = {};
+                if blocked.ctrl then table.insert(parts, 'Ctrl'); end
+                if blocked.alt then table.insert(parts, 'Alt'); end
+                if blocked.shift then table.insert(parts, 'Shift'); end
+                local keyName = VK_NAMES[blocked.key] or string.format('Key%d', blocked.key);
+                table.insert(parts, keyName);
+                local keyStr = table.concat(parts, '+');
 
-            -- Check if macrofix addon is loaded (safely - GetAddonManager may not exist)
-            local macrofixLoaded = false;
-            local ok, addonManager = pcall(function() return AshitaCore:GetAddonManager(); end);
-            if ok and addonManager then
-                local ok2, addonState = pcall(function() return addonManager:GetAddonState('macrofix'); end);
-                if ok2 and addonState and addonState > 0 then
-                    macrofixLoaded = true;
-                end
-            end
-            if macrofixLoaded then
-                imgui.Spacing();
-                imgui.TextColored({1.0, 0.6, 0.0, 1.0}, 'Warning: macrofix addon detected!');
-                imgui.TextWrapped('You can unload macrofix - XIUI includes this functionality. Use /addon unload macrofix');
-            end
-
-            imgui.Spacing();
-            imgui.Text('Hide patches (keyboard):');
-            for _, p in ipairs(diag.hidePatches) do
-                local color = p.status == 'active' and {0.5, 1.0, 0.5, 1.0} or
-                              p.status == 'ready' and {0.7, 0.7, 0.7, 1.0} or
-                              {1.0, 0.5, 0.3, 1.0};
-                imgui.TextColored(color, '  ' .. p.name .. ': ' .. p.status);
-            end
-            imgui.Spacing();
-            imgui.Text('Hide patches (controller):');
-            if diag.hidePatchesController and #diag.hidePatchesController > 0 then
-                for _, p in ipairs(diag.hidePatchesController) do
-                    local color = p.status == 'active' and {0.5, 1.0, 0.5, 1.0} or
-                                  p.status == 'ready' and {0.7, 0.7, 0.7, 1.0} or
-                                  {1.0, 0.5, 0.3, 1.0};
-                    imgui.TextColored(color, '  ' .. p.name .. ': ' .. p.status);
-                end
-            else
-                imgui.TextColored({0.7, 0.7, 0.7, 1.0}, '  (none configured)');
-            end
-            imgui.Spacing();
-            imgui.Text('Macrofix patches (speed fix):');
-            for _, p in ipairs(diag.macrofixPatches) do
-                local color = p.status == 'active' and {0.5, 1.0, 0.5, 1.0} or
-                              p.status == 'ready' and {0.7, 0.7, 0.7, 1.0} or
-                              {1.0, 0.5, 0.3, 1.0};
-                imgui.TextColored(color, '  ' .. p.name .. ': ' .. p.status);
-            end
-            imgui.Spacing();
-            imgui.TextColored({0.5, 0.5, 0.5, 1.0}, 'active = applied, ready = available');
-            imgui.EndTooltip();
-        end
-        imgui.ShowHelp('Toggle macro bar behavior:\n- OFF: Built-in macros work with speed fix (macrofix)\n- ON: Macro bar hidden, XIUI hotbar/crossbar only\n\nNote: When ON, also blocks native macro commands.');
-
-        -- Conflicting Game Keys section
-        local blockedKeys = gConfig.hotbarGlobal.blockedGameKeys or {};
-        local blockedCount = #blockedKeys;
-
-        if blockedCount > 0 then
-            imgui.TextColored({0.7, 0.7, 0.7, 1.0}, string.format('Conflicting Keys: %d', blockedCount));
-            imgui.SameLine();
-            if imgui.SmallButton('Manage##blockedKeys') then
-                imgui.OpenPopup('Conflicting Game Keys##manageBlocked');
-            end
-        else
-            imgui.TextColored({0.5, 0.5, 0.5, 1.0}, 'Conflicting Keys: None');
-            imgui.SameLine();
-            imgui.TextColored({0.4, 0.4, 0.4, 1.0}, '(set via keybind editor)');
-        end
-        imgui.ShowHelp('Keys with known game conflicts.\n\nNote: Your hotbar keybind WILL execute, but game\nfunctions may also trigger simultaneously.\nBlocking only works during chat input.');
-
-        -- Conflicting keys management popup
-        if imgui.BeginPopup('Conflicting Game Keys##manageBlocked') then
-            imgui.TextColored({1.0, 0.85, 0.4, 1.0}, 'Conflicting Game Keys');
-            imgui.Separator();
-            imgui.Spacing();
-
-            if blockedCount == 0 then
-                imgui.TextColored({0.5, 0.5, 0.5, 1.0}, 'No conflicting keys assigned');
-            else
-                -- List blocked keys with remove buttons
-                local toRemove = nil;
-                for i, blocked in ipairs(blockedKeys) do
-                    -- Format key name
-                    local parts = {};
-                    if blocked.ctrl then table.insert(parts, 'Ctrl'); end
-                    if blocked.alt then table.insert(parts, 'Alt'); end
-                    if blocked.shift then table.insert(parts, 'Shift'); end
-                    local keyName = VK_NAMES[blocked.key] or string.format('Key%d', blocked.key);
-                    table.insert(parts, keyName);
-                    local keyStr = table.concat(parts, '+');
-
-                    -- Find if this has a known conflict name
-                    local conflictName = nil;
-                    for _, conflict in ipairs(KNOWN_GAME_CONFLICTS) do
-                        if conflict.key == blocked.key and
-                           (conflict.ctrl or false) == (blocked.ctrl or false) and
-                           (conflict.alt or false) == (blocked.alt or false) and
-                           (conflict.shift or false) == (blocked.shift or false) then
-                            conflictName = conflict.name;
-                            break;
-                        end
+                -- Find if this has a known conflict name
+                local conflictName = nil;
+                for _, conflict in ipairs(KNOWN_GAME_CONFLICTS) do
+                    if conflict.key == blocked.key and
+                       (conflict.ctrl or false) == (blocked.ctrl or false) and
+                       (conflict.alt or false) == (blocked.alt or false) and
+                       (conflict.shift or false) == (blocked.shift or false) then
+                        conflictName = conflict.name;
+                        break;
                     end
+                end
 
-                    imgui.Text(keyStr);
-                    if conflictName then
-                        imgui.SameLine();
-                        imgui.TextColored({0.5, 0.5, 0.5, 1.0}, '(' .. conflictName .. ')');
-                    end
+                imgui.Text(keyStr);
+                if conflictName then
                     imgui.SameLine();
-                    if imgui.SmallButton('X##remove' .. i) then
-                        toRemove = i;
-                    end
+                    imgui.TextColored({0.5, 0.5, 0.5, 1.0}, '(' .. conflictName .. ')');
                 end
-
-                -- Process removal after iteration
-                if toRemove then
-                    table.remove(blockedKeys, toRemove);
-                    SaveSettingsOnly();
+                imgui.SameLine();
+                if imgui.SmallButton('X##remove' .. i) then
+                    toRemove = i;
                 end
             end
 
-            imgui.Spacing();
-            imgui.Separator();
-            imgui.TextColored({0.5, 0.5, 0.5, 1.0}, 'Tip: Assign keys via Keybind editor');
-
-            imgui.EndPopup();
+            -- Process removal after iteration
+            if toRemove then
+                table.remove(blockedKeys, toRemove);
+                SaveSettingsOnly();
+            end
         end
+
+        imgui.Spacing();
+        imgui.Separator();
+        imgui.TextColored({0.5, 0.5, 0.5, 1.0}, 'Tip: Assign keys via Keybind editor');
+
+        imgui.EndPopup();
     end
 
     imgui.Spacing();
