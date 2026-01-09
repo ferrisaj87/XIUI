@@ -512,7 +512,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
 
     -- Draw leader icon
     if (memInfo.leader) then
-        draw_circle({hpStartX + settings.dotRadius/2, hpStartY + settings.dotRadius/2}, settings.dotRadius, {1, 1, .5, 1}, settings.dotRadius * 3, true);
+        draw_circle({hpStartX + settings.dotRadius/2, hpStartY + settings.dotRadius/2}, settings.dotRadius, {1, 1, .5, 1}, settings.dotRadius * 3, true, nil, GetUIDrawList());
     end
 
     -- Position name text
@@ -1114,7 +1114,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
 
     -- Sync indicator
     if (memInfo.sync) then
-        draw_circle({hpStartX + settings.dotRadius/2, hpStartY + barHeight}, settings.dotRadius, {.5, .5, 1, 1}, settings.dotRadius * 3, true);
+        draw_circle({hpStartX + settings.dotRadius/2, hpStartY + barHeight}, settings.dotRadius, {.5, .5, 1, 1}, settings.dotRadius * 3, true, nil, GetUIDrawList());
     end
 
     -- Set text visibility
