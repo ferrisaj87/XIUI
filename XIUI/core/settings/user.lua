@@ -624,6 +624,9 @@ function M.createUserSettingsDefaults()
         petBarBstShowReward = true,
         petBarBstShowCallBeast = false,
         petBarBstShowBestialLoyalty = false,
+        -- BST Ready timer settings (base recast per charge in seconds)
+        -- Default 30s (retail/LSB), Horizon uses 45s
+        petBarReadyBaseRecast = 30,
         -- DRG abilities
         petBarDrgShowCallWyvern = true,
         petBarDrgShowSpiritLink = true,
