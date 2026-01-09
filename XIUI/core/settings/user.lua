@@ -231,6 +231,7 @@ function M.createUserSettingsDefaults()
         gilTrackerIconRight = true,
         gilTrackerShowIcon = true,
         gilTrackerShowGilPerHour = true,
+        gilTrackerDisplayMode = 1,  -- 1 = Session Net, 2 = Gil Per Hour
         gilTrackerTextOffsetX = 0,
         gilTrackerTextOffsetY = 0,
         gilTrackerGilPerHourOffsetX = 0,

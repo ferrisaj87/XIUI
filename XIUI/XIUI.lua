@@ -520,8 +520,8 @@ ashita.events.register('command', 'command_cb', function (e)
             return;
         end
 
-        -- Reset gil per hour tracking: /xiui resetgil
-        if (command_args[2] == 'resetgil') then
+        -- Reset gil tracking: /xiui gil reset (or legacy: /xiui resetgil)
+        if (command_args[2] == 'gil' and command_args[3] == 'reset') or (command_args[2] == 'resetgil') then
             gilTracker.ResetTracking();
             return;
         end

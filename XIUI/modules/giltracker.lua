@@ -51,6 +51,16 @@ local function FormatGilPerHour(gilPerHour)
 	return prefix .. formatted .. '/hr';
 end
 
+-- Helper function to format session net change
+local function FormatSessionNet(gilChange)
+	local absGil = math.abs(gilChange);
+	local prefix = gilChange >= 0 and '+' or '-';
+
+	-- Format with thousand separators
+	local formatted = FormatInt(math.floor(absGil));
+	return prefix .. formatted;
+end
+
 giltracker.DrawWindow = function(settings)
     -- Obtain the player entity..
     local player = GetPlayerSafe();
@@ -120,37 +130,50 @@ giltracker.DrawWindow = function(settings)
 	-- Update last known gil with valid reads only
 	lastKnownGil = currentGil;
 
-	-- Calculate gil per hour (throttled to avoid jittery display)
+	-- Calculate tracking display (throttled to avoid jittery display)
+	-- Display modes: 1 = Session Net, 2 = Gil Per Hour
 	local showGilPerHour = gConfig.gilTrackerShowGilPerHour ~= false;
-	local gilPerHour = cachedGilPerHour;
-	local gilPerHourText_str = cachedGilPerHourStr;
+	local displayMode = gConfig.gilTrackerDisplayMode or 1;
+	local gilChange = cachedGilPerHour;  -- Reusing cache for both modes
+	local trackingText_str = cachedGilPerHourStr;
 	local now = os.clock();
 
 	if showGilPerHour and trackingStartGil ~= nil and trackingStartTime ~= nil then
 		-- Only recalculate every GIL_PER_HOUR_UPDATE_INTERVAL seconds
 		if now - lastGilPerHourCalcTime >= GIL_PER_HOUR_UPDATE_INTERVAL then
 			local elapsedSeconds = now - trackingStartTime;
-			local gilChange = currentGil - trackingStartGil;
+			local netChange = currentGil - trackingStartGil;
 
-			if elapsedSeconds > 0 then
-				local elapsedHours = elapsedSeconds / 3600;
-				gilPerHour = gilChange / elapsedHours;
-				gilPerHourText_str = FormatGilPerHour(gilPerHour);
+			if displayMode == 2 then
+				-- Gil Per Hour mode
+				if elapsedSeconds > 0 then
+					local elapsedHours = elapsedSeconds / 3600;
+					gilChange = netChange / elapsedHours;
+					trackingText_str = FormatGilPerHour(gilChange);
+				else
+					gilChange = 0;
+					trackingText_str = '+0/hr';
+				end
 			else
-				gilPerHour = 0;
-				gilPerHourText_str = '+0/hr';
+				-- Session Net mode (default)
+				gilChange = netChange;
+				trackingText_str = FormatSessionNet(gilChange);
 			end
 
 			-- Cache the calculated values
-			cachedGilPerHour = gilPerHour;
-			cachedGilPerHourStr = gilPerHourText_str;
+			cachedGilPerHour = gilChange;
+			cachedGilPerHourStr = trackingText_str;
 			lastGilPerHourCalcTime = now;
 		end
 	elseif showGilPerHour then
 		-- During stabilization period, show placeholder
-		gilPerHour = 0;
-		gilPerHourText_str = '+0/hr';
+		gilChange = 0;
+		trackingText_str = displayMode == 2 and '+0/hr' or '+0';
 	end
+
+	-- For color determination, use the cached/calculated change value
+	local gilPerHour = gilChange;
+	local gilPerHourText_str = trackingText_str;
 
     imgui.SetNextWindowSize({ -1, -1, }, ImGuiCond_Always);
 	local windowFlags = GetBaseWindowFlags(gConfig.lockPositions);
@@ -494,6 +517,11 @@ giltracker.HandleZoneInPacket = function()
 		lastGilPerHourCalcTime = 0;
 	end
 	-- Normal zone change: keep tracking state intact
+end
+
+-- Force immediate recalculation on next frame (e.g., when display mode changes)
+giltracker.InvalidateCache = function()
+	lastGilPerHourCalcTime = 0;
 end
 
 return giltracker;
