@@ -546,6 +546,7 @@ function M.MigrateIndividualSettings(gConfig, defaults)
             if party.distanceTextOffsetY == nil then party.distanceTextOffsetY = partyDefault.distanceTextOffsetY or 0; end
             if party.jobTextOffsetX == nil then party.jobTextOffsetX = partyDefault.jobTextOffsetX or 0; end
             if party.jobTextOffsetY == nil then party.jobTextOffsetY = partyDefault.jobTextOffsetY or 0; end
+            if party.showSelectionBox == nil then party.showSelectionBox = true; end
         end
     end
 

@@ -51,6 +51,7 @@ function M.createPartyDefaults(overrides)
         alignBottom = false,
         minRows = 1,
         entrySpacing = 0,
+        showSelectionBox = true,
         selectionBoxScaleY = 1,
         selectionBoxOffsetY = 0,
         -- Scale

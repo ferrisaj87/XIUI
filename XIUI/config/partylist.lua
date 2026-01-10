@@ -113,8 +113,12 @@ local function DrawPartyTabContent(party, partyName)
     if components.CollapsingSection('Scale & Spacing##party' .. partyName) then
         components.DrawPartySlider(party, 'Min Rows', 'minRows', 1, 6);
         components.DrawPartySlider(party, 'Entry Spacing', 'entrySpacing', -50, 50);
-        components.DrawPartySlider(party, 'Selection Box Scale Y', 'selectionBoxScaleY', 0.5, 2.0, '%.2f');
-        components.DrawPartySlider(party, 'Selection Box Offset Y', 'selectionBoxOffsetY', -50, 50);
+        components.DrawPartyCheckbox(party, 'Show Selection Box', 'showSelectionBox');
+        imgui.ShowHelp('When disabled, only the cursor arrow is shown without the selection box background.');
+        if party.showSelectionBox then
+            components.DrawPartySlider(party, 'Selection Box Scale Y', 'selectionBoxScaleY', 0.5, 2.0, '%.2f');
+            components.DrawPartySlider(party, 'Selection Box Offset Y', 'selectionBoxOffsetY', -50, 50);
+        end
 
         -- General scale controls (applies to all elements)
         components.DrawPartySlider(party, 'Scale X', 'scaleX', 0.1, 3.0, '%.2f');

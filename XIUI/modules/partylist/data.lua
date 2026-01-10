@@ -207,6 +207,7 @@ function data.updatePartyConfigCache()
         cache.alignBottom = party.alignBottom;
         cache.minRows = party.minRows or 1;
         cache.entrySpacing = party.entrySpacing or 0;
+        cache.showSelectionBox = party.showSelectionBox ~= false;
         cache.selectionBoxScaleY = party.selectionBoxScaleY or 1;
         cache.selectionBoxOffsetY = party.selectionBoxOffsetY or 0;
 
