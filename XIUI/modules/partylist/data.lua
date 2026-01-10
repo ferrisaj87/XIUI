@@ -513,8 +513,8 @@ function data.GetMemberInformation(memIdx)
             local t2 = data.frameCache.t2;
             local sActive = data.frameCache.subTargetActive;
             local stPartyIdx = data.frameCache.stPartyIndex;
-            memberInfo.targeted = (t1 == thisIdx and not sActive) or (t2 == thisIdx and sActive);
-            memberInfo.subTargeted = (t1 == thisIdx and sActive) or (stPartyIdx ~= nil and stPartyIdx == memIdx);
+            memberInfo.targeted = (t1 == thisIdx);
+            memberInfo.subTargeted = (t2 == thisIdx) or (stPartyIdx ~= nil and stPartyIdx == memIdx);
         else
             memberInfo.targeted = false;
             memberInfo.subTargeted = false;

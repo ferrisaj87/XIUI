@@ -83,13 +83,9 @@ function M.GetTargets()
     if (partyTarget ~= nil) then
         secondaryTarget = mainTarget;
         mainTarget = party:GetMemberTargetIndex(partyTarget);
-    -- Otherwise, if sub-targeting is active via Ashita API and we have both targets,
-    -- swap them so the sub-target (slot 1) becomes the "main" for highlighting purposes
-    elseif playerTarget:GetIsSubTargetActive() == 1 and secondaryTarget ~= 0 then
-        local temp = mainTarget;
-        mainTarget = secondaryTarget;
-        secondaryTarget = temp;
     end
+    -- Note: When GetIsSubTargetActive() == 1, Ashita already puts the subtarget in slot 0
+    -- and the original target in slot 1, so no swap is needed
 
     return mainTarget, secondaryTarget;
 end
