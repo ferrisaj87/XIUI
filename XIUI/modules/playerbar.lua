@@ -97,10 +97,11 @@ playerbar.DrawWindow = function(settings)
 
 	local SelfHP = party:GetMemberHP(0);
 	local SelfHPMax = player:GetHPMax();
-	local SelfHPPercent = math.clamp(party:GetMemberHPPercent(0), 0, 100);
+	-- Calculate percentage from actual values to avoid stale party API data (issue #92)
+	local SelfHPPercent = (SelfHPMax > 0) and math.clamp((SelfHP / SelfHPMax) * 100, 0, 100) or 0;
 	local SelfMP = party:GetMemberMP(0);
 	local SelfMPMax = player:GetMPMax();
-	local SelfMPPercent = math.clamp(party:GetMemberMPPercent(0), 0, 100);
+	local SelfMPPercent = (SelfMPMax > 0) and math.clamp((SelfMP / SelfMPMax) * 100, 0, 100) or 0;
 	local SelfTP = party:GetMemberTP(0);
 
 	local currentTime = os.clock();
@@ -476,11 +477,11 @@ playerbar.DrawWindow = function(settings)
 		local hpDisplayMode = gConfig.playerBarHpDisplayMode or 'number';
 		local hpDisplayText;
 		if hpDisplayMode == 'percent' then
-			hpDisplayText = tostring(SelfHPPercent) .. '%';
+			hpDisplayText = string.format("%.0f", SelfHPPercent) .. '%';
 		elseif hpDisplayMode == 'both' then
-			hpDisplayText = tostring(SelfHP) .. ' (' .. tostring(SelfHPPercent) .. '%)';
+			hpDisplayText = tostring(SelfHP) .. ' (' .. string.format("%.0f", SelfHPPercent) .. '%)';
 		elseif hpDisplayMode == 'both_percent_first' then
-			hpDisplayText = tostring(SelfHPPercent) .. '% (' .. tostring(SelfHP) .. ')';
+			hpDisplayText = string.format("%.0f", SelfHPPercent) .. '% (' .. tostring(SelfHP) .. ')';
 		elseif hpDisplayMode == 'current_max' then
 			hpDisplayText = tostring(SelfHP) .. '/' .. tostring(SelfHPMax);
 		else
@@ -522,11 +523,11 @@ playerbar.DrawWindow = function(settings)
 			local mpDisplayMode = gConfig.playerBarMpDisplayMode or 'number';
 			local mpDisplayText;
 			if mpDisplayMode == 'percent' then
-				mpDisplayText = tostring(SelfMPPercent) .. '%';
+				mpDisplayText = string.format("%.0f", SelfMPPercent) .. '%';
 			elseif mpDisplayMode == 'both' then
-				mpDisplayText = tostring(SelfMP) .. ' (' .. tostring(SelfMPPercent) .. '%)';
+				mpDisplayText = tostring(SelfMP) .. ' (' .. string.format("%.0f", SelfMPPercent) .. '%)';
 			elseif mpDisplayMode == 'both_percent_first' then
-				mpDisplayText = tostring(SelfMPPercent) .. '% (' .. tostring(SelfMP) .. ')';
+				mpDisplayText = string.format("%.0f", SelfMPPercent) .. '% (' .. tostring(SelfMP) .. ')';
 			elseif mpDisplayMode == 'current_max' then
 				mpDisplayText = tostring(SelfMP) .. '/' .. tostring(SelfMPMax);
 			else

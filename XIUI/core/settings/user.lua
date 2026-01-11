@@ -148,13 +148,35 @@ function M.createUserSettingsDefaults()
         notificationsBgOpacity = 0.87,
         notificationsBorderOpacity = 1.0,
 
-        -- Split Window Settings (allow each notification type to have its own window)
+        -- Split Window Settings (DEPRECATED - use notificationTypeGroup instead)
+        -- These are kept for migration purposes only
         notificationsSplitPartyInvite = false,
         notificationsSplitTradeInvite = false,
         notificationsSplitTreasurePool = false,
         notificationsSplitItemObtained = false,
         notificationsSplitKeyItemObtained = false,
         notificationsSplitGilObtained = false,
+
+        -- Notification Groups (2-6 configurable groups with independent settings)
+        notificationGroupCount = 2, -- Number of active groups (2-6)
+
+        -- Per-notification-type group assignment (which group each type belongs to)
+        notificationTypeGroup = T{
+            partyInvite = 1,
+            tradeInvite = 1,
+            treasurePool = 1,
+            itemObtained = 1,
+            keyItemObtained = 1,
+            gilObtained = 1,
+        },
+
+        -- Per-group settings (each group has independent visual settings)
+        notificationGroup1 = factories.createNotificationGroupDefaults(),
+        notificationGroup2 = factories.createNotificationGroupDefaults(),
+        notificationGroup3 = factories.createNotificationGroupDefaults(),
+        notificationGroup4 = factories.createNotificationGroupDefaults(),
+        notificationGroup5 = factories.createNotificationGroupDefaults(),
+        notificationGroup6 = factories.createNotificationGroupDefaults(),
 
         -- Cast Cost settings (nested structure to match other modules)
         castCost = T{
@@ -267,6 +289,17 @@ function M.createUserSettingsDefaults()
         totBarScaleY = 1,
         totBarFontSize = 12,
 
+        -- Subtarget Bar settings (shows subtarget while subtargeting)
+        showSubtargetBar = true,
+        subtargetBarScaleX = 0.6,
+        subtargetBarScaleY = 0.6,
+        subtargetBarFontSize = 10,
+        subtargetBarPercentFontSize = 10,
+        subtargetBarShowDistance = true,
+        subtargetBarShowHpPercent = true,
+        subtargetBarShowMobLevel = true,
+        subtargetBarShowBookends = false,
+
         enemyListScaleX = 1,
         enemyListScaleY = 1,
         enemyListNameFontSize = 10,
@@ -306,6 +339,7 @@ function M.createUserSettingsDefaults()
         gilTrackerIconRight = true,
         gilTrackerShowIcon = true,
         gilTrackerShowGilPerHour = true,
+        gilTrackerDisplayMode = 1,  -- 1 = Session Net, 2 = Gil Per Hour
         gilTrackerTextOffsetX = 0,
         gilTrackerTextOffsetY = 0,
         gilTrackerGilPerHourOffsetX = 0,
@@ -698,6 +732,9 @@ function M.createUserSettingsDefaults()
         petBarBstShowReward = true,
         petBarBstShowCallBeast = false,
         petBarBstShowBestialLoyalty = false,
+        -- BST Ready timer settings (base recast per charge in seconds)
+        -- Default 30s (retail/LSB), Horizon uses 45s
+        petBarReadyBaseRecast = 30,
         -- DRG abilities
         petBarDrgShowCallWyvern = true,
         petBarDrgShowSpiritLink = true,

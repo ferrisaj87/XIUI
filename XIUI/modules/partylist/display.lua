@@ -229,59 +229,64 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
         local startColor = HexToImGui(selectionGradient[1]);
         local endColor = HexToImGui(selectionGradient[2]);
 
-        -- Draw gradient effect (4 steps for performance, reuse tables)
-        local gradientSteps = 4;
-        local stepHeight = selectionHeight / gradientSteps;
-        local selX1 = selectionTL[1];
-        local selX2 = selectionBR[1];
-        local selY1 = selectionTL[2];
-        for i = 1, gradientSteps do
-            local t = (i - 1) / (gradientSteps - 1);
-            local r = startColor[1] + (endColor[1] - startColor[1]) * t;
-            local g = startColor[2] + (endColor[2] - startColor[2]) * t;
-            local b = startColor[3] + (endColor[3] - startColor[3]) * t;
-            local alpha = 0.35 - t * 0.25;
+        -- Draw selection box (gradient + border) if enabled
+        if cache.showSelectionBox then
+            -- Draw gradient effect (4 steps for performance, reuse tables)
+            local gradientSteps = 4;
+            local stepHeight = selectionHeight / gradientSteps;
+            local selX1 = selectionTL[1];
+            local selX2 = selectionBR[1];
+            local selY1 = selectionTL[2];
+            for i = 1, gradientSteps do
+                local t = (i - 1) / (gradientSteps - 1);
+                local r = startColor[1] + (endColor[1] - startColor[1]) * t;
+                local g = startColor[2] + (endColor[2] - startColor[2]) * t;
+                local b = startColor[3] + (endColor[3] - startColor[3]) * t;
+                local alpha = 0.35 - t * 0.25;
 
-            local stepColor = imgui.GetColorU32({r, g, b, alpha});
-            local stepTL_y = selY1 + (i - 1) * stepHeight;
-            local stepBR_y = stepTL_y + stepHeight;
+                local stepColor = imgui.GetColorU32({r, g, b, alpha});
+                local stepTL_y = selY1 + (i - 1) * stepHeight;
+                local stepBR_y = stepTL_y + stepHeight;
 
-            if i == 1 then
-                drawList:AddRectFilled({selX1, stepTL_y}, {selX2, stepBR_y}, stepColor, 6, 3);
-            elseif i == gradientSteps then
-                drawList:AddRectFilled({selX1, stepTL_y}, {selX2, stepBR_y}, stepColor, 6, 12);
+                if i == 1 then
+                    drawList:AddRectFilled({selX1, stepTL_y}, {selX2, stepBR_y}, stepColor, 6, 3);
+                elseif i == gradientSteps then
+                    drawList:AddRectFilled({selX1, stepTL_y}, {selX2, stepBR_y}, stepColor, 6, 12);
+                else
+                    drawList:AddRectFilled({selX1, stepTL_y}, {selX2, stepBR_y}, stepColor, 0);
+                end
+            end
+
+            -- Draw border
+            local borderColor;
+            if memInfo.subTargeted then
+                if data.cachedSubtargetBorderColorARGB ~= borderColorARGB then
+                    data.cachedSubtargetBorderColorARGB = borderColorARGB;
+                    data.cachedSubtargetBorderColorU32 = ARGBToU32(borderColorARGB);
+                end
+                borderColor = data.cachedSubtargetBorderColorU32;
             else
-                drawList:AddRectFilled({selX1, stepTL_y}, {selX2, stepBR_y}, stepColor, 0);
+                if data.cachedBorderColorARGB ~= borderColorARGB then
+                    data.cachedBorderColorARGB = borderColorARGB;
+                    data.cachedBorderColorU32 = ARGBToU32(borderColorARGB);
+                end
+                borderColor = data.cachedBorderColorU32;
             end
+            drawList:AddRect({selectionTL[1], selectionTL[2]}, {selectionBR[1], selectionBR[2]}, borderColor, 6, 15, 2);
         end
-
-        -- Draw border
-        local borderColor;
-        if memInfo.subTargeted then
-            if data.cachedSubtargetBorderColorARGB ~= borderColorARGB then
-                data.cachedSubtargetBorderColorARGB = borderColorARGB;
-                data.cachedSubtargetBorderColorU32 = ARGBToU32(borderColorARGB);
-            end
-            borderColor = data.cachedSubtargetBorderColorU32;
-        else
-            if data.cachedBorderColorARGB ~= borderColorARGB then
-                data.cachedBorderColorARGB = borderColorARGB;
-                data.cachedBorderColorU32 = ARGBToU32(borderColorARGB);
-            end
-            borderColor = data.cachedBorderColorU32;
-        end
-        drawList:AddRect({selectionTL[1], selectionTL[2]}, {selectionBR[1], selectionBR[2]}, borderColor, 6, 15, 2);
 
         data.partyTargeted = true;
     end
 
     -- Draw job icon
     local namePosX = hpStartX;
+    local distanceBaseX = hpStartX; -- Base X for distance text (independent of name offsets)
     if cache.showJobIcon then
         local offsetStartY = hpStartY - jobIconSize - settings.nameTextOffsetY;
         local jobIcon = statusHandler.GetJobIcon(memInfo.job);
         if (jobIcon ~= nil) then
             namePosX = namePosX + jobIconSize + settings.nameTextOffsetX;
+            distanceBaseX = distanceBaseX + jobIconSize; -- Only add job icon width, not name offset
             -- Use background draw list to render outside window clipping
             local jobIconPtr = tonumber(ffi.cast("uint32_t", jobIcon));
             local draw_list = imgui.GetBackgroundDrawList();
@@ -517,7 +522,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
 
     -- Draw leader icon
     if (memInfo.leader) then
-        draw_circle({hpStartX + settings.dotRadius/2, hpStartY + settings.dotRadius/2}, settings.dotRadius, {1, 1, .5, 1}, settings.dotRadius * 3, true);
+        draw_circle({hpStartX + settings.dotRadius/2, hpStartY + settings.dotRadius/2}, settings.dotRadius, {1, 1, .5, 1}, settings.dotRadius * 3, true, nil, GetUIDrawList());
     end
 
     -- Position name text
@@ -627,9 +632,11 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
         if (distance ~= nil and distance > 0 and distance <= 50) then
             local distanceText = ('%.1f'):fmt(distance);
             setCachedText(memIdx, 'distance', data.memberText[memIdx].distance, distanceText);
-            local distancePosX = namePosX + nameWidth + 4;
+            -- Position distance relative to HP bar (independent of name offsets)
+            -- Distance uses right alignment - position is the fixed right edge anchor
+            local distancePosX = distanceBaseX + nameWidth + 4;
             data.memberText[memIdx].distance:set_position_x(distancePosX + textOffsets.distanceX);
-            data.memberText[memIdx].distance:set_position_y(hpStartY - nameRefHeight - settings.nameTextOffsetY + nameBaselineOffset + textOffsets.distanceY);
+            data.memberText[memIdx].distance:set_position_y(hpStartY - nameRefHeight + nameBaselineOffset + textOffsets.distanceY);
             showDistance = true;
             if (cache.distanceHighlight > 0 and distance <= cache.distanceHighlight) then
                 highlightDistance = true;
@@ -1117,7 +1124,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
 
     -- Sync indicator
     if (memInfo.sync) then
-        draw_circle({hpStartX + settings.dotRadius/2, hpStartY + barHeight}, settings.dotRadius, {.5, .5, 1, 1}, settings.dotRadius * 3, true);
+        draw_circle({hpStartX + settings.dotRadius/2, hpStartY + barHeight}, settings.dotRadius, {.5, .5, 1, 1}, settings.dotRadius * 3, true, nil, GetUIDrawList());
     end
 
     -- Set text visibility
