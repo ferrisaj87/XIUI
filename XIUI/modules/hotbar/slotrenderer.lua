@@ -663,7 +663,8 @@ function M.DrawSlot(resources, params)
     -- ========================================
     -- 4b. Abbreviation Text Fallback (when no icon available)
     -- ========================================
-    if not iconRendered and bind and animOpacity > 0.5 then
+    -- Hide abbreviation when cooldown timer is showing (GDI renders before ImGui, so text would overlap)
+    if not iconRendered and bind and animOpacity > 0.5 and not recastText then
         local drawList = imgui.GetWindowDrawList();
         if drawList then
             local abbr = GetActionAbbreviation(bind);
@@ -672,7 +673,21 @@ function M.DrawSlot(resources, params)
             local textY = y + (size - 14) / 2;  -- Approximate font height
 
             -- Gold color for abbreviation text (matching XIUI style)
-            local textColor = imgui.GetColorU32({0.957, 0.855, 0.592, animOpacity});
+            -- Apply dimming when unavailable/not enough MP
+            local textColorMult = 1.0;
+            if isUnavailable then
+                textColorMult = 0.35;
+            elseif notEnoughMp then
+                textColorMult = 0.6;
+            end
+            textColorMult = textColorMult * dimFactor;
+
+            local textColor = imgui.GetColorU32({
+                0.957 * textColorMult,
+                0.855 * textColorMult,
+                0.592 * textColorMult,
+                animOpacity
+            });
             drawList:AddText({textX, textY}, textColor, abbr);
         end
     end

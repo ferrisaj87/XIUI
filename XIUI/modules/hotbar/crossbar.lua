@@ -587,7 +587,7 @@ function M.Initialize(settings, moduleSettings)
             local iconPrim = CreatePrimitive(basePrimData);
             state.iconPrims[comboMode][slotIndex] = iconPrim;
 
-            -- Timer font for cooldowns (centered, with outline)
+            -- Timer font for cooldowns (centered)
             local timerFontSettings = moduleSettings and deep_copy_table(moduleSettings.label_font_settings) or {};
             timerFontSettings.font_height = 11;
             timerFontSettings.font_alignment = 1;  -- Center
