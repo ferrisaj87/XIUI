@@ -6,6 +6,7 @@
 require('common');
 local jobs = require('libs.jobs');
 local petregistry = require('modules.hotbar.petregistry');
+local factories = require('core.settings.factories');
 
 local M = {};
 
@@ -258,11 +259,15 @@ local function ParseKeybindString(keyStr)
     local keyNum = nil;
 
     -- Check for modifiers
+    -- Ashita keybind format: ^ = Ctrl, ! = Alt, + = Shift
     if keyStr:sub(1, 1) == '^' then
         modifier = 'ctrl';
         keyNum = keyStr:sub(2);
     elseif keyStr:sub(1, 1) == '!' then
         modifier = 'alt';
+        keyNum = keyStr:sub(2);
+    elseif keyStr:sub(1, 1) == '+' then
+        modifier = 'shift';
         keyNum = keyStr:sub(2);
     else
         modifier = 'none';
@@ -276,7 +281,7 @@ local function ParseKeybindString(keyStr)
     if slot < 1 or slot > 10 then return nil; end
 
     -- Map modifier to XIUI bar index
-    -- none (1-0) = Bar 1, ctrl (^1-^0) = Bar 2, alt (!1-!0) = Bar 3
+    -- none (1-0) = Bar 1, ctrl (^1-^0) = Bar 2, alt (!1-!0) = Bar 3, shift (+1-+0) = Bar 4
     local barIndex;
     if modifier == 'none' then
         barIndex = 1;
@@ -284,6 +289,8 @@ local function ParseKeybindString(keyStr)
         barIndex = 2;
     elseif modifier == 'alt' then
         barIndex = 3;
+    elseif modifier == 'shift' then
+        barIndex = 4;
     end
 
     return {
@@ -903,6 +910,16 @@ function M.ImportHotbarBinding(barIndex, slotIndex, xiuiAction, storageKey)
     end
     if not gConfig[configKey].slotActions[storageKey] then
         gConfig[configKey].slotActions[storageKey] = {};
+    end
+
+    -- Set up keybinds for this bar if importing to bars 1-4
+    -- tHotBar convention: Bar 1 = keys 1-0, Bar 2 = Ctrl+1-0, Bar 3 = Alt+1-0, Bar 4 = Shift+1-0
+    if barIndex >= 1 and barIndex <= 4 and not gConfig[configKey].keyBindingsImported then
+        local ctrl = (barIndex == 2);
+        local alt = (barIndex == 3);
+        local shift = (barIndex == 4);
+        gConfig[configKey].keyBindings = factories.createNumberRowKeybindings(ctrl, alt, shift, 10);
+        gConfig[configKey].keyBindingsImported = true;
     end
 
     -- Determine the macro palette key from the storage key
