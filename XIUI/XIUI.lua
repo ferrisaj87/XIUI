@@ -71,7 +71,7 @@ local progressbar = require('libs.progressbar');
 local TextureManager = require('libs.texturemanager');
 
 -- Global switch to hard-disable functionality that is limited on HX servers
-HzLimitedMode = false;
+HzLimitedMode = true;
 
 -- =================
 -- = XIUI DEV ONLY =

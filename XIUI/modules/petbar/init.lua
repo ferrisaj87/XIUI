@@ -166,6 +166,7 @@ petbar.Initialize = function(settings)
             local category = struct.unpack('H', e.data, 0x0A + 0x01);
             local actionId = struct.unpack('H', e.data, 0x0C + 0x01);
 
+
             if (category == 0x09 and actionId == data.ActionID.CHARM) then
                 -- Validate: Player must not have a pet
                 if (data.petType ~= nil) then return; end
@@ -315,7 +316,18 @@ petbar.HandlePacket = function(e)
     -- Packet: Action (0x0028)
     if e.id == 0x0028 then
         local playerEntity = GetPlayerEntity();
-        if playerEntity == nil or playerEntity.PetTargetIndex == 0 then
+        local actorId = struct.unpack('I', e.data_modified, 0x05 + 0x01);
+        local rawActionInfo = struct.unpack('H', e.data_modified, 0x0A + 0x01);
+        if playerEntity == nil then return; end
+
+        -- Check for Familiar usage (0x618) on self
+        if (actorId == playerEntity.ServerId and rawActionInfo == 0x618) then
+             if (data.petType == 'charm') then
+                 data.ExtendCharmDuration(1500);
+             end
+        end
+
+        if playerEntity.PetTargetIndex == 0 then
             return;
         end
 
@@ -325,7 +337,6 @@ petbar.HandlePacket = function(e)
         end
 
         -- Check if the actor is our pet
-        local actorId = struct.unpack('I', e.data_modified, 0x05 + 0x01);
         if actorId ~= 0 and actorId == pet.ServerId then
             local targetId = ashita.bits.unpack_be(e.data_modified:totable(), 0x96, 0x20);
             if targetId and targetId ~= 0 then
