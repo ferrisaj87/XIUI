@@ -10,6 +10,7 @@ local ffi = require('ffi');
 local data = require('modules.hotbar.data');
 local actions = require('modules.hotbar.actions');
 local textures = require('modules.hotbar.textures');
+local TextureManager = require('libs.texturemanager');
 local jobs = require('libs.jobs');
 local components = require('config.components');
 local dragdrop = require('libs.dragdrop');
@@ -697,10 +698,9 @@ local function GetCustomIconsFiltered(category, filter)
     return sourceList;
 end
 
--- Load a custom icon texture by relative path
+-- Load a custom icon texture by relative path (uses TextureManager with LRU caching)
 local function LoadCustomIconTexture(relativePath)
-    local fullPath = GetCustomIconsDir() .. relativePath;
-    return textures:LoadTextureFromPath(fullPath);
+    return TextureManager.getCustomIcon(relativePath);
 end
 
 -- Create a new custom icon folder
@@ -2763,8 +2763,12 @@ local function DrawIconPicker()
                 customIconsByCategoryCache = {};
                 customCategoryIconCache = {};
                 customIconsCacheKey = nil;
+                -- Clear TextureManager custom icons cache
+                TextureManager.clearCategory('custom_icons');
                 -- Also clear the action module's custom icon cache
                 actions.ClearCustomIconCache();
+                -- Reset progressive loading
+                ResetIconLoading();
             end
             imgui.PopStyleColor(3);
             
@@ -3019,7 +3023,7 @@ local function DrawIconPicker()
             end
         
         elseif iconPickerTab == 3 then
-            -- Custom icons - render from custom directory
+            -- Custom icons - render from custom directory with progressive loading
             if totalItems == 0 then
                 if customIconCategory ~= 'all' then
                     -- Empty category folder
@@ -3028,7 +3032,7 @@ local function DrawIconPicker()
                     imgui.Spacing();
                     imgui.TextColored(COLORS.textMuted, 'Add PNG images to this folder:');
                     imgui.Spacing();
-                    
+
                     -- Open Folder button
                     imgui.PushStyleColor(ImGuiCol_Button, COLORS.bgLight);
                     imgui.PushStyleColor(ImGuiCol_ButtonHovered, COLORS.bgLighter);
@@ -3045,7 +3049,7 @@ local function DrawIconPicker()
                     imgui.TextColored(COLORS.goldDim, 'addons/XIUI/assets/hotbar/custom/');
                     imgui.Spacing();
                     imgui.Spacing();
-                    
+
                     -- Open Folder button
                     imgui.PushStyleColor(ImGuiCol_Button, COLORS.bgLight);
                     imgui.PushStyleColor(ImGuiCol_ButtonHovered, COLORS.bgLighter);
@@ -3056,36 +3060,78 @@ local function DrawIconPicker()
                     imgui.PopStyleColor(3);
                 end
             else
-                for i = startIdx, endIdx do
-                    local customIcon = filteredItems[i];
-                    if customIcon then
-                        -- Load icon texture
-                        local icon = LoadCustomIconTexture(customIcon.path);
-                        
-                        if icon and icon.image then
-                            -- Handle grid layout
-                            local col = displayedCount % ICON_GRID_COLUMNS;
-                            if col > 0 then
-                                imgui.SameLine(0, ICON_GRID_GAP);
-                            end
-                            
-                            -- Show category in tooltip
-                            local tooltipText = customIcon.name;
-                            if customIcon.category ~= 'root' then
-                                local categoryLabel = CUSTOM_ICON_LABELS[customIcon.category] or customIcon.category;
-                                tooltipText = customIcon.name .. ' (' .. categoryLabel .. ')';
-                            end
-                            
-                            local isSelected = editingMacro.customIconType == 'custom' and editingMacro.customIconPath == customIcon.path;
-                            if DrawIconButton('##custom' .. i, icon, ICON_GRID_SIZE, isSelected, tooltipText) then
-                                editingMacro.customIconType = 'custom';
-                                editingMacro.customIconPath = customIcon.path;
-                                editingMacro.customIconId = nil;  -- Clear spell/item ID
-                                iconPickerOpen = false;
-                            end
-                            
-                            displayedCount = displayedCount + 1;
+                -- Check if page/tab/filter changed - reset icon cache
+                local loadCacheKey = cacheKey .. ':' .. tostring(currentPage);
+                if iconLoadState.currentCacheKey ~= loadCacheKey or iconLoadState.currentTab ~= iconPickerTab then
+                    iconLoadState.currentPage = currentPage;
+                    iconLoadState.currentTab = iconPickerTab;
+                    iconLoadState.currentCacheKey = loadCacheKey;
+                    iconLoadState.loadedCount = 0;
+                    iconLoadState.pageIconCache = {};
+                end
+
+                local pageItemCount = endIdx - startIdx + 1;
+
+                -- Progressive loading: load only a few icons per frame to prevent lag
+                iconLoadState.frameCounter = iconLoadState.frameCounter + 1;
+                local shouldLoadThisFrame = (iconLoadState.frameCounter > iconLoadState.frameSkip);
+
+                if shouldLoadThisFrame and iconLoadState.loadedCount < pageItemCount then
+                    iconLoadState.frameCounter = 0;
+
+                    local iconsToLoad = math.min(iconLoadState.iconsPerFrame, pageItemCount - iconLoadState.loadedCount);
+
+                    for _ = 1, iconsToLoad do
+                        local cacheIdx = iconLoadState.loadedCount + 1;
+                        local itemIdx = startIdx + iconLoadState.loadedCount;
+                        local customIcon = filteredItems[itemIdx];
+
+                        if customIcon then
+                            local icon = LoadCustomIconTexture(customIcon.path);
+                            iconLoadState.pageIconCache[cacheIdx] = icon;
                         end
+
+                        iconLoadState.loadedCount = iconLoadState.loadedCount + 1;
+                    end
+                end
+
+                -- Show loading progress if still loading
+                local isStillLoading = iconLoadState.loadedCount < pageItemCount;
+                if isStillLoading then
+                    local pct = math.floor((iconLoadState.loadedCount / pageItemCount) * 100);
+                    imgui.TextColored(COLORS.gold, string.format('Loading icons... %d%%', pct));
+                    imgui.Spacing();
+                end
+
+                -- Render loaded icons from cache
+                for cacheIdx = 1, iconLoadState.loadedCount do
+                    local itemIdx = startIdx + cacheIdx - 1;
+                    local customIcon = filteredItems[itemIdx];
+                    local icon = iconLoadState.pageIconCache[cacheIdx];
+
+                    if customIcon and icon and icon.image then
+                        -- Handle grid layout
+                        local col = displayedCount % ICON_GRID_COLUMNS;
+                        if col > 0 then
+                            imgui.SameLine(0, ICON_GRID_GAP);
+                        end
+
+                        -- Show category in tooltip
+                        local tooltipText = customIcon.name;
+                        if customIcon.category ~= 'root' then
+                            local categoryLabel = CUSTOM_ICON_LABELS[customIcon.category] or customIcon.category;
+                            tooltipText = customIcon.name .. ' (' .. categoryLabel .. ')';
+                        end
+
+                        local isSelected = editingMacro.customIconType == 'custom' and editingMacro.customIconPath == customIcon.path;
+                        if DrawIconButton('##custom' .. itemIdx, icon, ICON_GRID_SIZE, isSelected, tooltipText) then
+                            editingMacro.customIconType = 'custom';
+                            editingMacro.customIconPath = customIcon.path;
+                            editingMacro.customIconId = nil;
+                            iconPickerOpen = false;
+                        end
+
+                        displayedCount = displayedCount + 1;
                     end
                 end
             end
