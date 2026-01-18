@@ -95,7 +95,7 @@ local function ListDirectories(basePath)
     local normalizedPath = basePath:gsub('/', '\\');
 
     -- Use Ashita's file system if available, otherwise try io.popen
-    local handle = io.popen('dir /b /ad "' .. normalizedPath .. '" 2>nul');
+    local handle = io.popen('dir /b /ad "' .. normalizedPath .. '" 2>NUL');
     if handle then
         for line in handle:lines() do
             if line and #line > 0 then
@@ -116,9 +116,9 @@ local function ListFiles(basePath, extension)
     local normalizedPath = basePath:gsub('/', '\\');
     local cmd;
     if extension then
-        cmd = 'dir /b "' .. normalizedPath .. '\\*.' .. extension .. '" 2>nul';
+        cmd = 'dir /b "' .. normalizedPath .. '\\*.' .. extension .. '" 2>NUL';
     else
-        cmd = 'dir /b "' .. normalizedPath .. '" 2>nul';
+        cmd = 'dir /b "' .. normalizedPath .. '" 2>NUL';
     end
 
     local handle = io.popen(cmd);

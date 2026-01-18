@@ -340,6 +340,10 @@ function M.createHotbarGlobalDefaults()
         quantityOffsetY = 0,
         hotbarNumberOffsetX = 0,
         hotbarNumberOffsetY = 0,
+
+        -- Skillchain highlight settings
+        skillchainHighlightEnabled = true,      -- Show skillchain highlight on WS slots
+        skillchainHighlightColor = 0xFFD4AA44,  -- Gold color for highlight border (ARGB)
     };
 end
 

@@ -2378,6 +2378,14 @@ function M.DrawSettings(state)
     end
     imgui.ShowHelp('Toggle macro bar behavior:\n- OFF: Built-in macros work with speed fix (macrofix)\n- ON: Macro bar hidden, XIUI hotbar/crossbar only\n\nNote: When ON, also blocks native macro commands.');
 
+    -- Skillchain highlight checkbox (stored in hotbarGlobal)
+    local skillchainHighlight = { gConfig.hotbarGlobal.skillchainHighlightEnabled ~= false };
+    if imgui.Checkbox('Skillchain Highlight', skillchainHighlight) then
+        gConfig.hotbarGlobal.skillchainHighlightEnabled = skillchainHighlight[1];
+        SaveSettingsOnly();
+    end
+    imgui.ShowHelp('Show animated border and skillchain icon on weapon skill slots when a skillchain window is open.');
+
     imgui.Spacing();
     imgui.Separator();
     imgui.Spacing();

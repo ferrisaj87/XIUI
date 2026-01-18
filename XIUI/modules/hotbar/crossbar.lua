@@ -22,6 +22,8 @@ local controller = require('modules.hotbar.controller');
 local recast = require('modules.hotbar.recast');
 local slotrenderer = require('modules.hotbar.slotrenderer');
 local animation = require('libs.animation');
+local skillchain = require('modules.hotbar.skillchain');
+local targetLib = require('libs.target');
 
 local M = {};
 
@@ -658,7 +660,8 @@ end
 -- Draw a single slot with drag/drop support using shared renderer
 -- animOpacity: 0-1 for animation fade (default 1.0)
 -- yOffset: Y offset in pixels for animation (default 0)
-local function DrawSlot(comboMode, slotIndex, x, y, slotSize, settings, isActive, isPressed, animOpacity, yOffset)
+-- skillchainName: (optional) Skillchain name for WS slots
+local function DrawSlot(comboMode, slotIndex, x, y, slotSize, settings, isActive, isPressed, animOpacity, yOffset, skillchainName)
     animOpacity = animOpacity or 1.0;
     yOffset = yOffset or 0;
 
@@ -768,6 +771,10 @@ local function DrawSlot(comboMode, slotIndex, x, y, slotSize, settings, isActive
             M.ClearIconCache();
         end,
         showTooltip = true,
+
+        -- Skillchain highlight
+        skillchainName = skillchainName,
+        skillchainColor = gConfig.hotbarGlobal.skillchainHighlightColor or 0xFFD4AA44,
     });
 end
 
@@ -970,7 +977,7 @@ local function DrawComboText(activeCombo, centerX, topY, settings)
 end
 
 -- Helper to draw just the left side
-local function DrawLeftSide(mode, groupX, groupY, slotSize, settings, isActive, pressedSlot, showPressed, animOpacity, drawList, yOffset)
+local function DrawLeftSide(mode, groupX, groupY, slotSize, settings, isActive, pressedSlot, showPressed, animOpacity, drawList, yOffset, targetServerId, skillchainEnabled)
     animOpacity = animOpacity or 1.0;
     yOffset = yOffset or 0;
 
@@ -978,7 +985,15 @@ local function DrawLeftSide(mode, groupX, groupY, slotSize, settings, isActive, 
     for slotIndex = 1, SLOTS_PER_SIDE do
         local slotX, slotY = GetSlotPositionInWindow('L2', slotIndex, state.windowX, state.windowY, settings);
         local isPressed = showPressed and pressedSlot == slotIndex;
-        DrawSlot(mode, slotIndex, slotX, slotY, slotSize, settings, isActive, isPressed, animOpacity, yOffset);
+        -- Check for skillchain prediction on weapon skill slots
+        local slotSkillchainName = nil;
+        if skillchainEnabled then
+            local slotData = data.GetCrossbarSlotData(mode, slotIndex);
+            if slotData and slotData.actionType == 'ws' and slotData.action then
+                slotSkillchainName = skillchain.GetSkillchainForSlot(targetServerId, slotData.action);
+            end
+        end
+        DrawSlot(mode, slotIndex, slotX, slotY, slotSize, settings, isActive, isPressed, animOpacity, yOffset, slotSkillchainName);
     end
 
     -- Hide left center icon primitives (legacy)
@@ -994,7 +1009,7 @@ local function DrawLeftSide(mode, groupX, groupY, slotSize, settings, isActive, 
 end
 
 -- Helper to draw just the right side
-local function DrawRightSide(mode, groupX, groupY, slotSize, settings, isActive, pressedSlot, showPressed, animOpacity, drawList, yOffset)
+local function DrawRightSide(mode, groupX, groupY, slotSize, settings, isActive, pressedSlot, showPressed, animOpacity, drawList, yOffset, targetServerId, skillchainEnabled)
     animOpacity = animOpacity or 1.0;
     yOffset = yOffset or 0;
 
@@ -1002,7 +1017,15 @@ local function DrawRightSide(mode, groupX, groupY, slotSize, settings, isActive,
     for slotIndex = 1, SLOTS_PER_SIDE do
         local slotX, slotY = GetSlotPositionInWindow('R2', slotIndex, state.windowX, state.windowY, settings);
         local isPressed = showPressed and pressedSlot == slotIndex;
-        DrawSlot(mode, slotIndex, slotX, slotY, slotSize, settings, isActive, isPressed, animOpacity, yOffset);
+        -- Check for skillchain prediction on weapon skill slots
+        local slotSkillchainName = nil;
+        if skillchainEnabled then
+            local slotData = data.GetCrossbarSlotData(mode, slotIndex);
+            if slotData and slotData.actionType == 'ws' and slotData.action then
+                slotSkillchainName = skillchain.GetSkillchainForSlot(targetServerId, slotData.action);
+            end
+        end
+        DrawSlot(mode, slotIndex, slotX, slotY, slotSize, settings, isActive, isPressed, animOpacity, yOffset, slotSkillchainName);
     end
 
     -- Hide right center icon primitives (legacy)
@@ -1020,9 +1043,9 @@ end
 -- Helper to draw a complete bar set (both sides) - used for non-animated drawing
 local function DrawBarSet(leftMode, rightMode, leftGroupX, leftGroupY, rightGroupX, rightGroupY,
                           slotSize, settings, leftActive, rightActive, pressedSlot,
-                          leftShowPressed, rightShowPressed, animOpacity, drawList, yOffset)
-    DrawLeftSide(leftMode, leftGroupX, leftGroupY, slotSize, settings, leftActive, pressedSlot, leftShowPressed, animOpacity, drawList, yOffset);
-    DrawRightSide(rightMode, rightGroupX, rightGroupY, slotSize, settings, rightActive, pressedSlot, rightShowPressed, animOpacity, drawList, yOffset);
+                          leftShowPressed, rightShowPressed, animOpacity, drawList, yOffset, targetServerId, skillchainEnabled)
+    DrawLeftSide(leftMode, leftGroupX, leftGroupY, slotSize, settings, leftActive, pressedSlot, leftShowPressed, animOpacity, drawList, yOffset, targetServerId, skillchainEnabled);
+    DrawRightSide(rightMode, rightGroupX, rightGroupY, slotSize, settings, rightActive, pressedSlot, rightShowPressed, animOpacity, drawList, yOffset, targetServerId, skillchainEnabled);
 end
 
 -- Main draw function
@@ -1138,6 +1161,19 @@ function M.DrawWindow(settings, moduleSettings)
     -- Get draw list for ImGui-based rendering (foreground works outside window context)
     local drawList = imgui.GetForegroundDrawList();
 
+    -- Get target server ID for skillchain prediction (cached for all slots)
+    local targetServerId = nil;
+    local skillchainEnabled = gConfig.hotbarGlobal.skillchainHighlightEnabled ~= false;
+    if skillchainEnabled then
+        local mainTargetIdx = targetLib.GetTargets();
+        if mainTargetIdx and mainTargetIdx ~= 0 then
+            local targetEntity = GetEntitySafe(mainTargetIdx);
+            if targetEntity then
+                targetServerId = targetEntity.ServerId;
+            end
+        end
+    end
+
     -- Hide all slot and icon primitives first (we'll show the ones we need)
     local allModes = { 'L2', 'R2', 'L2R2', 'R2L2', 'L2x2', 'R2x2' };
     for _, mode in ipairs(allModes) do
@@ -1180,16 +1216,16 @@ function M.DrawWindow(settings, moduleSettings)
                 -- Left side changed - animate it
                 if outOpacity > 0.01 then
                     DrawLeftSide(state.animation.fromLeftMode, leftGroupX, leftGroupY, slotSize, settings,
-                        fromLeftActive, pressedSlot, false, outOpacity, drawList, outYOffset);
+                        fromLeftActive, pressedSlot, false, outOpacity, drawList, outYOffset, targetServerId, skillchainEnabled);
                 end
                 if inOpacity > 0.01 then
                     DrawLeftSide(state.animation.toLeftMode, leftGroupX, leftGroupY, slotSize, settings,
-                        leftActive, pressedSlot, leftShowPressed, inOpacity, drawList, inYOffset);
+                        leftActive, pressedSlot, leftShowPressed, inOpacity, drawList, inYOffset, targetServerId, skillchainEnabled);
                 end
             else
                 -- Left side didn't change - draw at full opacity
                 DrawLeftSide(state.animation.toLeftMode, leftGroupX, leftGroupY, slotSize, settings,
-                    leftActive, pressedSlot, leftShowPressed, 1.0, drawList, 0);
+                    leftActive, pressedSlot, leftShowPressed, 1.0, drawList, 0, targetServerId, skillchainEnabled);
             end
 
             -- Draw RIGHT side
@@ -1197,16 +1233,16 @@ function M.DrawWindow(settings, moduleSettings)
                 -- Right side changed - animate it
                 if outOpacity > 0.01 then
                     DrawRightSide(state.animation.fromRightMode, rightGroupX, rightGroupY, slotSize, settings,
-                        fromRightActive, pressedSlot, false, outOpacity, drawList, outYOffset);
+                        fromRightActive, pressedSlot, false, outOpacity, drawList, outYOffset, targetServerId, skillchainEnabled);
                 end
                 if inOpacity > 0.01 then
                     DrawRightSide(state.animation.toRightMode, rightGroupX, rightGroupY, slotSize, settings,
-                        rightActive, pressedSlot, rightShowPressed, inOpacity, drawList, inYOffset);
+                        rightActive, pressedSlot, rightShowPressed, inOpacity, drawList, inYOffset, targetServerId, skillchainEnabled);
                 end
             else
                 -- Right side didn't change - draw at full opacity
                 DrawRightSide(state.animation.toRightMode, rightGroupX, rightGroupY, slotSize, settings,
-                    rightActive, pressedSlot, rightShowPressed, 1.0, drawList, 0);
+                    rightActive, pressedSlot, rightShowPressed, 1.0, drawList, 0, targetServerId, skillchainEnabled);
             end
         else
             -- No animation, draw current bar set at full opacity with no offset
@@ -1216,7 +1252,7 @@ function M.DrawWindow(settings, moduleSettings)
                 slotSize, settings,
                 leftActive, rightActive,
                 pressedSlot, leftShowPressed, rightShowPressed,
-                1.0, drawList, 0
+                1.0, drawList, 0, targetServerId, skillchainEnabled
             );
         end
 

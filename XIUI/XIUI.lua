@@ -76,6 +76,7 @@ local notifications = uiMods.notifications;
 local treasurePool = uiMods.treasurepool;
 local hotbar = uiMods.hotbar;
 local macropalette = require('modules.hotbar.macropalette');
+local skillchainModule = require('modules.hotbar.skillchain');
 local configMenu = require('config');
 local debuffHandler = require('handlers.debuffhandler');
 local actionTracker = require('handlers.actiontracker');
@@ -814,6 +815,12 @@ ashita.events.register('command', 'command_cb', function (e)
             return;
         end
 
+        -- Skillchain debug: /xiui scdebug
+        if (command_args[2] == 'scdebug') then
+            skillchainModule.DebugDumpState();
+            return;
+        end
+
         -- Stress test gradient cache: /xiui stresscache [count]
         if (command_args[2] == 'stresscache') then
             local count = tonumber(command_args[3]) or 100;
@@ -880,6 +887,10 @@ ashita.events.register('packet_in', 'packet_in_cb', function (e)
             debuffHandler.HandleActionPacket(actionPacket);
             actionTracker.HandleActionPacket(actionPacket);
             if gConfig.showNotifications then notifications.HandleActionPacket(actionPacket); end
+            -- Skillchain tracking for hotbar/crossbar WS highlighting
+            if gConfig.hotbarEnabled then
+                skillchainModule.HandleActionPacket(actionPacket);
+            end
         end
     elseif (e.id == 0x00E) then
         local mobUpdatePacket = ParseMobUpdatePacket(e);
@@ -939,6 +950,7 @@ ashita.events.register('packet_in', 'packet_in_cb', function (e)
         -- Also notify hotbar of zone (clears state)
         if gConfig.hotbarEnabled then
             hotbar.HandleZonePacket();
+            skillchainModule.ClearState();  -- Clear skillchain tracking on zone
         end
     elseif (e.id == 0x001B) then
         -- Job change packet - update hotbar to show new job's actions

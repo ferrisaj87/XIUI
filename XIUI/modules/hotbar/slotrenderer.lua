@@ -13,6 +13,7 @@ local recast = require('modules.hotbar.recast');
 local actions = require('modules.hotbar.actions');
 local dragdrop = require('libs.dragdrop');
 local textures = require('modules.hotbar.textures');
+local skillchain = require('modules.hotbar.skillchain');
 
 -- Cache for MP cost lookups (keyed by action key string)
 local mpCostCache = {};
@@ -322,6 +323,125 @@ local function GetAnchoredPosition(x, y, size, anchor, offsetX, offsetY, padding
     return posX + offsetX, posY + offsetY;
 end
 
+-- ============================================
+-- Skillchain Highlight Rendering
+-- ============================================
+
+-- Skillchain icon cache (loaded on first use)
+local skillchainIconCache = {};
+local skillchainIconsPath = nil;
+
+local function GetSkillchainIconsPath()
+    if not skillchainIconsPath then
+        skillchainIconsPath = string.format('%saddons\\XIUI\\assets\\hotbar\\skillchain\\', AshitaCore:GetInstallPath());
+    end
+    return skillchainIconsPath;
+end
+
+-- Draw a single dashed line segment
+-- @param drawList: ImGui draw list
+-- @param x1, y1: Start point
+-- @param x2, y2: End point
+-- @param color: Line color (imgui color)
+-- @param thickness: Line thickness
+-- @param dashLen: Length of each dash
+-- @param gapLen: Length of gap between dashes
+-- @param offset: Animation offset for marching ants effect
+local function DrawDashedLine(drawList, x1, y1, x2, y2, color, thickness, dashLen, gapLen, offset)
+    local dx = x2 - x1;
+    local dy = y2 - y1;
+    local len = math.sqrt(dx * dx + dy * dy);
+    if len == 0 then return; end
+
+    -- Normalize direction
+    local nx = dx / len;
+    local ny = dy / len;
+
+    -- Start position with offset for animation
+    local totalLen = dashLen + gapLen;
+    local startOffset = offset % totalLen;
+
+    local pos = -startOffset;  -- Start slightly before to handle offset
+    while pos < len do
+        local dashStart = math.max(0, pos);
+        local dashEnd = math.min(len, pos + dashLen);
+
+        if dashEnd > dashStart then
+            local sx = x1 + nx * dashStart;
+            local sy = y1 + ny * dashStart;
+            local ex = x1 + nx * dashEnd;
+            local ey = y1 + ny * dashEnd;
+            drawList:AddLine({sx, sy}, {ex, ey}, color, thickness);
+        end
+
+        pos = pos + totalLen;
+    end
+end
+
+-- Draw skillchain highlight on a slot (animated dashed border + icon)
+-- @param drawList: ImGui draw list (foreground recommended)
+-- @param x, y: Top-left corner of slot
+-- @param size: Slot size in pixels
+-- @param scName: Skillchain name (e.g., 'Light', 'Darkness', 'Fusion')
+-- @param color: Highlight color (ARGB)
+-- @param opacity: Overall opacity (0-1)
+local function DrawSkillchainHighlight(drawList, x, y, size, scName, color, opacity)
+    if not drawList or not scName or opacity <= 0.01 then return; end
+
+    -- Animation offset for marching ants effect
+    local animOffset = skillchain.GetAnimationOffset();
+
+    -- Extract color components and apply opacity
+    local a = math.floor(bit.rshift(bit.band(color, 0xFF000000), 24) * opacity);
+    local r = bit.rshift(bit.band(color, 0x00FF0000), 16) / 255;
+    local g = bit.rshift(bit.band(color, 0x0000FF00), 8) / 255;
+    local b = bit.band(color, 0x000000FF) / 255;
+    local lineColor = imgui.GetColorU32({r, g, b, a / 255});
+
+    -- Dashed line parameters
+    local dashLen = 4;
+    local gapLen = 4;
+    local thickness = 2;
+
+    -- Draw dashed border (4 sides)
+    -- Top edge
+    DrawDashedLine(drawList, x, y, x + size, y, lineColor, thickness, dashLen, gapLen, animOffset);
+    -- Right edge
+    DrawDashedLine(drawList, x + size, y, x + size, y + size, lineColor, thickness, dashLen, gapLen, animOffset);
+    -- Bottom edge
+    DrawDashedLine(drawList, x + size, y + size, x, y + size, lineColor, thickness, dashLen, gapLen, animOffset);
+    -- Left edge
+    DrawDashedLine(drawList, x, y + size, x, y, lineColor, thickness, dashLen, gapLen, animOffset);
+
+    -- Draw skillchain icon in top-right corner
+    local iconSize = math.floor(size * 0.35);
+    local iconX = x + size - iconSize - 2;
+    local iconY = y + 2;
+
+    -- Get or load icon texture
+    local iconPath = GetSkillchainIconsPath() .. scName .. '.png';
+    if not skillchainIconCache[scName] then
+        local tex = textures:LoadTextureFromPath(iconPath);
+        skillchainIconCache[scName] = tex;
+    end
+
+    local iconTex = skillchainIconCache[scName];
+    if iconTex and iconTex.image then
+        local iconPtr = tonumber(ffi.cast("uint32_t", iconTex.image));
+        if iconPtr then
+            local iconAlpha = math.floor(255 * opacity);
+            local iconTint = bit.bor(bit.lshift(iconAlpha, 24), 0x00FFFFFF);
+            drawList:AddImage(
+                iconPtr,
+                {iconX, iconY},
+                {iconX + iconSize, iconY + iconSize},
+                {0, 0}, {1, 1},
+                iconTint
+            );
+        end
+    end
+end
+
 --[[
     Render a slot with all components and handle all interactions.
     MUST be called inside an ImGui window context.
@@ -360,6 +480,10 @@ end
         - dimFactor: Dim multiplier for inactive states (default 1.0)
         - animOpacity: Animation opacity 0-1 (default 1.0)
         - isPressed: Whether slot is currently pressed (controller button)
+
+        Skillchain:
+        - skillchainName: (optional) Skillchain name to show highlight for (e.g., 'Light')
+        - skillchainColor: (optional) Highlight color ARGB (default 0xFFD4AA44 gold)
 
         Interaction Config:
         - buttonId: Unique ID for ImGui button (required for interactions)
@@ -1067,10 +1191,16 @@ function M.DrawSlot(resources, params)
             fgDrawList:AddRectFilled({x, y}, {x + size, y + size}, hoverTintColor, 2);
             fgDrawList:AddRect({x, y}, {x + size, y + size}, hoverBorderColor, 2, 0, 1);
         end
+
+        -- Skillchain highlight (animated dotted border + icon)
+        if params.skillchainName then
+            local scColor = params.skillchainColor or 0xFFD4AA44;  -- Default gold
+            DrawSkillchainHighlight(fgDrawList, x, y, size, params.skillchainName, scColor, animOpacity);
+        end
     end
 
     -- ========================================
-    -- 10. Drop Zone Registration
+    -- 12. Drop Zone Registration
     -- ========================================
     if params.dropZoneId and params.onDrop then
         dragdrop.DropZone(params.dropZoneId, x, y, size, size, {

@@ -20,6 +20,8 @@ local slotrenderer = require('modules.hotbar.slotrenderer');
 local hotbarConfig = require('config.hotbar');
 local petpalette = require('modules.hotbar.petpalette');
 local palette = require('modules.hotbar.palette');
+local skillchain = require('modules.hotbar.skillchain');
+local targetLib = require('libs.target');
 
 local M = {};
 
@@ -209,7 +211,7 @@ local function GetAssetsPath()
 end
 
 -- Draw a single hotbar slot using shared renderer
-local function DrawSlot(barIndex, slotIndex, x, y, buttonSize, bind, barSettings, animOpacity)
+local function DrawSlot(barIndex, slotIndex, x, y, buttonSize, bind, barSettings, animOpacity, skillchainName)
     -- Gather resources for this slot
     local resources = {
         slotPrim = data.slotPrims[barIndex] and data.slotPrims[barIndex][slotIndex],
@@ -306,6 +308,10 @@ local function DrawSlot(barIndex, slotIndex, x, y, buttonSize, bind, barSettings
 
         -- Animation
         animOpacity = animOpacity or 1.0,
+
+        -- Skillchain highlight
+        skillchainName = skillchainName,
+        skillchainColor = gConfig.hotbarGlobal.skillchainHighlightColor or 0xFFD4AA44,
     });
 
     return result.isHovered;
@@ -474,6 +480,19 @@ local function DrawBarWindow(barIndex, settings)
         -- drop zones earlier so they're registered when the drag activates
         local isDragging = dragdrop.IsDragging() or dragdrop.IsDragPending();
 
+        -- Get target server ID for skillchain prediction (cached for all slots)
+        local targetServerId = nil;
+        local skillchainEnabled = gConfig.hotbarGlobal.skillchainHighlightEnabled ~= false;
+        if skillchainEnabled then
+            local mainTargetIdx = targetLib.GetTargets();
+            if mainTargetIdx and mainTargetIdx ~= 0 then
+                local targetEntity = GetEntitySafe(mainTargetIdx);
+                if targetEntity then
+                    targetServerId = targetEntity.ServerId;
+                end
+            end
+        end
+
         for row = 1, layout.rows do
             for col = 1, layout.columns do
                 if slotIndex <= slotCount then
@@ -510,7 +529,13 @@ local function DrawBarWindow(barIndex, settings)
                             data.quantityFonts[barIndex][slotIndex]:set_visible(false);
                         end
                     else
-                        DrawSlot(barIndex, slotIndex, slotX, slotY, buttonSize, bind, barSettings, animOpacity);
+                        -- Check for skillchain prediction on weapon skill slots
+                        local slotSkillchainName = nil;
+                        if skillchainEnabled and bind and bind.actionType == 'ws' and bind.action then
+                            -- Pass WS name directly - skillchain module handles name->ID conversion
+                            slotSkillchainName = skillchain.GetSkillchainForSlot(targetServerId, bind.action);
+                        end
+                        DrawSlot(barIndex, slotIndex, slotX, slotY, buttonSize, bind, barSettings, animOpacity, slotSkillchainName);
                     end
                 end
                 slotIndex = slotIndex + 1;

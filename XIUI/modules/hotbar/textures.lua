@@ -303,6 +303,22 @@ textures.Initialize = function(self)
         end
     end
 
+    -- Skillchain icons for WS slot highlighting
+    local skillchainDirectory = string.format('%saddons\\XIUI\\assets\\hotbar\\skillchain\\', AshitaCore:GetInstallPath());
+    local skillchainNames = {
+        'Compression', 'Darkness', 'Detonation', 'Distortion',
+        'Fragmentation', 'Fusion', 'Gravitation', 'Impaction',
+        'Induration', 'Light', 'Liquefaction', 'Reverberation',
+        'Scission', 'Transfixion',
+    };
+    for _, name in ipairs(skillchainNames) do
+        local fullPath = skillchainDirectory .. name .. '.png';
+        local texture = LoadTextureFromPath(fullPath);
+        if texture then
+            self.Cache['skillchain_' .. name] = texture;
+        end
+    end
+
 end
 
 textures.Release = function(self)
