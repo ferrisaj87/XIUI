@@ -176,9 +176,15 @@ expbar.DrawWindow = function(settings)
         end
     end
 
-    -- Let ImGui auto-size the window based on content (Dummy call in progressbar)
-    -- Use {0, 0} to allow unlimited auto-sizing (not {-1, -1} which can cause clipping)
-    imgui.SetNextWindowSize({ 0, 0 }, ImGuiCond_Always);
+    -- Compute window width to fully contain the bar (and inline text if enabled)
+    local progressBarWidth = settings.barWidth;
+    local windowWidth = progressBarWidth;
+    if inlineMode then
+        windowWidth = windowWidth + actualTextWidth;
+    end
+
+    -- Explicitly size the window wide enough so dragging works across the full bar
+    imgui.SetNextWindowSize({ windowWidth, 0 }, ImGuiCond_Always);
 
     -- Handle position reset or restore
     if forcePositionReset then
@@ -193,13 +199,10 @@ expbar.DrawWindow = function(settings)
         lastSavedPosX = gConfig.expBarWindowPosX;
         lastSavedPosY = gConfig.expBarWindowPosY;
     end
-
 	local windowFlags = GetBaseWindowFlags(gConfig.lockPositions);
     if (imgui.Begin('ExpBar', true, windowFlags)) then
 
-		-- Draw the progress bar
-        local progressBarWidth = settings.barWidth;
-
+		-- Draw the progress bar        
 		-- Get window origin for text positioning
 		local startX, startY = imgui.GetCursorScreenPos();
 
@@ -219,8 +222,8 @@ expbar.DrawWindow = function(settings)
 			expGradient = GetCustomGradient(gConfig.colorCustomization.expBar, 'expBarGradient') or {'#c39040', '#e9c466'};
 		end
 		-- Let progressbar handle its own Dummy for sizing (includes border extent)
-		-- Use GetUIDrawList: foreground when config closed (no clipping), window when config open (respects layering)
-		progressbar.ProgressBar({{progressBarProgress, expGradient}}, {progressBarWidth, settings.barHeight}, {decorate = gConfig.showExpBarBookends, drawList = drawing.GetUIDrawList()});
+		-- Use GetBackgroundDrawList to avoid clipping issues with large scales (window clipping)
+		progressbar.ProgressBar({{progressBarProgress, expGradient}}, {progressBarWidth, settings.barHeight}, {decorate = gConfig.showExpBarBookends, drawList = imgui.GetBackgroundDrawList()});
 
         -- Calculate text padding
         local bookendWidth = gConfig.showExpBarBookends and (settings.barHeight / 2) or 0;
