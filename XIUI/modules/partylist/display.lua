@@ -1327,7 +1327,7 @@ function display.DrawPartyWindow(settings, party, partyIndex)
         titleHeight = titleHeight * .8;
         local titlePosX = imguiPosX + math.floor((bgWidth / 2) - (titleWidth / 2));
         local titlePosY = imguiPosY - titleHeight + 6;
-        local draw_list = imgui.GetForegroundDrawList();
+        local draw_list = GetUIDrawList();
         draw_list:AddImage(
             titleImage,
             {titlePosX, titlePosY},

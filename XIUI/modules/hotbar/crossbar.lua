@@ -1288,8 +1288,8 @@ function M.DrawWindow(settings, moduleSettings)
     local leftShowPressed = leftActive and activeCombo ~= COMBO_MODES.NONE;
     local rightShowPressed = rightActive and activeCombo ~= COMBO_MODES.NONE;
 
-    -- Get draw list for ImGui-based rendering (foreground works outside window context)
-    local drawList = imgui.GetForegroundDrawList();
+    -- Get draw list for ImGui-based rendering (behind config when open)
+    local drawList = GetUIDrawList();
 
     -- Get target server ID for skillchain prediction (cached for all slots)
     local targetServerId = nil;
@@ -1498,7 +1498,7 @@ function M.DrawWindow(settings, moduleSettings)
             -- Position centered above the crossbar
             local iconX = centerX - (iconSize / 2);
             local iconY = state.windowY - 24;
-            local fgDrawList = imgui.GetForegroundDrawList();
+            local fgDrawList = GetUIDrawList();
 
             -- Draw with a pulsing effect for visibility
             local pulseAlpha = 0.7 + 0.3 * math.sin(os.clock() * 6);

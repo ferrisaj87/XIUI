@@ -482,6 +482,7 @@ settingsMigration.RunStructureMigrations(gConfig, defaultUserSettings);
 -- State variables
 showConfig = { false };
 local pendingVisualUpdate = false;
+local pendingProfileChange = nil;
 bLoggedIn = gameState.CheckLoggedIn();
 local bInitialized = false;
 local wasInParty = false;  -- Tracks party state for detecting party leave
@@ -524,7 +525,7 @@ function CreateProfile(name)
     table.insert(globalProfiles.order, name);
     profileManager.SaveGlobalProfiles(globalProfiles);
     
-    ChangeProfile(name);
+    RequestProfileChange(name);
     return true;
 end
 
@@ -551,7 +552,7 @@ function DuplicateProfile(name)
     table.insert(globalProfiles.order, newName);
     profileManager.SaveGlobalProfiles(globalProfiles);
     
-    ChangeProfile(newName);
+    RequestProfileChange(newName);
     return true;
 end
 
@@ -573,30 +574,36 @@ end
 
 function ChangeProfile(name)
     if (not profileManager.ProfileExists(name)) then return false; end
-    
+
     -- Save current settings before switching
     if (config.currentProfile ~= 'Default' or g_AllowDefaultEdit) then
         profileManager.SaveProfileSettings(config.currentProfile, gConfig);
     end
-    
+
     config.currentProfile = name;
     settings.save(); -- Save character preference
-    
+
     -- Clear textures to prevent ghosting
     TextureManager.clear();
-    
+
     uiModules.HideAll();
-    
+
     gConfig = profileManager.GetProfileSettings(name);
     gConfig.appliedPositions = {}; -- Ensure we re-apply positions for the new profile
-    
+
     -- If Default profile has no saved positions, inject defaults
     if (name == 'Default' and (not gConfig.windowPositions or next(gConfig.windowPositions) == nil)) then
         gConfig.windowPositions = GetDefaultWindowPositions();
     end
-    
+
     settingsMigration.RunStructureMigrations(gConfig, defaultUserSettings);
     UpdateSettings();
+    return true;
+end
+
+-- Defer profile change to next frame to avoid destroying D3D resources during ImGui render
+function RequestProfileChange(name)
+    pendingProfileChange = name;
     return true;
 end
 
@@ -726,7 +733,7 @@ function DeleteProfile(name)
     
     -- If deleting the active profile, switch to Default first
     if (config.currentProfile == name) then
-        if (not ChangeProfile('Default')) then
+        if (not RequestProfileChange('Default')) then
             return false;
         end
     end
@@ -861,6 +868,13 @@ end);
 
 ashita.events.register('d3d_present', 'present_cb', function ()
     if not bInitialized then return; end
+
+    -- Process pending profile change outside the render loop
+    if pendingProfileChange then
+        local name = pendingProfileChange;
+        pendingProfileChange = nil;
+        ChangeProfile(name);
+    end
 
     -- Process pending visual updates outside the render loop
     if pendingVisualUpdate then

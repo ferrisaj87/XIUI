@@ -531,7 +531,7 @@ function M.DrawWindow(settings)
                 local minimizeClicked = button.DrawMinimizePrim('tpMinimize', minimizeX, btnY, toggleSize, isMinimized, {
                     colors = button.COLORS_NEUTRAL,
                     tooltip = isMinimized and 'Maximize window' or 'Minimize to header only',
-                }, imgui.GetForegroundDrawList());
+                }, GetUIDrawList());
                 if minimizeClicked then
                     gConfig.treasurePoolMinimized = not gConfig.treasurePoolMinimized;
                     SaveSettingsToDisk();
@@ -544,7 +544,7 @@ function M.DrawWindow(settings)
                     tooltip = isMinimized
                         and (isExpanded and 'Maximize and collapse' or 'Maximize and expand')
                         or (isExpanded and 'Collapse' or 'Expand'),
-                }, imgui.GetForegroundDrawList());
+                }, GetUIDrawList());
                 if toggleClicked then
                     -- If minimized, maximize first then apply expand/collapse
                     if isMinimized then
@@ -640,7 +640,7 @@ function M.DrawWindow(settings)
                 local minimizeClicked = button.DrawMinimizePrim('tpMinimize', minimizeX, btnY, toggleSize, isMinimized, {
                     colors = button.COLORS_NEUTRAL,
                     tooltip = isMinimized and 'Maximize window' or 'Minimize to header only',
-                }, imgui.GetForegroundDrawList());
+                }, GetUIDrawList());
                 if minimizeClicked then
                     gConfig.treasurePoolMinimized = not gConfig.treasurePoolMinimized;
                     SaveSettingsToDisk();
@@ -653,7 +653,7 @@ function M.DrawWindow(settings)
                     tooltip = isMinimized
                         and (isExpanded and 'Maximize and collapse' or 'Maximize and expand')
                         or (isExpanded and 'Collapse' or 'Expand'),
-                }, imgui.GetForegroundDrawList());
+                }, GetUIDrawList());
                 if toggleClicked then
                     -- If minimized, maximize first then apply expand/collapse
                     if isMinimized then

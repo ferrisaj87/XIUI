@@ -575,7 +575,7 @@ local function DrawBarWindow(barIndex, settings)
         local dotX = windowPosX - 12;  -- Centered above bar number
         local dotY = windowPosY + (barHeight / 2) - 20;  -- Above the number
         local dotRadius = 5;
-        local fgDrawList = imgui.GetForegroundDrawList();
+        local fgDrawList = GetUIDrawList();
 
         local indicatorColor = {1.0, 0.8, 0.2, 1.0};  -- Gold
 

@@ -204,7 +204,7 @@ local function DrawProfilesWindow()
             for _, name in ipairs(profiles) do
                 local isSelected = (name == currentProfile);
                 if (imgui.Selectable(name, isSelected)) then
-                    ChangeProfile(name);
+                    RequestProfileChange(name);
                 end
                 if (isSelected) then
                     imgui.SetItemDefaultFocus();
@@ -642,7 +642,7 @@ config.DrawWindow = function(us)
     PushThemeStyles();
 
     imgui.SetNextWindowSize({ 900, 650 }, ImGuiCond_FirstUseEver);
-    if(imgui.Begin("XIUI Config - v" .. addon.version, showConfig, bit.bor(ImGuiWindowFlags_NoSavedSettings, ImGuiWindowFlags_NoDocking, ImGuiWindowFlags_NoBringToFrontOnFocus))) then
+    if(imgui.Begin("XIUI Config - v" .. addon.version, showConfig, bit.bor(ImGuiWindowFlags_NoSavedSettings, ImGuiWindowFlags_NoDocking))) then
         local windowWidth = imgui.GetContentRegionAvail();
         local sidebarWidth = 180;
         local contentWidth = windowWidth - sidebarWidth - 20;
@@ -688,7 +688,7 @@ config.DrawWindow = function(us)
                 local isSelected = (name == currentProfile);
                 if (imgui.Selectable(name, isSelected)) then
                     if (name ~= currentProfile) then
-                        ChangeProfile(name);
+                        RequestProfileChange(name);
                     end
                 end
                 if (isSelected) then
