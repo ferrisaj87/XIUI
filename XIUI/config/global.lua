@@ -14,6 +14,9 @@ local M = {};
 -- Local state for profile creation/management
 -- (Moved to config.lua)
 
+-- Center UI confirmation state
+local showCenterUIConfirm = false;
+
 -- Section: Global Settings (combines General, Font, and Bar settings)
 function M.DrawSettings()
     if components.CollapsingSection('General##global') then
@@ -41,6 +44,36 @@ function M.DrawSettings()
         imgui.ShowHelp('Scales the size of the tooltip. Note that text may appear blured if scaled too large.');
 
         components.DrawCheckbox('Hide During Events', 'hideDuringEvents');
+
+        imgui.Spacing();
+        if imgui.Button('Center UI') then
+            showCenterUIConfirm = true;
+        end
+        imgui.SameLine();
+        imgui.ShowHelp('Move all UI elements to the center of the screen.');
+
+        -- Center UI confirmation popup
+        if showCenterUIConfirm then
+            imgui.OpenPopup("Confirm Center UI");
+            showCenterUIConfirm = false;
+        end
+
+        if (imgui.BeginPopupModal("Confirm Center UI", true, ImGuiWindowFlags_AlwaysAutoResize)) then
+            imgui.Text("Move all UI elements to the center of the screen?");
+            imgui.Text("This only affects positions, not your other settings.");
+            imgui.NewLine();
+
+            if (imgui.Button("Confirm", { 120, 0 })) then
+                CenterAllPositions();
+                imgui.CloseCurrentPopup();
+            end
+            imgui.SameLine();
+            if (imgui.Button("Cancel", { 120, 0 })) then
+                imgui.CloseCurrentPopup();
+            end
+
+            imgui.EndPopup();
+        end
     end
 
     if components.CollapsingSection('Text Settings##global') then
