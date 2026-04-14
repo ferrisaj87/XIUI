@@ -1058,7 +1058,7 @@ local function DrawSlot(comboMode, slotIndex, x, y, slotSize, settings, isActive
 
         -- Draw MP/Lv/Qty corner strings via ImGui foreground so they sit above D3D icon prims (and overlapping slots).
         drawCornerTextForeground = palSk and false or true,
-        -- Edit Full Palette labels must stay above window layers while scrolling.
+        -- Edit Full Palette only: on-slot action labels via ImGui (not GDI); normal HUD uses labelFont above/below slots.
         labelForeground = palSk and true or false,
 
         -- Skillchain highlight

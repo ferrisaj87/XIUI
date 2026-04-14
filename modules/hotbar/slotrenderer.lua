@@ -794,7 +794,8 @@ local function AddSoftEllipticalBackdrop(drawList, px, py, tw, th, aChannel)
     end
 end
 
--- Edit Full Palette labels: flatter, wider falloff (pill / cylinder feel) and lighter than MP/Qty scrim.
+-- Edit Full Palette only — not used by the in-game crossbar HUD. Flatter, wider falloff (pill / cylinder feel)
+-- and lighter than AddSoftEllipticalBackdrop (MP/Qty on live crossbar).
 local function AddSoftEditorLabelBackdrop(drawList, px, py, tw, th, aChannel)
     if tw <= 0 or th <= 0 then return; end
     local padX, padY = 5, 2;
@@ -850,7 +851,8 @@ local function AddOutlinedForegroundText(drawList, px, py, argbColor, text)
     drawList:AddText({ px, py }, mainU32, text);
 end
 
--- Same layering as AddOutlinedForegroundText (MP / Qty on crossbar), with explicit font size for Edit Full Palette.
+-- Edit Full Palette only (crossbar DrawSlot sets labelForeground + editorMinimalView when palette editing).
+-- Same layering stack as AddOutlinedForegroundText (MP/Qty on live crossbar), with explicit font size.
 local function AddEditorOutlinedForegroundTextLikeMp(drawList, px, py, argbColor, text, font, fontSizePx)
     if not drawList or not text or text == '' then return; end
     local mainU32 = ArgbToImguiU32(argbColor);
@@ -968,7 +970,7 @@ local function SplitNewlines(s)
     return t;
 end
 
--- Multiline editor labels: center each line on the slot (matches outlined per-line draw path).
+-- labelForeground without editorMinimalView (rare). Edit Full Palette uses AddEditorMultilineCenteredOnSlotLikeCorner instead.
 local function AddEditorMultilineCenteredOutlined(dl, cx, topY, argbColor, multilineText, font, fontSizePx)
     if not dl or not multilineText or multilineText == '' then return; end
     local lines = SplitNewlines(multilineText);
@@ -993,7 +995,7 @@ local function AddEditorMultilineCenteredOutlined(dl, cx, topY, argbColor, multi
     end
 end
 
--- Edit Full Palette: labels centered on slot; same soft scrim + stroke stack as MP/Qty (AddOutlinedForegroundText).
+-- Edit Full Palette only — in-game crossbar keeps GDI labels above/below slots. Centered on-slot; MP/Qty-style scrim + stroke.
 local function AddEditorMultilineCenteredOnSlotLikeCorner(dl, slotX, slotY, slotSize, argbColor, multilineText, font, fontSizePx)
     if not dl or not multilineText or multilineText == '' or not slotSize or slotSize <= 0 then return; end
     local raw = SplitNewlines(multilineText);
@@ -1111,8 +1113,8 @@ end
         - editorClipRect: Optional { minX, minY, maxX, maxY } screen-space rect; hides D3D/GDI when the slot (+labels) is outside (ImGui layers should use PushClipRect separately).
         - editorStrictContain: Optional bool. When true and editorClipRect is set, slot content must be fully inside clip rect (prevents edge leaking while scrolling).
         - performanceLiteChecks: Optional bool. When true, skip heavy recast/MP/availability checks (useful for edit-only views).
-        - labelForeground: Optional bool. When true, render action label via foreground draw list (on top of D3D slot/icon layers).
-        - editorMinimalView: Optional bool. When true, suppress MP/Qty/timer/corner numeric overlays (icon + label focused).
+        - labelForeground: Optional bool. Crossbar sets this only for Edit Full Palette (draft edit session): draw the action name via ImGui instead of GDI labelFont.
+        - editorMinimalView: Optional bool. Edit Full Palette: suppress MP/Qty/timer/corner overlays; use on-slot abbrev/hover labels. Normal gameplay crossbar does not set this.
         - editorEmptySlotBgRgb: Optional { r, g, b } in 0..1; panel behind empty slots (defaults to Edit Full Palette row fill in palettemanager.lua).
         - forceImGuiIcon: Optional bool. When true, bypass icon primitive path and render icon via ImGui draw list.
         - suppressActionOnClick: Optional bool. When true, left-click never runs onClick or executes the bound command (drag/drop still work).
@@ -2345,7 +2347,7 @@ function M.DrawSlot(resources, params)
     end
 
     if fgLabel then
-        -- Use window draw list (not global foreground) so labels stay scoped to this window/layer.
+        -- Edit Full Palette (labelForeground): window draw list so labels stay under other ImGui windows and respect scroll clip.
         local dl = imgui.GetWindowDrawList();
         if dl then
             local clip = params.editorClipRect;
