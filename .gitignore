@@ -1,20 +1,2 @@
-*.code-workspace
-.vscode/settings.json
-.vscode/launch.json
-.claude
-.claude/settings.local.json
-.plan.md
-CLAUDE.md
-ai-docs/
-ai-docs/*
-ai/
-ai/*
-XIUI/docs/*
-
-# Custom item icons (user-provided)
-XIUI/assets/hotbar/items/
-
-# Windows null device workaround (created when bash runs CMD-style redirects)
-nul
-
-.github/copilot-instructions.md
+# Local / personal hotbar icon packs (not for the shared repo)
+assets/hotbar/custom/
