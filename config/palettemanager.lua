@@ -76,9 +76,9 @@ local EDIT_FULL_PALETTE_WINDOW_KEY = 'EditFullPalette';
 -- Default / clamp width for the embedded Edit Full Palette window (was 680; wider helps L2/R2 footer columns)
 local EDIT_FULL_PALETTE_WIN_W = 700;
 -- When true, horizontal size is fixed to EDIT_FULL_PALETTE_WIN_W (constraints min/max width equal); height still obeys limits below.
-local EDIT_FULL_PALETTE_WIN_LOCK_WIDTH = true;
+local EDIT_FULL_PALETTE_WIN_LOCK_WIDTH = false;
 local EDIT_FULL_PALETTE_WIN_W_MIN = 700;
-local EDIT_FULL_PALETTE_WIN_W_MAX = 700;
+local EDIT_FULL_PALETTE_WIN_W_MAX = 1400;
 -- Default height: inner area scrolls; do not drive window height from content (that caused scroll “jumping”).
 local EDIT_FULL_PALETTE_WIN_H_DEFAULT = 760;
 -- Resizable height range (constraints). When LOCK_HEIGHT is true, min/max height both use H_DEFAULT (fixed height).
@@ -91,6 +91,8 @@ local EDIT_FULL_PALETTE_FOOTER_BLOCK_H = 44;
 -- User closed XIUI Config while Edit Full Palette was open: show confirm on next palette draw.
 local openCloseConfigConfirmPopup = false;
 local openUnsavedChangesPopup = false;
+-- Pending palette switch: when the user picks a different palette from the dropdown but has unsaved changes.
+local pendingPaletteSwitchName = nil;
 
 -- Embedded Palette Manager (Crossbar tab): fixed list viewport = column headers + N rows, then scroll.
 local EMBED_CROSSBAR_PAL_LIST_VISIBLE_ROWS = 3;
@@ -157,19 +159,22 @@ end
 
 local function BuildEditFullPaletteViewSettings(cross)
     local v = {};
+    -- Copy all non-visual properties (palette data, mode toggles, overrides, etc.)
     for k, val in pairs(cross or {}) do
         v[k] = val;
     end
-    local scale = 0.80;
-    v.slotSize = math.max(26, math.floor(((cross and cross.slotSize) or 48) * scale + 0.5));
-    v.buttonIconSize = math.max(12, math.floor(((cross and cross.buttonIconSize) or 24) * scale + 0.5));
-    -- Edit Full Palette: slightly larger than gameplay labels; drawn as overlay on slot icons.
-    v.labelFontSize = math.max(11, math.floor(((cross and cross.labelFontSize) or 10) + 2.5));
-    v.recastTimerFontSize = math.max(8, math.floor(((cross and cross.recastTimerFontSize) or 11) * scale + 0.5));
-    v.mpCostFontSize = math.max(8, math.floor(((cross and cross.mpCostFontSize) or 10) * scale + 0.5));
-    v.quantityFontSize = math.max(8, math.floor(((cross and cross.quantityFontSize) or 10) * scale + 0.5));
-    v.slotGapV = math.max(6, (cross and cross.slotGapV or 4) + 2);
-    v.slotGapH = math.max(6, (cross and cross.slotGapH or 4) + 2);
+    -- Fixed visual constants — not derived from the user's crossbar display config.
+    -- Every user sees an identical editor layout regardless of their gameplay crossbar settings.
+    v.slotSize            = 38;
+    v.buttonIconSize      = 20;
+    v.labelFontSize       = 13;
+    v.recastTimerFontSize = 9;
+    v.mpCostFontSize      = 9;
+    v.quantityFontSize    = 9;
+    v.slotGapV            = 6;
+    v.slotGapH            = 6;
+    v.diamondSpacing      = 20;
+    v.groupSpacing        = 40;
     return v;
 end
 
@@ -927,7 +932,7 @@ local function DrawEmbeddedCrossbarComboModesPopup()
     local named = cross.namedPaletteComboModeSettings;
     local segmentOverrideJobId = (kind == 'job') and (ctx.jobId or 1) or nil;
 
-    -- Header: Macro Manager button + description
+    -- Header row 1: Macro Manager button + description
     components.PushMacroManagerButtonStyle();
     if imgui.Button('Macro Manager##xbEmbCombMacro') then
         macropalette.OpenPalette();
@@ -935,6 +940,81 @@ local function DrawEmbeddedCrossbarComboModesPopup()
     components.PopMacroManagerButtonStyle();
     imgui.SameLine();
     imgui.TextColored({ 0.62, 0.6, 0.55, 1.0 }, 'Right-click a slot to clear; drag macros or slots to rearrange. Double-click to edit.');
+
+    -- Header row 2: Job/scope label + "not in use" warning
+    do
+        local jobLabel;
+        if kind == 'universal' then
+            jobLabel = 'Global [G]';
+        else
+            local jid = ctx.jobId or 1;
+            jobLabel = jobs[jid] or ('Job ' .. tostring(jid));
+        end
+        imgui.TextColored(components.TAB_STYLE.gold, jobLabel);
+        imgui.SameLine(0, 12);
+        imgui.TextColored({ 0.62, 0.6, 0.55, 1.0 }, 'Palette:');
+        imgui.SameLine(0, 4);
+        imgui.TextColored({ 0.85, 0.82, 0.72, 1.0 }, '"' .. (ctx.name or '?') .. '"');
+
+        local activeScope = palette.GetCrossbarPaletteScope and palette.GetCrossbarPaletteScope() or 'job';
+        local activeName = palette.GetActivePaletteForCombo and palette.GetActivePaletteForCombo('L2') or nil;
+        local isActive = false;
+        if kind == 'universal' and activeScope == 'universal' then
+            isActive = (activeName == ctx.name);
+        elseif kind == 'job' and activeScope == 'job' then
+            isActive = (activeName == ctx.name);
+        end
+        if not isActive then
+            imgui.SameLine(0, 16);
+            imgui.TextColored({ 0.95, 0.78, 0.25, 1.0 }, 'This palette is not currently in use.');
+        end
+    end
+
+    -- Header row 3: Quick palette switcher (selection only)
+    do
+        local paletteNames;
+        if kind == 'universal' then
+            paletteNames = palette.GetUniversalCrossbarPaletteNamesOrdered and palette.GetUniversalCrossbarPaletteNamesOrdered() or {};
+        else
+            paletteNames = palette.GetCrossbarPaletteNamesForOrderTier and palette.GetCrossbarPaletteNamesForOrderTier(ctx.jobId or 1, tonumber(ctx.st) or 0) or {};
+        end
+        if #paletteNames > 1 then
+            imgui.TextColored({ 0.62, 0.6, 0.55, 1.0 }, 'Switch Palette:');
+            imgui.SameLine(0, 6);
+            imgui.PushStyleColor(ImGuiCol_FrameBg, { 0.10, 0.09, 0.07, 1.0 });
+            imgui.PushStyleColor(ImGuiCol_FrameBgHovered, { 0.14, 0.13, 0.11, 1.0 });
+            imgui.PushStyleColor(ImGuiCol_FrameBgActive, { 0.14, 0.13, 0.11, 1.0 });
+            imgui.SetNextItemWidth(200);
+            if imgui.BeginCombo('##xbEditPalSwitch', ctx.name or '?') then
+                for _, pName in ipairs(paletteNames) do
+                    local isSel = (pName == ctx.name);
+                    if isSel then
+                        imgui.PushStyleColor(ImGuiCol_Text, components.TAB_STYLE.gold);
+                    end
+                    if imgui.Selectable(pName, isSel) then
+                        if pName ~= ctx.name then
+                            if data.IsDraftDirty() then
+                                pendingPaletteSwitchName = pName;
+                                openUnsavedChangesPopup = true;
+                            else
+                                data.FullyClosePaletteEditSession();
+                                crossbar.HidePaletteEditorPrimitives();
+                                ctx.name = pName;
+                                editFullPaletteScrollHCached = nil;
+                                embedCrossbarComboWinGraceFrames = 0;
+                            end
+                        end
+                    end
+                    if isSel then
+                        imgui.PopStyleColor();
+                        imgui.SetItemDefaultFocus();
+                    end
+                end
+                imgui.EndCombo();
+            end
+            imgui.PopStyleColor(3);
+        end
+    end
     imgui.Spacing();
 
     -- Scroll region height: cache + quantized avail (see GetContentRegionAvailHeight). Refresh when the user
@@ -1055,21 +1135,46 @@ local function DrawEmbeddedCrossbarComboModesPopup()
     end
     imgui.SetNextWindowSize({ 420, 0 }, ImGuiCond_Appearing);
     if imgui.BeginPopupModal('Unsaved Changes##xbUnsavedModal', nil, ImGuiWindowFlags_AlwaysAutoResize) then
-        imgui.TextWrapped('You have unsaved changes. Apply changes before closing?');
+        local isSwitching = (pendingPaletteSwitchName ~= nil);
+        if isSwitching then
+            imgui.TextWrapped('You have unsaved changes. Apply before switching palettes?');
+        else
+            imgui.TextWrapped('You have unsaved changes. Apply changes before closing?');
+        end
         imgui.Spacing();
-        if imgui.Button('Apply & Close##xbUnsavedApply', { 130, 0 }) then
+        local applyLabel = isSwitching and 'Apply & Switch' or 'Apply & Close';
+        if imgui.Button(applyLabel .. '##xbUnsavedApply', { 130, 0 }) then
             data.ApplyDraft();
-            embedCrossbarComboWinOpen[1] = false;
+            if isSwitching then
+                data.FullyClosePaletteEditSession();
+                crossbar.HidePaletteEditorPrimitives();
+                ctx.name = pendingPaletteSwitchName;
+                editFullPaletteScrollHCached = nil;
+                embedCrossbarComboWinGraceFrames = 0;
+                pendingPaletteSwitchName = nil;
+            else
+                embedCrossbarComboWinOpen[1] = false;
+            end
             imgui.CloseCurrentPopup();
         end
         imgui.SameLine();
         if imgui.Button('Discard##xbUnsavedDiscard', { 100, 0 }) then
             data.DiscardDraft();
-            embedCrossbarComboWinOpen[1] = false;
+            if isSwitching then
+                data.FullyClosePaletteEditSession();
+                crossbar.HidePaletteEditorPrimitives();
+                ctx.name = pendingPaletteSwitchName;
+                editFullPaletteScrollHCached = nil;
+                embedCrossbarComboWinGraceFrames = 0;
+                pendingPaletteSwitchName = nil;
+            else
+                embedCrossbarComboWinOpen[1] = false;
+            end
             imgui.CloseCurrentPopup();
         end
         imgui.SameLine();
         if imgui.Button('Cancel##xbUnsavedCancel', { 100, 0 }) then
+            pendingPaletteSwitchName = nil;
             imgui.CloseCurrentPopup();
         end
         imgui.EndPopup();

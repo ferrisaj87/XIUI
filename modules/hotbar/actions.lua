@@ -1025,40 +1025,35 @@ function M.IsActionAvailable(bind)
     -- Handle magic spells
     if bind.actionType == 'ma' then
         local spell = GetSpellByName(bind.action);
-        if not spell then return false, 'Unknown'; end  -- Typo / invalid spell name → show unavailable
+        if not spell then return false, 'Unknown'; end
 
         local levels = spell.levels;
-        if not levels then return true, nil; end  -- No level requirements
+        if not levels then return true, nil; end
 
-        -- Check if main job can cast this spell
         local mainReqLevel = levels[mainJobId];
         local subReqLevel = subJobId and levels[subJobId] or nil;
 
-        -- Check main job first
-        if mainReqLevel then
-            if mainJobLevel >= mainReqLevel then
-                return true, nil;  -- Can cast with main job
+        -- Level gate: check if main or sub job meets the requirement
+        local mainCanLevel = mainReqLevel and mainJobLevel >= mainReqLevel;
+        local subCanLevel = subReqLevel and subJobLevel >= subReqLevel;
+
+        if not mainCanLevel and not subCanLevel then
+            if mainReqLevel then
+                return false, string.format("Lv%d", mainReqLevel);
+            elseif subReqLevel then
+                return false, string.format("Lv%d", subReqLevel);
+            else
+                return false, "Job";
             end
         end
 
-        -- Check subjob
-        if subReqLevel then
-            if subJobLevel >= subReqLevel then
-                return true, nil;  -- Can cast with subjob
-            end
+        -- Scroll/quest gate: right job and level but spell not yet learned
+        if spell.id and not player:HasSpell(spell.id) then
+            local reqLv = mainCanLevel and mainReqLevel or subReqLevel;
+            return false, string.format("Lv%d", reqLv);
         end
 
-        -- Spell exists but can't be cast
-        if mainReqLevel then
-            -- Has the job but not the level
-            return false, string.format("Lv%d", mainReqLevel);
-        elseif subReqLevel then
-            -- Subjob has it but not the level
-            return false, string.format("Lv%d", subReqLevel);
-        else
-            -- Job can't cast this spell at all
-            return false, "Job";
-        end
+        return true, nil;
 
     -- Handle job abilities
     elseif bind.actionType == 'ja' then

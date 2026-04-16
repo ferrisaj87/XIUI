@@ -456,6 +456,15 @@ end
 local charSettings = settings.load(T{ currentProfile = 'Default' });
 config = charSettings; -- Keep reference to character config
 
+-- Initialize per-character known weaponskills cache
+do
+    local pd = require('modules.hotbar.playerdata');
+    if not charSettings.knownWeaponskills then
+        charSettings.knownWeaponskills = {};
+    end
+    pd.SetKnownWeaponskills(charSettings.knownWeaponskills);
+end
+
 -- Global profiles list
 local globalProfiles = profileManager.GetGlobalProfiles();
 

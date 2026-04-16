@@ -623,6 +623,15 @@ local function ScaleArgbOpacity(argb, opacity)
     return bit.bor(bit.lshift(a, 24), bit.band(argb, 0x00FFFFFF));
 end
 
+local function DimArgbColor(argb, factor)
+    if not factor or factor >= 0.999 then return argb; end
+    local a = bit.band(bit.rshift(argb, 24), 0xFF);
+    local r = math.floor(bit.band(bit.rshift(argb, 16), 0xFF) * factor);
+    local g = math.floor(bit.band(bit.rshift(argb, 8), 0xFF) * factor);
+    local b = math.floor(bit.band(argb, 0xFF) * factor);
+    return bit.bor(bit.lshift(a, 24), bit.lshift(r, 16), bit.lshift(g, 8), b);
+end
+
 -- Rasterized GDI cooldown text ((recastTimerFontSize + 1) / outline) as a texture, drawn in ImGui foreground.
 -- Restores the old large timer look; stays above D3D icon primitives (timerFont alone is drawn under them).
 local function DrawGdiTimerCooldownForeground(topDl, timerFont, recastText, timerColor, x, y, size, animOpacity, params, cache)
@@ -1877,15 +1886,13 @@ function M.DrawSlot(resources, params)
             local labelColor = params.labelFontColor or 0xFFFFFFFF;
 
             if isUnavailable then
-                -- Grey when action is unavailable (wrong job, under synced, etc)
                 labelColor = 0xFF888888;
             elseif isOnCooldown then
-                -- Grey when on cooldown
                 labelColor = params.labelCooldownColor or 0xFF888888;
             elseif notEnoughMp then
-                -- Red when not enough MP
                 labelColor = params.labelNoMpColor or 0xFFFF4444;
             end
+            labelColor = DimArgbColor(labelColor, dimFactor);
 
             -- Only update color if changed
             if cache and cache.labelFontColor ~= labelColor then
@@ -1920,6 +1927,7 @@ function M.DrawSlot(resources, params)
             elseif notEnoughMp then
                 labelColor = params.labelNoMpColor or 0xFFFF4444;
             end
+            labelColor = DimArgbColor(labelColor, dimFactor);
             if minimalEditorView and isHovered and not dragdrop.IsDragging() then
                 labelColor = LerpArgbTowardWhite(labelColor, 0.38);
             end
@@ -1970,8 +1978,7 @@ function M.DrawSlot(resources, params)
                     resources.mpCostFont:set_font_height(params.mpCostFontSize);
                     cache.mpCostFontSize = params.mpCostFontSize;
                 end
-                -- Red for level/job gate; keep red for generic unavailable
-                local xColor = 0xFFFF4444;
+                local xColor = DimArgbColor(0xFFFF4444, dimFactor);
                 if cache and cache.mpCostFontColor ~= xColor then
                     resources.mpCostFont:set_font_color(xColor);
                     cache.mpCostFontColor = xColor;
@@ -2007,11 +2014,12 @@ function M.DrawSlot(resources, params)
                         cache.mpCostFontSize = params.mpCostFontSize;
                     end
 
-                    -- Determine MP cost color - red if not enough MP
+                    -- Determine MP cost color - red if not enough MP; dim with inactive side
                     local mpCostColor = params.mpCostFontColor or 0xFFD4FF97;
                     if notEnoughMp then
                         mpCostColor = params.mpCostNoMpColor or 0xFFFF4444;
                     end
+                    mpCostColor = DimArgbColor(mpCostColor, dimFactor);
 
                     if cache and cache.mpCostFontColor ~= mpCostColor then
                         resources.mpCostFont:set_font_color(mpCostColor);
@@ -2041,6 +2049,7 @@ function M.DrawSlot(resources, params)
                             cache.mpCostFontSize = params.mpCostFontSize;
                         end
                         local qtyCornerColor = (toolQty == 0) and (params.mpCostNoMpColor or 0xFFFF4444) or (params.mpCostFontColor or 0xFFD4FF97);
+                        qtyCornerColor = DimArgbColor(qtyCornerColor, dimFactor);
                         if cache and cache.mpCostFontColor ~= qtyCornerColor then
                             resources.mpCostFont:set_font_color(qtyCornerColor);
                             cache.mpCostFontColor = qtyCornerColor;
