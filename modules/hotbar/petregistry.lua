@@ -346,13 +346,11 @@ end
 -- Pet Commands Data
 -- ============================================
 
--- Generic pet commands (all pet jobs)
-M.genericPetCommands = {
-    { name = 'Assault', category = 'Command' },
-    { name = 'Retreat', category = 'Command' },
-    { name = 'Stay', category = 'Command' },
-    { name = 'Heel', category = 'Command' },
-    { name = 'Release', category = 'Command' },
+-- SMN pet commands (not blood pacts)
+M.smnPetCommands = {
+    { name = 'Assault', category = 'Command', level = 1 },
+    { name = 'Release', category = 'Command', level = 1 },
+    { name = 'Retreat', category = 'Command', level = 1 },
 };
 
 -- SMN Blood Pacts - Rage (offensive). Retail-style layout: Shared Ifrit block, then per-avatar sections.
@@ -413,12 +411,14 @@ M.bloodPactsRage = {
     { name = 'Moonlit Charge', avatars = {'Fenrir'} },
     { name = 'Crescent Fang', avatars = {'Fenrir'} },
     { name = 'Eclipse Bite', avatars = {'Fenrir'} },
+    { name = 'Lunar Bay', avatars = {'Fenrir'} },
     { name = 'Impact', avatars = {'Fenrir'} },
     { name = 'Howling Moon', avatars = {'Fenrir'} },
     -- Diabolos
     { name = 'Camisado', avatars = {'Diabolos'} },
     { name = 'Nether Blast', avatars = {'Diabolos'} },
     { name = 'Night Terror', avatars = {'Diabolos'} },
+    { name = 'Blindside', avatars = {'Diabolos'} },
     { name = 'Ruinous Omen', avatars = {'Diabolos'} },
     -- Carbuncle
     { name = 'Poison Nails', avatars = {'Carbuncle'} },
@@ -463,6 +463,8 @@ M.bloodPactsWard = {
     { name = 'Hastega', avatars = {'Garuda'} },
     { name = 'Aerial Armor', avatars = {'Garuda'} },
     { name = 'Fleet Wind', avatars = {'Garuda'} },
+    { name = "Wind's Blessing", avatars = {'Garuda'} },
+    { name = 'Hastega II', avatars = {'Garuda'} },
     -- Titan
     { name = 'Earthen Ward', avatars = {'Titan'} },
     { name = 'Earthen Armor', avatars = {'Titan'} },
@@ -474,11 +476,13 @@ M.bloodPactsWard = {
     { name = 'Slowga', avatars = {'Leviathan'} },
     { name = 'Spring Water', avatars = {'Leviathan'} },
     { name = 'Tidal Roar', avatars = {'Leviathan'} },
+    { name = 'Soothing Current', avatars = {'Leviathan'} },
     -- Fenrir
     { name = 'Ecliptic Growl', avatars = {'Fenrir'} },
     { name = 'Ecliptic Howl', avatars = {'Fenrir'} },
     { name = 'Lunar Cry', avatars = {'Fenrir'} },
     { name = 'Lunar Roar', avatars = {'Fenrir'} },
+    { name = 'Heavenward Howl', avatars = {'Fenrir'} },
     -- Diabolos
     { name = 'Pavor Nocturnus', avatars = {'Diabolos'} },
     { name = 'Somnolence', avatars = {'Diabolos'} },
@@ -563,13 +567,10 @@ function M.GetBloodPactByName(name)
     return M.bloodPactIndexByName and M.bloodPactIndexByName[name] or nil;
 end
 
--- DRG Wyvern abilities
+-- DRG Wyvern abilities (Horizon-era only)
 M.wyvernCommands = {
-    { name = 'Steady Wing', category = 'Ability' },
-    { name = 'Spirit Bond', category = 'Ability' },
-    { name = 'Dragon Breaker', category = 'Ability' },
-    { name = 'Spirit Jump', category = 'Ability' },
-    { name = 'Soul Jump', category = 'Ability' },
+    { name = 'Dismiss', category = 'Command', level = 1 },
+    { name = 'Steady Wing', category = 'Ability', level = 30 },
 };
 
 -- PUP Automaton commands
@@ -589,12 +590,13 @@ M.automatonCommands = {
     { name = 'Heady Artifice', category = 'Ability' },
 };
 
--- BST pet commands (not job abilities - those go in Ability section)
-M.bstReadyCommands = {
-    { name = 'Fight', category = 'Command' },
-    { name = 'Sic', category = 'Command' },
-    { name = 'Ready', category = 'Command' },
-    { name = 'Reward', category = 'Command' },
+-- BST pet commands (level-gated, displayed in pet section)
+M.bstPetCommands = {
+    { name = 'Fight', category = 'Command', level = 1 },
+    { name = 'Heel', category = 'Command', level = 10 },
+    { name = 'Stay', category = 'Command', level = 15 },
+    { name = 'Sic', category = 'Command', level = 25 },
+    { name = 'Leave', category = 'Command', level = 35 },
 };
 
 -- ============================================
@@ -918,21 +920,18 @@ end
 function M.GetPetCommandsForJob(jobId, avatarName, activePetName)
     local commands = {};
 
-    -- Add generic commands first
-    for _, cmd in ipairs(M.genericPetCommands) do
-        table.insert(commands, { name = cmd.name, category = cmd.category });
-    end
-
     if jobId == M.JOB_SMN then
+        -- SMN-specific commands
+        for _, cmd in ipairs(M.smnPetCommands) do
+            table.insert(commands, { name = cmd.name, category = cmd.category, level = cmd.level });
+        end
         -- SMN: Blood Pacts
         if avatarName and M.avatars[avatarName] then
-            -- Specific avatar - add only their pacts
             local avatarPacts = M.GetBloodPactsForAvatar(avatarName);
             for _, pact in ipairs(avatarPacts) do
                 table.insert(commands, pact);
             end
         else
-            -- No specific avatar - add all pacts
             local allPacts = M.GetAllBloodPacts();
             for _, pact in ipairs(allPacts) do
                 table.insert(commands, pact);
@@ -941,7 +940,7 @@ function M.GetPetCommandsForJob(jobId, avatarName, activePetName)
     elseif jobId == M.JOB_DRG then
         -- DRG: Wyvern commands
         for _, cmd in ipairs(M.wyvernCommands) do
-            table.insert(commands, { name = cmd.name, category = cmd.category });
+            table.insert(commands, { name = cmd.name, category = cmd.category, level = cmd.level });
         end
     elseif jobId == M.JOB_PUP then
         -- PUP: Automaton commands
@@ -949,9 +948,9 @@ function M.GetPetCommandsForJob(jobId, avatarName, activePetName)
             table.insert(commands, { name = cmd.name, category = cmd.category });
         end
     elseif jobId == M.JOB_BST then
-        -- BST: Ready commands (abilities)
-        for _, cmd in ipairs(M.bstReadyCommands) do
-            table.insert(commands, { name = cmd.name, category = cmd.category });
+        -- BST-specific pet commands
+        for _, cmd in ipairs(M.bstPetCommands) do
+            table.insert(commands, { name = cmd.name, category = cmd.category, level = cmd.level });
         end
         -- BST: Ready moves for the active pet
         if activePetName then
@@ -962,7 +961,6 @@ function M.GetPetCommandsForJob(jobId, avatarName, activePetName)
                 end
             end
         else
-            -- No specific pet - add all ready moves
             local allMoves = M.GetAllReadyMoves();
             for _, move in ipairs(allMoves) do
                 table.insert(commands, move);
@@ -972,5 +970,159 @@ function M.GetPetCommandsForJob(jobId, avatarName, activePetName)
 
     return commands;
 end
+
+-- ============================================
+-- "Show All" Expanded List Builders (level-gated)
+-- ============================================
+
+local STATUS_HAVE = 'have';
+local STATUS_UNAVAILABLE = 'unavailable';
+
+--- Get BST pet commands with level-gated status from horizon_abilities.
+--- Includes BST pet commands (pet=true) + ready moves for the active pet.
+---@param bstLevel number The player's BST level
+---@param activePetName string|nil Name of the currently active pet for ready moves
+---@return table Array of {name, category, level, status, reqStr}
+function M.GetBstPetCommandsExpanded(bstLevel, activePetName)
+    local horizonAbilities = require('modules.hotbar.database.horizon_abilities');
+    local commands = {};
+
+    for cmdName, info in pairs(horizonAbilities) do
+        if not info.pet then goto continue; end
+
+        local status = (bstLevel >= info.level) and STATUS_HAVE or STATUS_UNAVAILABLE;
+        table.insert(commands, {
+            name = cmdName,
+            category = 'Command',
+            level = info.level,
+            status = status,
+            reqStr = 'Lv.' .. tostring(info.level),
+        });
+        ::continue::
+    end
+
+    -- Add ready moves (pet-family-specific, always available when the command itself is)
+    if activePetName then
+        local readyMoves = M.GetReadyMovesForPet(activePetName);
+        if readyMoves then
+            for _, move in ipairs(readyMoves) do
+                table.insert(commands, {
+                    name = move.name,
+                    category = 'Ready',
+                    status = STATUS_HAVE,
+                });
+            end
+        end
+    else
+        local allMoves = M.GetAllReadyMoves();
+        for _, move in ipairs(allMoves) do
+            table.insert(commands, {
+                name = move.name,
+                category = 'Ready',
+                status = STATUS_HAVE,
+            });
+        end
+    end
+
+    table.sort(commands, function(a, b)
+        local sa = a.status == STATUS_HAVE and 1 or 2;
+        local sb = b.status == STATUS_HAVE and 1 or 2;
+        if sa ~= sb then return sa < sb; end
+        local la = a.level or 999;
+        local lb = b.level or 999;
+        if la ~= lb then return la < lb; end
+        return a.name < b.name;
+    end);
+
+    return commands;
+end
+
+--- Get blood pacts for a specific avatar (or all) with level-gated status.
+---@param avatarName string|nil Avatar name to filter by, or nil for all
+---@param smnLevel number The player's SMN level
+---@return table Array of {name, category, level, mp, status, reqStr}
+function M.GetBloodPactsExpanded(avatarName, smnLevel)
+    local pacts = {};
+    local seen = {};
+
+    local function addPact(pact, cat)
+        if seen[pact.name] then return; end
+        if avatarName then
+            local match = false;
+            for _, av in ipairs(pact.avatars) do
+                if av == avatarName then match = true; break; end
+            end
+            if not match then return; end
+        end
+
+        local bpData = horizonBloodPacts.byName and horizonBloodPacts.byName[pact.name];
+        local level = 0;
+        local mp = 0;
+        if bpData then
+            level = (bpData.levels and bpData.levels[15]) or 0;
+            mp = bpData.mp_cost or 0;
+        end
+
+        local status;
+        if level <= 0 or smnLevel >= level then
+            status = STATUS_HAVE;
+        else
+            status = STATUS_UNAVAILABLE;
+        end
+
+        local reqStr;
+        if level > 0 then
+            reqStr = 'Lv.' .. tostring(level);
+        end
+
+        seen[pact.name] = true;
+        table.insert(pacts, {
+            name = pact.name,
+            category = cat,
+            level = level,
+            mp = mp,
+            status = status,
+            reqStr = reqStr,
+        });
+    end
+
+    -- SMN pet commands (Assault, Release, Retreat) — always available at level 1
+    for _, cmd in ipairs(M.smnPetCommands) do
+        local status = (smnLevel >= cmd.level) and STATUS_HAVE or STATUS_UNAVAILABLE;
+        table.insert(pacts, {
+            name = cmd.name,
+            category = 'Command',
+            level = cmd.level,
+            mp = 0,
+            status = status,
+            reqStr = 'Lv.' .. tostring(cmd.level),
+        });
+    end
+
+    for _, pact in ipairs(M.bloodPactsRage) do
+        addPact(pact, 'BP: Rage');
+    end
+    for _, pact in ipairs(M.bloodPactsWard) do
+        addPact(pact, 'BP: Ward');
+    end
+
+    -- Sort: Commands first, then BP: Rage, then BP: Ward. Within each group: status, level, name.
+    local CAT_SORT = { ['Command'] = 0, ['BP: Rage'] = 1, ['BP: Ward'] = 2 };
+    table.sort(pacts, function(a, b)
+        local ca = CAT_SORT[a.category] or 9;
+        local cb = CAT_SORT[b.category] or 9;
+        if ca ~= cb then return ca < cb; end
+        local sa = a.status == STATUS_HAVE and 1 or 2;
+        local sb = b.status == STATUS_HAVE and 1 or 2;
+        if sa ~= sb then return sa < sb; end
+        if a.level ~= b.level then return a.level < b.level; end
+        return a.name < b.name;
+    end);
+
+    return pacts;
+end
+
+M.STATUS_HAVE = STATUS_HAVE;
+M.STATUS_UNAVAILABLE = STATUS_UNAVAILABLE;
 
 return M;
