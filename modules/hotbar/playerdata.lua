@@ -58,6 +58,63 @@ local function IsGarbageSpellName(name)
 end
 
 -- ============================================
+-- Spell Sorting Helpers
+-- ============================================
+
+-- Base type rank (canonical display order when no job context)
+local BASE_TYPE_RANK = {
+    WhiteMagic=1, BlackMagic=2, BardSong=3, Ninjutsu=4,
+    SummonerPact=5, BlueMagic=6, Geomancy=7, Trust=8,
+};
+
+-- Which type to surface first for each job
+local JOB_PRIMARY_TYPE = {
+    [3]  = 'WhiteMagic',    -- WHM
+    [4]  = 'BlackMagic',    -- BLM
+    [5]  = 'WhiteMagic',    -- RDM (has both; white magic is their healing focus)
+    [7]  = 'WhiteMagic',    -- PLD
+    [8]  = 'BlackMagic',    -- DRK
+    [10] = 'BardSong',      -- BRD
+    [13] = 'Ninjutsu',      -- NIN
+    [15] = 'SummonerPact',  -- SMN
+    [16] = 'BlueMagic',     -- BLU
+    [20] = 'WhiteMagic',    -- SCH
+    [21] = 'Geomancy',      -- GEO
+};
+
+--- Build a sort comparator for spells, context-aware by job.
+--- Primary type for the given job sorts to the top.
+--- Within SummonerPact, avatars come before spirits.
+---@param mainJobId number
+---@param statusSort table|nil  Optional STATUS_SORT table for "Show All" mode
+---@return function
+local function MakeSpellSortFn(mainJobId, statusSort)
+    local primaryType = JOB_PRIMARY_TYPE[mainJobId];
+    return function(a, b)
+        local ra = BASE_TYPE_RANK[a.type] or 9;
+        local rb = BASE_TYPE_RANK[b.type] or 9;
+        if primaryType then
+            if a.type == primaryType then ra = 0; end
+            if b.type == primaryType then rb = 0; end
+        end
+        if ra ~= rb then return ra < rb; end
+        -- Within SummonerPact: avatars before spirits
+        if a.type == 'SummonerPact' and b.type == 'SummonerPact' then
+            local aIsSpirit = a.name:find(' Spirit') ~= nil;
+            local bIsSpirit = b.name:find(' Spirit') ~= nil;
+            if aIsSpirit ~= bIsSpirit then return not aIsSpirit; end
+        end
+        if statusSort then
+            local sa = statusSort[a.status] or 9;
+            local sb = statusSort[b.status] or 9;
+            if sa ~= sb then return sa < sb; end
+        end
+        if a.level ~= b.level then return a.level < b.level; end
+        return a.name < b.name;
+    end;
+end
+
+-- ============================================
 -- Player Data Retrieval Functions
 -- ============================================
 
@@ -73,39 +130,36 @@ function M.GetPlayerSpells()
     local subJobId = player:GetSubJob();
     local subJobLevel = player:GetSubJobLevel();
     local resMgr = AshitaCore:GetResourceManager();
+    local horizonSpells = require('modules.hotbar.database.horizonspells');
+
+    -- Build a name→type lookup from the static DB
+    local spellTypeByName = {};
+    for _, s in pairs(horizonSpells) do
+        if s.en and s.type then spellTypeByName[s.en] = s.type; end
+    end
 
     local spells = {};
-    local addedSpells = {};  -- Track by spell ID to avoid duplicates
+    local addedSpells = {};
 
     for spellId = 1, 1024 do
-        -- Skip trust spells (IDs 896+)
-        if spellId >= 896 then
-            break;
-        end
+        if spellId >= 896 then break; end
 
         if player:HasSpell(spellId) then
             local spell = resMgr:GetSpellById(spellId);
             if spell and spell.Name and spell.Name[1] and spell.Name[1] ~= '' then
                 local spellName = spell.Name[1];
 
-                -- Skip garbage/test spell names
                 if not IsGarbageSpellName(spellName) then
-                    -- LevelRequired array uses jobId + 1 offset
-                    -- WHM (jobId=3) -> LevelRequired[4], BLM (jobId=4) -> LevelRequired[5]
                     local mainReqLevel = spell.LevelRequired[mainJobId + 1] or 0;
                     local subReqLevel = subJobId > 0 and (spell.LevelRequired[subJobId + 1] or 0) or 0;
 
-                    -- Filter invalid level values (0 = can't learn, 255 = can't learn)
                     local validMainReq = mainReqLevel > 0 and mainReqLevel < 255;
                     local validSubReq = subReqLevel > 0 and subReqLevel < 255;
 
-                    -- Check if castable by main job
                     local canCastMain = validMainReq and mainReqLevel <= mainJobLevel;
-                    -- Check if castable by sub job
                     local canCastSub = validSubReq and subReqLevel <= subJobLevel;
 
                     if (canCastMain or canCastSub) and not addedSpells[spellId] then
-                        -- Use main job level if castable, otherwise sub job level
                         local displayLevel = canCastMain and mainReqLevel or subReqLevel;
                         local source = canCastMain and 'main' or 'sub';
 
@@ -114,6 +168,7 @@ function M.GetPlayerSpells()
                             name = spellName,
                             level = displayLevel,
                             source = source,
+                            type = spellTypeByName[spellName] or 'Unknown',
                         });
                         addedSpells[spellId] = true;
                     end
@@ -122,12 +177,7 @@ function M.GetPlayerSpells()
         end
     end
 
-    table.sort(spells, function(a, b)
-        if a.level == b.level then
-            return a.name < b.name;
-        end
-        return a.level < b.level;
-    end);
+    table.sort(spells, MakeSpellSortFn(mainJobId, nil));
 
     return spells;
 end
@@ -171,23 +221,28 @@ function M.GetPlayerAbilities()
     local subJobId = player:GetSubJob();
     local subJobLevel = player:GetSubJobLevel();
     local resMgr = AshitaCore:GetResourceManager();
+    local horizonAbilities = require('modules.hotbar.database.horizon_abilities');
 
     local abilities = {};
-    local addedAbilities = {};  -- Track by ability ID to avoid duplicates
+    local addedAbilities = {};
 
-    -- Scan ability IDs 1-1024 (job abilities can be in higher ranges like 500+)
     for abilityId = 1, 1024 do
         if player:HasAbility(abilityId) then
             local ability = resMgr:GetAbilityById(abilityId);
             if ability and ability.Name and ability.Name[1] and ability.Name[1] ~= '' then
                 local abilityType = ability.Type and bit.band(ability.Type, 7) or 0;
 
-                -- Filter out weapon skills (Type 3) and pet commands (by name)
                 local abilityName = ability.Name[1];
                 if abilityType ~= ABILITY_TYPE_WEAPON_SKILL and not PET_COMMAND_NAMES[abilityName] then
 
                     if not addedAbilities[abilityId] then
                         local source = 'main';
+                        local displayLevel = nil;
+
+                        local dbEntry = horizonAbilities[abilityName];
+                        if dbEntry and dbEntry.level then
+                            displayLevel = dbEntry.level;
+                        end
 
                         if ability.Level then
                             local mainReqLevel = ability.Level[mainJobId + 1] or 0;
@@ -207,6 +262,7 @@ function M.GetPlayerAbilities()
                         table.insert(abilities, {
                             id = abilityId,
                             name = abilityName,
+                            level = displayLevel,
                             source = source,
                         });
                         addedAbilities[abilityId] = true;
@@ -217,6 +273,7 @@ function M.GetPlayerAbilities()
     end
 
     table.sort(abilities, function(a, b)
+        if a.level and b.level and a.level ~= b.level then return a.level < b.level; end
         return a.name < b.name;
     end);
 
@@ -231,10 +288,10 @@ function M.GetPlayerWeaponskills()
     if not player then return {}; end
 
     local resMgr = AshitaCore:GetResourceManager();
+    local wsDb = require('modules.hotbar.database.ws_weapon_types');
     local weaponskills = {};
-    local addedWeaponskills = {};  -- Track by name to avoid duplicates
+    local addedWeaponskills = {};
 
-    -- Scan HasAbility and filter by Type 3 (weapon skills)
     for abilityId = 1, 1024 do
         if player:HasAbility(abilityId) then
             local ability = resMgr:GetAbilityById(abilityId);
@@ -243,9 +300,17 @@ function M.GetPlayerWeaponskills()
                 if abilityType == ABILITY_TYPE_WEAPON_SKILL then
                     local wsName = ability.Name[1];
                     if not addedWeaponskills[wsName] then
+                        local info = wsDb[wsName];
+                        local reqStr = nil;
+                        if info then
+                            reqStr = info.relic and 'Relic Weapon' or ('Skill ' .. tostring(info.skill));
+                        end
                         table.insert(weaponskills, {
                             id = abilityId,
                             name = wsName,
+                            reqStr = reqStr,
+                            skill = info and info.skill or 0,
+                            relic = info and info.relic or false,
                         });
                         addedWeaponskills[wsName] = true;
                     end
@@ -255,6 +320,8 @@ function M.GetPlayerWeaponskills()
     end
 
     table.sort(weaponskills, function(a, b)
+        if a.relic ~= b.relic then return not a.relic; end
+        if a.skill ~= b.skill then return a.skill < b.skill; end
         return a.name < b.name;
     end);
 
@@ -350,6 +417,16 @@ function M.RefreshCachedLists(dataModule)
         cachedItems = nil;  -- Clear items cache to refresh on next access
         cacheJobId = currentJobId;
         cacheSubJobId = currentSubJobId;
+
+        -- Clear expanded caches on job change so they rebuild with fresh data
+        expandedSpellsCache = nil;
+        expandedAbilitiesCache = nil;
+        expandedWsCache = nil;
+
+        -- Discover any newly learned WS and persist to charSettings
+        if M.DiscoverNewWeaponskills() and SaveCharacterSettingsInternal then
+            SaveCharacterSettingsInternal();
+        end
     end
 
     -- Only refresh items if cache is empty (expensive operation)
@@ -390,6 +467,11 @@ function M.ClearCache()
     cachedItems = nil;
     cacheJobId = nil;
     cacheSubJobId = nil;
+    expandedSpellsCache = nil;
+    expandedAbilitiesCache = nil;
+    expandedWsCache = nil;
+    expandedAbilitiesFilterJobId = nil;
+    expandedSpellsFilterType = nil;
 end
 
 --- Get current cache job ID
@@ -435,6 +517,479 @@ function M.IsWeaponskillInCache(wsName)
     end
     return false;
 end
+
+-- ============================================
+-- Per-Character WS Knowledge Cache
+-- ============================================
+
+-- Known WS set: {['Savage Blade']=true, ...}. Populated externally from charSettings.
+local knownWeaponskills = {};
+
+--- Set the known WS table (call from XIUI.lua after loading charSettings)
+function M.SetKnownWeaponskills(tbl)
+    knownWeaponskills = tbl or {};
+end
+
+--- Get the known WS table reference
+function M.GetKnownWeaponskills()
+    return knownWeaponskills;
+end
+
+--- Scan player's current abilities for any new WS and add them to the known set.
+--- Returns true if any new WS were discovered (caller should save charSettings).
+function M.DiscoverNewWeaponskills()
+    local player = AshitaCore:GetMemoryManager():GetPlayer();
+    if not player then return false; end
+
+    local resMgr = AshitaCore:GetResourceManager();
+    local found = false;
+
+    for abilityId = 1, 1024 do
+        if player:HasAbility(abilityId) then
+            local ability = resMgr:GetAbilityById(abilityId);
+            if ability and ability.Name and ability.Name[1] and ability.Name[1] ~= '' then
+                local abilityType = ability.Type and bit.band(ability.Type, 7) or 0;
+                if abilityType == ABILITY_TYPE_WEAPON_SKILL then
+                    local wsName = ability.Name[1];
+                    if not knownWeaponskills[wsName] then
+                        knownWeaponskills[wsName] = true;
+                        found = true;
+                    end
+                end
+            end
+        end
+    end
+
+    return found;
+end
+
+-- ============================================
+-- "Show All" Expanded List Builders
+-- ============================================
+
+local expandedSpellsCache = nil;
+local expandedAbilitiesCache = nil;
+local expandedWsCache = nil;
+local expandedCacheJobId = nil;
+local expandedCacheSubJobId = nil;
+local expandedAbilitiesFilterJobId = nil;
+local expandedSpellsFilterType = nil;
+
+local STATUS_HAVE = 'have';
+local STATUS_LEARNABLE = 'learnable';
+local STATUS_UNAVAILABLE = 'unavailable';
+
+local STATUS_SORT = { [STATUS_HAVE] = 1, [STATUS_LEARNABLE] = 2, [STATUS_UNAVAILABLE] = 3 };
+
+--- Get expanded spell list from horizonspells DB with availability status.
+--- When filterMagicType is 'All' or nil, only spells for the current main/sub job are shown.
+--- When a specific type is given, ALL spells of that type are shown regardless of job.
+--- Green = have, Yellow = learnable (right job/level but missing scroll), Red = unavailable.
+---@param filterMagicType string|nil Magic type filter ('All', 'WhiteMagic', 'BlackMagic', etc.)
+---@return table Array of {id, name, level, source, type, status, icon_id}
+function M.GetAllSpellsForCurrentJob(filterMagicType)
+    local player = AshitaCore:GetMemoryManager():GetPlayer();
+    if not player then return {}; end
+
+    local mainJobId = player:GetMainJob();
+    local mainJobLevel = player:GetMainJobLevel();
+    local subJobId = player:GetSubJob();
+    local subJobLevel = player:GetSubJobLevel();
+
+    local effectiveType = (filterMagicType and filterMagicType ~= 'All') and filterMagicType or 'All';
+
+    -- Self-invalidate when job changes
+    if expandedCacheJobId ~= mainJobId or expandedCacheSubJobId ~= subJobId then
+        expandedSpellsCache = nil;
+        expandedAbilitiesCache = nil;
+        expandedWsCache = nil;
+        expandedCacheJobId = mainJobId;
+        expandedCacheSubJobId = subJobId;
+        expandedSpellsFilterType = nil;
+    end
+    if expandedSpellsFilterType ~= effectiveType then
+        expandedSpellsCache = nil;
+        expandedSpellsFilterType = effectiveType;
+    end
+    if expandedSpellsCache then return expandedSpellsCache; end
+
+    local filterByType = (effectiveType ~= 'All');
+
+    local horizonSpells = require('modules.hotbar.database.horizonspells');
+    local omitList = require('modules.hotbar.database.horizon_spell_omissions');
+    local omitSet = {};
+    for _, name in ipairs(omitList) do omitSet[name] = true; end
+    local spells = {};
+
+    for _, spell in pairs(horizonSpells) do
+        if spell.en and spell.en ~= '' and spell.id and not IsGarbageSpellName(spell.en) then
+            if spell.id >= 896 then goto continue; end
+            if omitSet[spell.en] then goto continue; end
+
+            if filterByType and spell.type ~= effectiveType then goto continue; end
+
+            local levels = spell.levels;
+            if not levels then goto continue; end
+
+            local mainReq = levels[mainJobId];
+            local subReq = (subJobId and subJobId > 0) and levels[subJobId] or nil;
+            local validMain = mainReq and mainReq > 0 and mainReq < 255;
+            local validSub = subReq and subReq > 0 and subReq < 255;
+
+            if not filterByType and not validMain and not validSub then goto continue; end
+
+            local status;
+            local displayLevel;
+            local source;
+
+            local hasSpell = player:HasSpell(spell.id);
+            local canCastMain = validMain and mainReq <= mainJobLevel;
+            local canCastSub = validSub and subReq <= subJobLevel;
+
+            if hasSpell and (canCastMain or canCastSub) then
+                status = STATUS_HAVE;
+                displayLevel = canCastMain and mainReq or subReq;
+                source = canCastMain and 'main' or 'sub';
+            elseif (validMain and mainReq <= mainJobLevel) or (validSub and subReq <= subJobLevel) then
+                status = STATUS_LEARNABLE;
+                displayLevel = canCastMain and mainReq or (validSub and subReq or mainReq);
+                source = validMain and 'main' or 'sub';
+            else
+                status = STATUS_UNAVAILABLE;
+                local bestLevel = nil;
+                for _, lv in pairs(levels) do
+                    if lv and lv > 0 and lv < 255 then
+                        if not bestLevel or lv < bestLevel then bestLevel = lv; end
+                    end
+                end
+                displayLevel = (validMain and mainReq) or (validSub and subReq) or bestLevel or 99;
+                source = validMain and 'main' or (validSub and 'sub' or 'other');
+            end
+
+            table.insert(spells, {
+                id = spell.id,
+                name = spell.en,
+                level = displayLevel,
+                source = source,
+                type = spell.type or 'Unknown',
+                status = status,
+                icon_id = spell.icon_id,
+            });
+            ::continue::
+        end
+    end
+
+    table.sort(spells, MakeSpellSortFn(mainJobId, STATUS_SORT));
+
+    expandedSpellsCache = spells;
+    return spells;
+end
+
+--- Get expanded ability list with availability status.
+--- Uses the static horizon_abilities database for reliable job-ability mapping,
+--- cross-referenced with player:HasAbility() for ownership status.
+---@param filterJobId number|nil Specific job ID to show abilities for. 0 or nil = main+sub (default).
+---@return table Array of {id, name, level, source, status}
+function M.GetAllAbilitiesForCurrentJob(filterJobId)
+    local player = AshitaCore:GetMemoryManager():GetPlayer();
+    if not player then return {}; end
+
+    local mainJobId = player:GetMainJob();
+    local mainJobLevel = player:GetMainJobLevel();
+    local subJobId = player:GetSubJob();
+    local subJobLevel = player:GetSubJobLevel();
+    local resMgr = AshitaCore:GetResourceManager();
+
+    local effectiveFilter = (filterJobId and filterJobId > 0) and filterJobId or 0;
+
+    if expandedCacheJobId ~= mainJobId or expandedCacheSubJobId ~= subJobId then
+        expandedSpellsCache = nil;
+        expandedAbilitiesCache = nil;
+        expandedWsCache = nil;
+        expandedCacheJobId = mainJobId;
+        expandedCacheSubJobId = subJobId;
+        expandedAbilitiesFilterJobId = nil;
+    end
+    if expandedAbilitiesFilterJobId ~= effectiveFilter then
+        expandedAbilitiesCache = nil;
+        expandedAbilitiesFilterJobId = effectiveFilter;
+    end
+    if expandedAbilitiesCache then return expandedAbilitiesCache; end
+
+    local horizonAbilities = require('modules.hotbar.database.horizon_abilities');
+
+    -- Build a name->abilityId lookup from the resource manager (for icon resolution)
+    local nameToId = {};
+    for abilityId = 1, 1024 do
+        local ability = resMgr:GetAbilityById(abilityId);
+        if ability and ability.Name and ability.Name[1] and ability.Name[1] ~= '' then
+            if not nameToId[ability.Name[1]] then
+                nameToId[ability.Name[1]] = abilityId;
+            end
+        end
+    end
+
+    -- Build a set of abilities the player currently has
+    local playerHas = {};
+    for abilityId = 1, 1024 do
+        if player:HasAbility(abilityId) then
+            local ability = resMgr:GetAbilityById(abilityId);
+            if ability and ability.Name and ability.Name[1] and ability.Name[1] ~= '' then
+                playerHas[ability.Name[1]] = true;
+            end
+        end
+    end
+
+    local abilities = {};
+
+    for abilityName, info in pairs(horizonAbilities) do
+        if info.pet then goto continue; end
+
+        local matchesMain = info.job == mainJobId;
+        local matchesSub = subJobId and subJobId > 0 and info.job == subJobId;
+
+        if effectiveFilter > 0 then
+            -- Specific job filter: only show abilities for that job
+            if info.job ~= effectiveFilter then goto continue; end
+        else
+            -- Default: show main + sub job abilities
+            if not matchesMain and not matchesSub then goto continue; end
+        end
+
+        local status;
+        local source;
+
+        if playerHas[abilityName] then
+            status = STATUS_HAVE;
+            source = matchesMain and 'main' or (matchesSub and 'sub' or 'other');
+        elseif matchesMain and mainJobLevel >= info.level then
+            status = STATUS_LEARNABLE;
+            source = 'main';
+        elseif matchesSub and subJobLevel >= info.level then
+            status = STATUS_LEARNABLE;
+            source = 'sub';
+        else
+            status = STATUS_UNAVAILABLE;
+            source = matchesMain and 'main' or (matchesSub and 'sub' or 'other');
+        end
+
+        table.insert(abilities, {
+            id = nameToId[abilityName] or 0,
+            name = abilityName,
+            level = info.level,
+            source = source,
+            status = status,
+        });
+        ::continue::
+    end
+
+    table.sort(abilities, function(a, b)
+        local sa = STATUS_SORT[a.status] or 9;
+        local sb = STATUS_SORT[b.status] or 9;
+        if sa ~= sb then return sa < sb; end
+        if a.level ~= b.level then return a.level < b.level; end
+        return a.name < b.name;
+    end);
+
+    expandedAbilitiesCache = abilities;
+    return abilities;
+end
+
+--- Get expanded weaponskill list from static WS lookup with known/unknown status.
+---@param knownWsTable table|nil Per-character set of known WS names (defaults to internal set)
+---@return table Array of {name, weapon, skill, relic, status}
+function M.GetAllWeaponskillsExpanded(knownWsTable)
+    if expandedWsCache then return expandedWsCache; end
+
+    knownWsTable = knownWsTable or knownWeaponskills;
+    local wsDb = require('modules.hotbar.database.ws_weapon_types');
+    local weaponskills = {};
+
+    for wsName, info in pairs(wsDb) do
+        local status = knownWsTable[wsName] and STATUS_HAVE or STATUS_UNAVAILABLE;
+        local reqStr;
+        if info.relic then
+            reqStr = 'Relic Weapon';
+        else
+            reqStr = 'Skill ' .. tostring(info.skill);
+        end
+        table.insert(weaponskills, {
+            name = wsName,
+            weapon = info.weapon,
+            skill = info.skill,
+            relic = info.relic or false,
+            status = status,
+            reqStr = reqStr,
+        });
+    end
+
+    table.sort(weaponskills, function(a, b)
+        local sa = STATUS_SORT[a.status] or 9;
+        local sb = STATUS_SORT[b.status] or 9;
+        if sa ~= sb then return sa < sb; end
+        if a.weapon ~= b.weapon then return a.weapon < b.weapon; end
+        -- Relic WS sort to bottom within their weapon group
+        if a.relic ~= b.relic then return not a.relic; end
+        if a.skill ~= b.skill then return a.skill < b.skill; end
+        return a.name < b.name;
+    end);
+
+    expandedWsCache = weaponskills;
+    return weaponskills;
+end
+
+--- Clear expanded list caches (call on job change, etc.)
+function M.ClearExpandedCaches()
+    expandedSpellsCache = nil;
+    expandedAbilitiesCache = nil;
+    expandedWsCache = nil;
+    expandedCacheJobId = nil;
+    expandedCacheSubJobId = nil;
+    expandedAbilitiesFilterJobId = nil;
+    expandedSpellsFilterType = nil;
+end
+
+-- Internal type names used in horizonspells.lua mapped to display labels
+local MAGIC_TYPE_LABELS = {
+    WhiteMagic    = 'White Magic',
+    BlackMagic    = 'Black Magic',
+    BardSong      = 'Songs',
+    Ninjutsu      = 'Ninjutsu',
+    SummonerPact  = 'Summoning',
+    BlueMagic     = 'Blue Magic',
+    Geomancy      = 'Geomancy',
+    Trust         = 'Trust',
+};
+
+local MAGIC_TYPE_ORDER = {
+    'WhiteMagic', 'BlackMagic', 'BardSong', 'Ninjutsu',
+    'SummonerPact', 'BlueMagic', 'Geomancy', 'Trust',
+};
+
+-- Job ID -> which magic types that job can natively use (sorted alphabetically by label)
+local JOB_MAGIC_TYPES = {
+    [1]  = {},                                                       -- WAR
+    [2]  = {},                                                       -- MNK
+    [3]  = { 'WhiteMagic' },                                         -- WHM
+    [4]  = { 'BlackMagic' },                                         -- BLM
+    [5]  = { 'BlackMagic', 'WhiteMagic' },                           -- RDM
+    [6]  = {},                                                       -- THF
+    [7]  = { 'WhiteMagic' },                                         -- PLD
+    [8]  = { 'BlackMagic' },                                         -- DRK
+    [9]  = {},                                                       -- BST
+    [10] = { 'BardSong', 'WhiteMagic' },                             -- BRD
+    [11] = {},                                                       -- RNG
+    [12] = {},                                                       -- SAM
+    [13] = { 'Ninjutsu' },                                           -- NIN
+    [14] = {},                                                       -- DRG
+    [15] = { 'SummonerPact', 'WhiteMagic' },                         -- SMN
+    [16] = { 'BlueMagic' },                                          -- BLU
+    [17] = {},                                                       -- COR
+    [18] = {},                                                       -- PUP
+    [19] = {},                                                       -- DNC
+    [20] = { 'BlackMagic', 'WhiteMagic' },                           -- SCH
+    [21] = { 'Geomancy' },                                           -- GEO
+    [22] = {},                                                       -- RUN
+};
+
+--- Get the ordered list of magic types for a given job (or current main+sub).
+--- Returns entries like {key='WhiteMagic', label='White Magic'}.
+---@param mainJobId number|nil Main job ID (uses current player if nil)
+---@param subJobId number|nil Sub job ID (uses current player if nil)
+---@return table Array of {key, label} sorted by MAGIC_TYPE_ORDER
+function M.GetMagicTypesForJob(mainJobId, subJobId)
+    if not mainJobId then
+        local player = AshitaCore:GetMemoryManager():GetPlayer();
+        if not player then return {}; end
+        mainJobId = player:GetMainJob();
+        subJobId = player:GetSubJob();
+    end
+
+    local seen = {};
+    local mainTypes = JOB_MAGIC_TYPES[mainJobId] or {};
+    local subTypes = (subJobId and subJobId > 0) and (JOB_MAGIC_TYPES[subJobId] or {}) or {};
+    for _, t in ipairs(mainTypes) do seen[t] = true; end
+    for _, t in ipairs(subTypes) do seen[t] = true; end
+
+    local result = {};
+    for _, key in ipairs(MAGIC_TYPE_ORDER) do
+        if seen[key] then
+            table.insert(result, { key = key, label = MAGIC_TYPE_LABELS[key] });
+        end
+    end
+    return result;
+end
+
+--- Get display label for a magic type key.
+---@param key string Internal type key (e.g. 'WhiteMagic')
+---@return string Display label (e.g. 'White Magic')
+function M.GetMagicTypeLabel(key)
+    return MAGIC_TYPE_LABELS[key] or key;
+end
+
+--- Get all magic type options in canonical order.
+---@return table Array of {key, label}
+function M.GetAllMagicTypes()
+    local result = {};
+    for _, key in ipairs(MAGIC_TYPE_ORDER) do
+        table.insert(result, { key = key, label = MAGIC_TYPE_LABELS[key] });
+    end
+    return result;
+end
+
+--- Get all unique weapon types from the WS lookup.
+---@return table Array of weapon type strings, sorted alphabetically
+function M.GetWeaponTypes()
+    local wsDb = require('modules.hotbar.database.ws_weapon_types');
+    local types = {};
+    local seen = {};
+    for _, info in pairs(wsDb) do
+        if not seen[info.weapon] then
+            seen[info.weapon] = true;
+            table.insert(types, info.weapon);
+        end
+    end
+    table.sort(types);
+    return types;
+end
+
+--- Get BST pet commands from the static database with level-gated availability.
+--- Uses horizon_abilities entries flagged with pet = true.
+---@param playerLevel number The BST job level to check against
+---@return table Array of {name, level, status}
+function M.GetBstPetCommandsExpanded(playerLevel)
+    local horizonAbilities = require('modules.hotbar.database.horizon_abilities');
+    local commands = {};
+
+    for cmdName, info in pairs(horizonAbilities) do
+        if not info.pet then goto continue; end
+
+        local status;
+        if playerLevel >= info.level then
+            status = STATUS_HAVE;
+        else
+            status = STATUS_UNAVAILABLE;
+        end
+
+        table.insert(commands, {
+            name = cmdName,
+            level = info.level,
+            status = status,
+        });
+        ::continue::
+    end
+
+    table.sort(commands, function(a, b)
+        if a.level ~= b.level then return a.level < b.level; end
+        return a.name < b.name;
+    end);
+
+    return commands;
+end
+
+M.STATUS_HAVE = STATUS_HAVE;
+M.STATUS_LEARNABLE = STATUS_LEARNABLE;
+M.STATUS_UNAVAILABLE = STATUS_UNAVAILABLE;
 
 -- Export helper for external use
 M.IsGarbageSpellName = IsGarbageSpellName;
