@@ -86,9 +86,9 @@ local JOB_PRIMARY_TYPE = {
 --- Primary type for the given job sorts to the top.
 --- Within SummonerPact, avatars come before spirits.
 ---@param mainJobId number
----@param statusSort table|nil  Optional STATUS_SORT table for "Show All" mode
+--- Spells sort by type group, then level, then name. Status is communicated by colour only.
 ---@return function
-local function MakeSpellSortFn(mainJobId, statusSort)
+local function MakeSpellSortFn(mainJobId)
     local primaryType = JOB_PRIMARY_TYPE[mainJobId];
     return function(a, b)
         local ra = BASE_TYPE_RANK[a.type] or 9;
@@ -104,11 +104,7 @@ local function MakeSpellSortFn(mainJobId, statusSort)
             local bIsSpirit = b.name:find(' Spirit') ~= nil;
             if aIsSpirit ~= bIsSpirit then return not aIsSpirit; end
         end
-        if statusSort then
-            local sa = statusSort[a.status] or 9;
-            local sb = statusSort[b.status] or 9;
-            if sa ~= sb then return sa < sb; end
-        end
+        -- Sort by level then name; status is communicated by text colour alone
         if a.level ~= b.level then return a.level < b.level; end
         return a.name < b.name;
     end;
@@ -177,7 +173,7 @@ function M.GetPlayerSpells()
         end
     end
 
-    table.sort(spells, MakeSpellSortFn(mainJobId, nil));
+    table.sort(spells, MakeSpellSortFn(mainJobId));
 
     return spells;
 end
@@ -646,6 +642,7 @@ function M.GetAllSpellsForCurrentJob(filterMagicType)
             local canCastMain = validMain and mainReq <= mainJobLevel;
             local canCastSub = validSub and subReq <= subJobLevel;
 
+            local reason = nil;
             if hasSpell and (canCastMain or canCastSub) then
                 status = STATUS_HAVE;
                 displayLevel = canCastMain and mainReq or subReq;
@@ -654,6 +651,7 @@ function M.GetAllSpellsForCurrentJob(filterMagicType)
                 status = STATUS_LEARNABLE;
                 displayLevel = canCastMain and mainReq or (validSub and subReq or mainReq);
                 source = validMain and 'main' or 'sub';
+                reason = 'Not yet learned (obtain the scroll)';
             else
                 status = STATUS_UNAVAILABLE;
                 local bestLevel = nil;
@@ -664,6 +662,11 @@ function M.GetAllSpellsForCurrentJob(filterMagicType)
                 end
                 displayLevel = (validMain and mainReq) or (validSub and subReq) or bestLevel or 99;
                 source = validMain and 'main' or (validSub and 'sub' or 'other');
+                if source == 'other' then
+                    reason = 'Not available to your current job';
+                else
+                    reason = 'Level too low (requires Lv. ' .. tostring(displayLevel) .. ')';
+                end
             end
 
             table.insert(spells, {
@@ -673,13 +676,14 @@ function M.GetAllSpellsForCurrentJob(filterMagicType)
                 source = source,
                 type = spell.type or 'Unknown',
                 status = status,
+                reason = reason,
                 icon_id = spell.icon_id,
             });
             ::continue::
         end
     end
 
-    table.sort(spells, MakeSpellSortFn(mainJobId, STATUS_SORT));
+    table.sort(spells, MakeSpellSortFn(mainJobId));
 
     expandedSpellsCache = spells;
     return spells;
@@ -758,19 +762,24 @@ function M.GetAllAbilitiesForCurrentJob(filterJobId)
 
         local status;
         local source;
+        local reason = nil;
 
         if playerHas[abilityName] then
             status = STATUS_HAVE;
             source = matchesMain and 'main' or (matchesSub and 'sub' or 'other');
         elseif matchesMain and mainJobLevel >= info.level then
+            -- Right job and level met but HasAbility returned false (edge case)
             status = STATUS_LEARNABLE;
             source = 'main';
+            reason = 'Should be available — try zoning or checking your abilities menu';
         elseif matchesSub and subJobLevel >= info.level then
             status = STATUS_LEARNABLE;
             source = 'sub';
+            reason = 'Should be available — try zoning or checking your abilities menu';
         else
             status = STATUS_UNAVAILABLE;
             source = matchesMain and 'main' or (matchesSub and 'sub' or 'other');
+            reason = 'Level too low (requires Lv. ' .. tostring(info.level) .. ')';
         end
 
         table.insert(abilities, {
@@ -779,6 +788,7 @@ function M.GetAllAbilitiesForCurrentJob(filterJobId)
             level = info.level,
             source = source,
             status = status,
+            reason = reason,
         });
         ::continue::
     end
@@ -808,10 +818,17 @@ function M.GetAllWeaponskillsExpanded(knownWsTable)
     for wsName, info in pairs(wsDb) do
         local status = knownWsTable[wsName] and STATUS_HAVE or STATUS_UNAVAILABLE;
         local reqStr;
+        local reason = nil;
         if info.relic then
             reqStr = 'Relic Weapon';
+            if status == STATUS_UNAVAILABLE then
+                reason = 'Requires the relic weapon to be equipped';
+            end
         else
             reqStr = 'Skill ' .. tostring(info.skill);
+            if status == STATUS_UNAVAILABLE then
+                reason = 'Not yet learned — use a ' .. info.weapon .. ' in battle (skill Lv. ' .. tostring(info.skill) .. ')';
+            end
         end
         table.insert(weaponskills, {
             name = wsName,
@@ -820,6 +837,7 @@ function M.GetAllWeaponskillsExpanded(knownWsTable)
             relic = info.relic or false,
             status = status,
             reqStr = reqStr,
+            reason = reason,
         });
     end
 
