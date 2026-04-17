@@ -1282,10 +1282,38 @@ local function InvalidateAllVisualCachesAfterPaletteListMutation()
     end);
 end
 
+--- Re-run palette validation (active names vs lists) then fire a no-op palette change per bar/combo so
+--- hotbar/crossbar UIs reload binds from gConfig (JSON import changes data under the same palette name).
+function M.RefreshActivePaletteVisualsAfterExternalEdit()
+    local okData, dataMod = pcall(require, 'modules.hotbar.data');
+    if okData and dataMod and dataMod.jobId then
+        pcall(function()
+            M.ValidatePalettesForJob(dataMod.jobId, dataMod.subjobId or 0);
+        end);
+    end
+    local hotbarName = state.activePalette;
+    if hotbarName then
+        for i = 1, 6 do
+            M.FirePaletteChangedCallbacks(i, hotbarName, hotbarName);
+        end
+    end
+    if state.crossbarActivePalette then
+        for _, mode in ipairs(CROSSBAR_COMBO_MODES) do
+            M.FirePaletteChangedCallbacks('crossbar:' .. mode, state.crossbarActivePalette, state.crossbarActivePalette);
+        end
+    end
+    if state.crossbarActiveUniversalPalette then
+        for _, mode in ipairs(CROSSBAR_COMBO_MODES) do
+            M.FirePaletteChangedCallbacks('crossbar:' .. mode, state.crossbarActiveUniversalPalette, state.crossbarActiveUniversalPalette);
+        end
+    end
+end
+
 --- Called after tools import or replace slot data outside normal palette APIs (e.g. JSON import).
 function M.InvalidateCachesAfterExternalSlotMutation()
     InvalidatePaletteListCache();
     InvalidateAllVisualCachesAfterPaletteListMutation();
+    M.RefreshActivePaletteVisualsAfterExternalEdit();
 end
 
 -- ============================================

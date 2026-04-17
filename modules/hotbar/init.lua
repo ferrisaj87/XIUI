@@ -328,7 +328,15 @@ function M.Initialize(settings)
 
     -- Register palette change callback to clear caches
     palette.OnPaletteChanged(function(barIdentifier, oldPaletteName, newPaletteName)
-        local sig = tostring(oldPaletteName) .. '\0' .. tostring(newPaletteName);
+        -- Dedupe identical logical palette switches (one refresh for all hotbar bars). For no-op
+        -- refreshes (same name -> same name, e.g. JSON import under one palette), include barIdentifier
+        -- so every bar/combo mode still runs; otherwise only the first callback ran and the UI stayed blank.
+        local sig;
+        if oldPaletteName == newPaletteName then
+            sig = tostring(barIdentifier) .. '\0' .. tostring(oldPaletteName) .. '\0' .. tostring(newPaletteName);
+        else
+            sig = tostring(oldPaletteName) .. '\0' .. tostring(newPaletteName);
+        end
         if sig == lastPaletteVisualRefreshSig then
             return;
         end
