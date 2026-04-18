@@ -672,20 +672,10 @@ local OUTLINE_OFFSETS_1 = {
     { -1, 0 },             { 1, 0 },
     { -1, 1 }, { 0, 1 }, { 1, 1 },
 };
--- Softer outer black ring (Chebyshev distance 2) — sits behind ±1 for extra edge without bloating fill
-local OUTLINE_OFFSETS_2 = {
-    { -2, -2 }, { -1, -2 }, { 0, -2 }, { 1, -2 }, { 2, -2 },
-    { -2, -1 },                         { 2, -1 },
-    { -2, 0 },                          { 2, 0 },
-    { -2, 1 },                          { 2, 1 },
-    { -2, 2 }, { -1, 2 }, { 0, 2 }, { 1, 2 }, { 2, 2 },
-};
--- Layered bottom-right shadow (drawn first = sits "behind" the glyph)
-local DROP_SHADOW_OFFSETS = {
-    { 4, 4 }, { 3, 4 }, { 4, 3 },
-    { 3, 3 }, { 2, 3 }, { 3, 2 },
-    { 2, 2 }, { 1, 2 }, { 2, 1 },
-};
+-- ImGui CalcTextSize is ~3-4px narrower than AddText + ±1 outline + drop shadow; right-anchored corner
+-- labels (x126) otherwise clip on the last glyph. Only used to push text LEFT so the right edge clears
+-- the slot — the soft backdrop still hugs the real glyph box.
+local FG_CORNER_POS_SLACK_PX = 4;
 
 -- Brighten label text toward white (Edit Full Palette hover, matches slot highlight feel).
 local function LerpArgbTowardWhite(argb, t)
@@ -739,6 +729,42 @@ local function CalcTextSizePushedNoWrap(text)
     return GetImGuiTextSize2D(text);
 end
 
+-- GDI corner fonts use anchor + alignment; ImGui AddText always draws from top-left. Compute (px,py)
+-- so the string's bbox matches the intended corner inside the slot (fixes clipped / drifting Qty / MP text).
+-- Must be defined after GetImGuiTextSize2D / CalcTextSizePushedNoWrap (Lua 5.1 local scoping).
+-- `inset` reserves space for AddOutlinedForegroundText outline + shadow (CalcTextSize is fill-only).
+-- `fontSizePx`: optional; ImGui CalcTextSize can be narrower than the draw-list glyph width for digit-heavy
+-- strings (e.g. x126), which right-anchored text then clips on the right — use a min width from char count.
+local function ImGuiTopLeftForForegroundCorner(x, y, size, anchor, offsetX, offsetY, text, fontSizePx)
+    if not text or text == '' then
+        return x, y;
+    end
+    local tw, th = GetImGuiTextSize2D(text);
+    if (not tw or tw <= 0) or (not th or th <= 0) then
+        tw, th = CalcTextSizePushedNoWrap(text);
+    end
+    if not tw or tw <= 0 then tw = 1; end
+    if not th or th <= 0 then th = (imgui.GetTextLineHeight and imgui.GetTextLineHeight() or 13); end
+    -- Positioning-only slack so outline + last glyph don't poke past the slot's right edge (right anchors).
+    tw = tw + FG_CORNER_POS_SLACK_PX;
+    anchor = anchor or 'topRight';
+    offsetX = offsetX or 0;
+    offsetY = offsetY or 0;
+    local padding = 2;
+    -- Room for outline/shadow; keep small so corner text does not sit too far left vs GDI-era layout.
+    local inset = 2;
+    if anchor == 'topLeft' then
+        return x + padding + inset + offsetX, y + padding + inset + offsetY;
+    elseif anchor == 'topRight' then
+        return x + size - padding - inset - tw + offsetX, y + padding + inset + offsetY;
+    elseif anchor == 'bottomLeft' then
+        return x + padding + inset + offsetX, y + size - padding - inset - th + offsetY;
+    elseif anchor == 'bottomRight' then
+        return x + size - padding - inset - tw + offsetX, y + size - padding - inset - th + offsetY;
+    end
+    return x + padding + inset + offsetX, y + padding + inset + offsetY;
+end
+
 local function MeasureEditorLabelTextSize(text, fnt, fontSizePx)
     if not text or text == '' then
         return 0, 0;
@@ -784,20 +810,21 @@ end
 
 local function AddSoftEllipticalBackdrop(drawList, px, py, tw, th, aChannel)
     if tw <= 0 or th <= 0 then return; end
-    local padX, padY = 4, 3;
+    -- Tight to the glyph box; corner MP/Qty scrim should read as a hint, not a large black dot.
+    local padX, padY = 2, 2;
     local baseRx = (tw + padX * 2) * 0.5;
     local baseRy = (th + padY * 2) * 0.5;
     local cx = px + tw * 0.5;
     local cy = py + th * 0.5;
-    local baseAlpha = 0.52 * (aChannel / 255);
-    local layers = 5;
+    local baseAlpha = 0.30 * (aChannel / 255);
+    local layers = 4;
     for li = 1, layers do
         local p = (li - 1) / math.max(1, layers - 1);
         -- Large faint ring first → small dark core (smooth radial falloff)
-        local scale = 1.48 - 0.48 * p;
+        local scale = 1.26 - 0.26 * p;
         local rx = baseRx * scale;
         local ry = baseRy * scale;
-        local alpha = baseAlpha * (0.11 + 0.89 * p * p);
+        local alpha = baseAlpha * (0.12 + 0.88 * p * p);
         local col = imgui.GetColorU32({ 0, 0, 0, alpha });
         FillEllipseConvex(drawList, cx, cy, rx, ry, col);
     end
@@ -832,78 +859,21 @@ local function AddOutlinedForegroundText(drawList, px, py, argbColor, text)
     if not drawList or not text or text == '' then return; end
     local mainU32 = ArgbToImguiU32(argbColor);
     local a = bit.rshift(bit.band(argbColor, 0xFF000000), 24);
-    -- Soft oval backdrop (layered ellipses, center darker than edge)
     local tw, th = GetImGuiTextSize2D(text);
     if tw > 0 and th > 0 then
         AddSoftEllipticalBackdrop(drawList, px, py, tw, th, a);
     end
-    -- Drop shadow: strong black; alpha tracks fill so fades stay consistent
-    local shadowA = math.floor(a * 0.88);
+    -- Single soft shadow (multi-pass + ±2 halo bloated glyphs and stacked on wrapped editor lines)
+    local shadowA = math.floor(a * 0.52);
     local shadowU32 = ArgbToImguiU32(bit.bor(bit.lshift(shadowA, 24), 0x000000));
-    for i = 1, #DROP_SHADOW_OFFSETS do
-        local dx, dy = DROP_SHADOW_OFFSETS[i][1], DROP_SHADOW_OFFSETS[i][2];
-        drawList:AddText({ px + dx, py + dy }, shadowU32, text);
-    end
-    -- Outer black halo (±2) then inner stroke (±1) — a bit more black edge without touching fill weight
-    local halo2Argb = bit.bor(bit.lshift(math.floor(a * 0.52), 24), 0x000000);
-    local halo2U32 = ArgbToImguiU32(halo2Argb);
-    for i = 1, #OUTLINE_OFFSETS_2 do
-        local dx, dy = OUTLINE_OFFSETS_2[i][1], OUTLINE_OFFSETS_2[i][2];
-        drawList:AddText({ px + dx, py + dy }, halo2U32, text);
-    end
-    local outlineArgb = bit.bor(bit.lshift(math.floor(a * 0.97), 24), 0x000000);
+    drawList:AddText({ px + 1, py + 1 }, shadowU32, text);
+    local outlineArgb = bit.bor(bit.lshift(math.floor(a * 0.92), 24), 0x000000);
     local outlineU32 = ArgbToImguiU32(outlineArgb);
     for i = 1, #OUTLINE_OFFSETS_1 do
         local dx, dy = OUTLINE_OFFSETS_1[i][1], OUTLINE_OFFSETS_1[i][2];
         drawList:AddText({ px + dx, py + dy }, outlineU32, text);
     end
     drawList:AddText({ px, py }, mainU32, text);
-end
-
--- Edit Full Palette only (crossbar DrawSlot sets labelForeground + editorMinimalView when palette editing).
--- Same layering stack as AddOutlinedForegroundText (MP/Qty on live crossbar), with explicit font size.
-local function AddEditorOutlinedForegroundTextLikeMp(drawList, px, py, argbColor, text, font, fontSizePx)
-    if not drawList or not text or text == '' then return; end
-    local mainU32 = ArgbToImguiU32(argbColor);
-    local a = bit.rshift(bit.band(argbColor, 0xFF000000), 24);
-    local tw, th = MeasureEditorLabelTextSize(text, font, fontSizePx);
-    if (not tw or tw <= 0) then
-        tw = math.max(1, #text * fontSizePx * 0.45);
-    end
-    if (not th or th <= 0) then
-        th = fontSizePx;
-    end
-    if tw > 0 and th > 0 then
-        AddSoftEditorLabelBackdrop(drawList, px, py, tw, th, a);
-    end
-    local shadowA = math.floor(a * 0.88);
-    local shadowU32 = ArgbToImguiU32(bit.bor(bit.lshift(shadowA, 24), 0x000000));
-    local function drawAt(x, y, col)
-        if font and fontSizePx and fontSizePx > 0 then
-            local ok = pcall(function()
-                drawList:AddText(font, fontSizePx, { x, y }, col, text);
-            end);
-            if ok then return; end
-        end
-        drawList:AddText({ x, y }, col, text);
-    end
-    for i = 1, #DROP_SHADOW_OFFSETS do
-        local dx, dy = DROP_SHADOW_OFFSETS[i][1], DROP_SHADOW_OFFSETS[i][2];
-        drawAt(px + dx, py + dy, shadowU32);
-    end
-    local halo2Argb = bit.bor(bit.lshift(math.floor(a * 0.52), 24), 0x000000);
-    local halo2U32 = ArgbToImguiU32(halo2Argb);
-    for i = 1, #OUTLINE_OFFSETS_2 do
-        local dx, dy = OUTLINE_OFFSETS_2[i][1], OUTLINE_OFFSETS_2[i][2];
-        drawAt(px + dx, py + dy, halo2U32);
-    end
-    local outlineArgb = bit.bor(bit.lshift(math.floor(a * 0.97), 24), 0x000000);
-    local outlineU32 = ArgbToImguiU32(outlineArgb);
-    for i = 1, #OUTLINE_OFFSETS_1 do
-        local dx, dy = OUTLINE_OFFSETS_1[i][1], OUTLINE_OFFSETS_1[i][2];
-        drawAt(px + dx, py + dy, outlineU32);
-    end
-    drawAt(px, py, mainU32);
 end
 
 local function AddSimpleOutlinedForegroundText(drawList, px, py, argbColor, text, font, fontSizePx)
@@ -1004,7 +974,7 @@ local function AddEditorMultilineCenteredOutlined(dl, cx, topY, argbColor, multi
     end
 end
 
--- Edit Full Palette only — in-game crossbar keeps GDI labels above/below slots. Centered on-slot; MP/Qty-style scrim + stroke.
+-- Edit Full Palette only — in-game crossbar keeps GDI labels above/below slots. Centered on-slot; thin outline (no scrim) per line.
 local function AddEditorMultilineCenteredOnSlotLikeCorner(dl, slotX, slotY, slotSize, argbColor, multilineText, font, fontSizePx)
     if not dl or not multilineText or multilineText == '' or not slotSize or slotSize <= 0 then return; end
     local raw = SplitNewlines(multilineText);
@@ -1033,7 +1003,9 @@ local function AddEditorMultilineCenteredOnSlotLikeCorner(dl, slotX, slotY, slot
     for i = 1, #lines do
         local line = lines[i];
         local px = EditorLabelSnappedCenterX(cx, line, font, fontSizePx);
-        AddEditorOutlinedForegroundTextLikeMp(dl, px, py, argbColor, line, font, fontSizePx);
+        -- Edit palette on-slot names: use thin outline only (no scrim + multi-pass halo) so wrapped lines
+        -- do not stack thick shadows on each other ("Utsusemi: Ichi" etc.).
+        AddSimpleOutlinedForegroundText(dl, px, py, argbColor, line, font, fontSizePx);
         py = py + lineStep;
     end
 end
@@ -1938,15 +1910,16 @@ function M.DrawSlot(resources, params)
     -- ========================================
     -- 8. MP Cost Font (GDI - anchored position)
     -- Shows level requirement (e.g. Lv65) when gated by level, else "X" for other unavailable, else MP cost,
-    -- else Qty.n for ninjutsu when the spell has no MP line (same corner as MP/Lv).
+    -- else x### for ninjutsu tools when the spell has no MP line (same corner as MP/Lv).
     -- When drawCornerTextForeground is set, GDI is hidden and the same strings are drawn in §11b (above D3D icons).
     -- ========================================
     if resources.mpCostFont and not minimalEditorView then
         fgCornerMp = nil;
         local showMpCost = params.showMpCost ~= false;
+        local mpCostAnchor = params.mpCostAnchor or 'topRight';
         if showMpCost and bind and animOpacity > 0.5 then
-            -- Calculate position using anchor
-            local mpX, mpY = GetAnchoredPosition(x, y, size, params.mpCostAnchor, params.mpCostOffsetX, params.mpCostOffsetY);
+            -- Calculate position using anchor (GDI uses anchor + font alignment; matches hotbar defaults when unset)
+            local mpX, mpY = GetAnchoredPosition(x, y, size, mpCostAnchor, params.mpCostOffsetX, params.mpCostOffsetY);
             
             -- If action is unavailable, show level text when IsActionAvailable returned Lvn (or legacy Lvl.n)
             if isUnavailable then
@@ -1984,7 +1957,8 @@ function M.DrawSlot(resources, params)
                     cache.mpCostFontColor = xColor;
                 end
                 if useFgCornerText then
-                    fgCornerMp = { text = unavailText, color = xColor, x = mpX, y = mpY };
+                    local imx, imy = ImGuiTopLeftForForegroundCorner(x, y, size, mpCostAnchor, params.mpCostOffsetX, params.mpCostOffsetY, unavailText, params.mpCostFontSize or 10);
+                    fgCornerMp = { text = unavailText, color = xColor, x = imx, y = imy };
                 end
                 resources.mpCostFont:set_visible(not useFgCornerText);
             else
@@ -2026,14 +2000,15 @@ function M.DrawSlot(resources, params)
                         cache.mpCostFontColor = mpCostColor;
                     end
                     if useFgCornerText then
-                        fgCornerMp = { text = mpText, color = mpCostColor, x = mpX, y = mpY };
+                        local imx, imy = ImGuiTopLeftForForegroundCorner(x, y, size, mpCostAnchor, params.mpCostOffsetX, params.mpCostOffsetY, mpText, params.mpCostFontSize or 10);
+                        fgCornerMp = { text = mpText, color = mpCostColor, x = imx, y = imy };
                     end
                     resources.mpCostFont:set_visible(not useFgCornerText);
                 elseif bind.actionType == 'ma' then
-                    -- Ninjutsu (and similar): no MP line in DB — show tool count in the same corner as MP/Lv (e.g. Qty.12).
+                    -- Ninjutsu (and similar): no MP line in DB — show tool count in the same corner as MP/Lv (x###, same as item xN).
                     local toolQty = M.GetNinjutsuToolQuantity(bind.action);
                     if toolQty ~= nil then
-                        local qtyText = 'Qty.' .. tostring(toolQty);
+                        local qtyText = 'x' .. tostring(toolQty);
                         if cache and cache.mpCostText ~= qtyText then
                             resources.mpCostFont:set_text(qtyText);
                             cache.mpCostText = qtyText;
@@ -2055,7 +2030,8 @@ function M.DrawSlot(resources, params)
                             cache.mpCostFontColor = qtyCornerColor;
                         end
                         if useFgCornerText then
-                            fgCornerMp = { text = qtyText, color = qtyCornerColor, x = mpX, y = mpY };
+                            local imx, imy = ImGuiTopLeftForForegroundCorner(x, y, size, mpCostAnchor, params.mpCostOffsetX, params.mpCostOffsetY, qtyText, params.mpCostFontSize or 10);
+                            fgCornerMp = { text = qtyText, color = qtyCornerColor, x = imx, y = imy };
                         end
                         resources.mpCostFont:set_visible(not useFgCornerText);
                     else
@@ -2077,6 +2053,7 @@ function M.DrawSlot(resources, params)
     if resources.quantityFont and not minimalEditorView then
         fgCornerQty = nil;
         local showQuantity = params.showQuantity ~= false;
+        local quantityAnchor = params.quantityAnchor or 'bottomRight';
         local quantity = nil;
         local shouldShowQty = false;
 
@@ -2104,7 +2081,7 @@ function M.DrawSlot(resources, params)
                     shouldShowQty = true;
                 end
             elseif bind.actionType == 'ma' then
-                -- Ninjutsu tools: show xN on the quantity anchor when MP cost is also shown there; otherwise Qty.n is drawn in the MP/Lv corner only.
+                -- Ninjutsu tools: show xN on the quantity anchor when MP cost is also shown there; otherwise x### is drawn in the MP/Lv corner only.
                 local toolQty = M.GetNinjutsuToolQuantity(bind.action);
                 if toolQty ~= nil then
                     local mpCost = mpCostCache[bindKey];
@@ -2129,7 +2106,7 @@ function M.DrawSlot(resources, params)
                 cache.quantityText = qtyText;
             end
             -- Calculate position using anchor
-            local qtyX, qtyY = GetAnchoredPosition(x, y, size, params.quantityAnchor, params.quantityOffsetX, params.quantityOffsetY);
+            local qtyX, qtyY = GetAnchoredPosition(x, y, size, quantityAnchor, params.quantityOffsetX, params.quantityOffsetY);
             if cache and (cache.quantityX ~= qtyX or cache.quantityY ~= qtyY) then
                 resources.quantityFont:set_position_x(qtyX);
                 resources.quantityFont:set_position_y(qtyY);
@@ -2148,7 +2125,8 @@ function M.DrawSlot(resources, params)
                 cache.quantityFontColor = qtyColor;
             end
             if useFgCornerText then
-                fgCornerQty = { text = qtyText, color = qtyColor, x = qtyX, y = qtyY };
+                local iqx, iqy = ImGuiTopLeftForForegroundCorner(x, y, size, quantityAnchor, params.quantityOffsetX, params.quantityOffsetY, qtyText, params.quantityFontSize or 10);
+                fgCornerQty = { text = qtyText, color = qtyColor, x = iqx, y = iqy };
             end
             resources.quantityFont:set_visible(not useFgCornerText);
         else
@@ -2249,7 +2227,7 @@ function M.DrawSlot(resources, params)
     end
 
     -- ========================================
-    -- 11b. Foreground corner strings (MP / Lv / Qty. / xN) when drawCornerTextForeground is set
+    -- 11b. Foreground corner strings (MP / Lv / x###) when drawCornerTextForeground is set
     -- Drawn after §11 so they sit above hover tint and, critically, above D3D icon primitives.
     -- ========================================
     if useFgCornerText and not minimalEditorView and animOpacity > 0.5 then

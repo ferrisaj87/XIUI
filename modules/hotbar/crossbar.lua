@@ -957,14 +957,12 @@ local function DrawSlot(comboMode, slotIndex, x, y, slotSize, settings, isActive
         mpCostFontSize = settings.mpCostFontSize or 10,
         mpCostFontColor = settings.mpCostFontColor or 0xFFD4FF97,
         mpCostNoMpColor = settings.mpCostNoMpColor or 0xFFFF4444,
-        -- Nudge MP / Lv / Qty. corner text (same font) slightly right; saved mpCostOffsetX is additive.
-        mpCostOffsetX = (settings.mpCostOffsetX or 0) + 10,
+        mpCostOffsetX = settings.mpCostOffsetX or 0,
         mpCostOffsetY = settings.mpCostOffsetY or 0,
         showQuantity = palSk and false or (settings.showQuantity ~= false),
         quantityFontSize = settings.quantityFontSize or 10,
         quantityFontColor = settings.quantityFontColor or 0xFFFFFFFF,
-        -- Match MP/Lv horizontal nudge so item xN (e.g. Ginger Cookie) aligns with other corner text.
-        quantityOffsetX = (settings.quantityOffsetX or 0) + 10,
+        quantityOffsetX = settings.quantityOffsetX or 0,
         quantityOffsetY = settings.quantityOffsetY or 0,
         showLabel = palSk and true or (settings.showActionLabels or false),
         labelText = slotData and (slotData.displayName or slotData.action or '') or '',
