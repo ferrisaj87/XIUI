@@ -296,7 +296,7 @@ local function DrawSlot(barIndex, slotIndex, x, y, buttonSize, bind, barSettings
         mpCostFontSize = barSettings and barSettings.mpCostFontSize or 10,
         mpCostFontColor = barSettings and barSettings.mpCostFontColor or 0xFFD4FF97,
         mpCostNoMpColor = barSettings and barSettings.labelNoMpColor or 0xFFFF4444,
-        mpCostAnchor = barSettings and barSettings.mpCostAnchor or 'topRight',
+        mpCostAnchor = barSettings and barSettings.mpCostAnchor or 'topLeft',
         mpCostOffsetX = barSettings and barSettings.mpCostOffsetX or 0,
         mpCostOffsetY = barSettings and barSettings.mpCostOffsetY or 0,
         showQuantity = barSettings and barSettings.showQuantity ~= false,

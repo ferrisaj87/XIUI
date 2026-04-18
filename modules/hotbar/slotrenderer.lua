@@ -747,7 +747,7 @@ local function ImGuiTopLeftForForegroundCorner(x, y, size, anchor, offsetX, offs
     if not th or th <= 0 then th = (imgui.GetTextLineHeight and imgui.GetTextLineHeight() or 13); end
     -- Positioning-only slack so outline + last glyph don't poke past the slot's right edge (right anchors).
     tw = tw + FG_CORNER_POS_SLACK_PX;
-    anchor = anchor or 'topRight';
+    anchor = anchor or 'topLeft';
     offsetX = offsetX or 0;
     offsetY = offsetY or 0;
     local padding = 2;
@@ -1916,7 +1916,7 @@ function M.DrawSlot(resources, params)
     if resources.mpCostFont and not minimalEditorView then
         fgCornerMp = nil;
         local showMpCost = params.showMpCost ~= false;
-        local mpCostAnchor = params.mpCostAnchor or 'topRight';
+        local mpCostAnchor = params.mpCostAnchor or 'topLeft';
         if showMpCost and bind and animOpacity > 0.5 then
             -- Calculate position using anchor (GDI uses anchor + font alignment; matches hotbar defaults when unset)
             local mpX, mpY = GetAnchoredPosition(x, y, size, mpCostAnchor, params.mpCostOffsetX, params.mpCostOffsetY);
