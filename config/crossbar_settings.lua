@@ -1414,7 +1414,19 @@ function M.DrawLogPaletteNameCheckboxCrossbar(idSuffix)
         hg.logPaletteNameCrossbar = logVal[1];
         SaveSettingsOnly();
     end
-    imgui.ShowHelp('Show palette name in chat log when cycling crossbar palettes via the controller.');
+    imgui.ShowHelp('Log crossbar palette lines in chat for /xiui cpal and controller palette cycling.');
+    if logVal[1] then
+        imgui.Indent(18);
+        local hintOn = hg.logPaletteNameCrossbarCycleHint;
+        if hintOn == nil then hintOn = true; end
+        local hintVal = { hintOn };
+        if imgui.Checkbox('Include RB(R1)+Up/Down return hint (CLI preview)' .. idSuffix .. '_rbHint', hintVal) then
+            hg.logPaletteNameCrossbarCycleHint = hintVal[1];
+            SaveSettingsOnly();
+        end
+        imgui.ShowHelp('Extra line after /xiui cpal when previewing another job palette.');
+        imgui.Unindent(18);
+    end
 end
 
 -- Invoked from config/crossbar.lua only (Hotbar category uses config/hotbar.lua M.DrawSettings).

@@ -962,6 +962,9 @@ function M.MigrateCrossbarModuleFlags(gConfig)
     if hg and hg.logPaletteNameCrossbar == nil then
         hg.logPaletteNameCrossbar = hg.logPaletteName;
     end
+    if hg and hg.logPaletteNameCrossbarCycleHint == nil then
+        hg.logPaletteNameCrossbarCycleHint = true;
+    end
 end
 
 function M.MigrateHotbarCrossbarLayoutFlags(gConfig)

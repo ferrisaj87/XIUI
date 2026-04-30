@@ -295,6 +295,7 @@ function M.createHotbarGlobalDefaults()
 
         logPaletteName = true,                 -- Log palette name when cycling keyboard hotbars
         logPaletteNameCrossbar = true,         -- Log palette name when cycling via controller (crossbar)
+        logPaletteNameCrossbarCycleHint = true, -- Second CLI line: RB+D-pad return hint after job preview
 
         -- Visual settings
         slotSize = 48,          -- Slot size in pixels

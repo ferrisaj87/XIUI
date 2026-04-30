@@ -1374,7 +1374,7 @@ ashita.events.register('command', 'command_cb', function (e)
             return;
         end
 
-        -- Crossbar palettes: /xiui cpalette toggles Crossbar → Manage Palettes & Crossbar; subcommands = Global [G] CLI (aliases: cpal, xcpalette, xcpal)
+        -- Crossbar palettes: /xiui cpalette toggles config; Global [G] vs Job storage are separate CLI paths (no Global-Sets gate). Aliases: cpal, xcpalette, xcpal.
         if (command_args[2] == 'cpalette' or command_args[2] == 'cpal' or command_args[2] == 'xcpalette' or command_args[2] == 'xcpal') then
             if #command_args == 2 then
                 configMenu.ToggleCrossbarManagePalettes();
@@ -1386,20 +1386,56 @@ ashita.events.register('command', 'command_cb', function (e)
 
             if sub == 'help' or sub == '?' then
                 print('[XIUI] Crossbar palette:');
-                print('  /xiui cpalette          Toggle Crossbar → Manage Palettes & Crossbar in config');
+                print('  /xiui cpalette          Toggle Crossbar -> Manage Palettes in config');
                 print('  /xiui cpaledit          Toggle Edit Full Palette for current active palette');
-                print('  /xiui cpalette list     Global [G] palettes (requires Global Crossbar Sets)');
+                print('  /xiui cpalette list     List Global [G] crossbar palettes');
                 print('  /xiui cpalette scope job|universal');
                 print('  /xiui cpalette toggle   (same as controller: hold L1, tap R1)');
-                print('  /xiui cpalette active <name>');
-                print('  /xiui cpalette cycle on|off <name>');
+                print('  /xiui cpalette g <name>   Global [G] only (also: global, gname)');
+                print('  /xiui cpalette <JOB> <name|#>   Job [J]-tier (# = order in list)');
+                print('  /xiui cpalette WHMSMN <name|#>   SJ-tier: # = (SJ) rows in Manage, e.g. WHMBLM 1');
+                print('  /xiui cpalette job <JOB> <...>   optional keyword (J-tier)');
+                print('  Other job than yours = temporary preview; RB+D-pad still cycles live job');
+                print('  /xiui cpalette cycle on|off <name>   Global [G] RB+D-pad cycle include');
+                print('  Optional legacy prefix: active ...');
                 return;
             end
 
             local cross = gConfig and gConfig.hotbarCrossbar;
-            if not cross or not cross.enableUniversalCrossbarPalettes then
-                print('[XIUI] Enable "Global" Crossbar Sets in Crossbar → Controller Settings first.');
-                return;
+
+            local function cpalXbLogVerbose()
+                local hg = gConfig and gConfig.hotbarGlobal;
+                local v = hg and hg.logPaletteNameCrossbar;
+                if v == nil then return true; end
+                return v == true;
+            end
+            local function cpalXbLogRbHint()
+                if not cpalXbLogVerbose() then return false; end
+                local hg = gConfig and gConfig.hotbarGlobal;
+                local v = hg and hg.logPaletteNameCrossbarCycleHint;
+                if v == nil then return true; end
+                return v == true;
+            end
+            local function cpalNotice(msg)
+                print('[XIUI Notice] ' .. msg);
+            end
+            local function cpalLogJobSuccess(mainAbbr, storageSubjob, sjAbbr, paletteName)
+                if not cpalXbLogVerbose() then return; end
+                local loc;
+                if storageSubjob == 0 then
+                    loc = mainAbbr .. '[J]';
+                else
+                    loc = mainAbbr .. '[SJ:' .. (sjAbbr or '?') .. ']';
+                end
+                print('[XIUI] Crossbar Palette: ' .. loc .. ' "' .. paletteName .. '".');
+            end
+            local function cpalLogGlobalSuccess(paletteName)
+                if not cpalXbLogVerbose() then return; end
+                print('[XIUI] Crossbar Palette: Global[G] "' .. paletteName .. '".');
+            end
+            local function cpalLogPreviewHint()
+                if not cpalXbLogRbHint() then return; end
+                print('[XIUI] RB(R1)+Up/Down to return to Job Palettes.');
             end
 
             if sub == 'list' then
@@ -1418,47 +1454,47 @@ ashita.events.register('command', 'command_cb', function (e)
 
             if sub == 'toggle' then
                 if palette.ToggleCrossbarPaletteScope() then
-                    print('[XIUI] Crossbar palette scope: ' .. palette.GetCrossbarPaletteScope());
+                    if cpalXbLogVerbose() then
+                        print('[XIUI] Crossbar palette scope: ' .. palette.GetCrossbarPaletteScope());
+                    end
                 else
-                    print('[XIUI] Scope unchanged (debounced or already toggling).');
+                    if cpalXbLogVerbose() then
+                        print('[XIUI] Scope unchanged (debounced or already toggling).');
+                    end
                 end
                 return;
             end
 
-            if sub == 'scope' and command_args[4] then
+            if sub == 'scope' then
+                if not command_args[4] then
+                    cpalNotice('Invalid /xiui cpal command. Try /xiui cpal help');
+                    return;
+                end
                 local s = command_args[4]:lower();
                 if s == 'job' or s == 'universal' then
                     if palette.SetCrossbarPaletteScope(s) then
-                        print('[XIUI] Crossbar palette scope: ' .. s);
+                        if cpalXbLogVerbose() then
+                            print('[XIUI] Crossbar palette scope: ' .. s);
+                        end
                     else
-                        print('[XIUI] Scope unchanged (already ' .. s .. ').');
+                        if cpalXbLogVerbose() then
+                            print('[XIUI] Scope unchanged (already ' .. s .. ').');
+                        end
                     end
                 else
-                    print('[XIUI] Usage: /xiui cpalette scope job|universal');
+                    cpalNotice('Invalid /xiui cpal command. Try /xiui cpal help');
                 end
                 return;
             end
 
-            if sub == 'active' and #originalArgs >= 4 then
-                local nameParts = {};
-                for i = 4, #originalArgs do
-                    table.insert(nameParts, originalArgs[i]);
+            if sub == 'cycle' then
+                if not command_args[4] or #originalArgs < 5 then
+                    cpalNotice('Invalid /xiui cpal command. Try /xiui cpal help');
+                    return;
                 end
-                local paletteName = table.concat(nameParts, ' ');
-                local key = palette.BuildUniversalCrossbarStorageKey(paletteName);
-                if cross.slotActions and cross.slotActions[key] then
-                    palette.SetActiveUniversalCrossbarPalette(paletteName);
-                    print('[XIUI] Active Global [G] crossbar palette: ' .. paletteName);
-                else
-                    print('[XIUI] Palette not found: ' .. paletteName);
-                end
-                return;
-            end
-
-            if sub == 'cycle' and command_args[4] and #originalArgs >= 5 then
                 local onoff = command_args[4]:lower();
                 if onoff ~= 'on' and onoff ~= 'off' then
-                    print('[XIUI] Usage: /xiui cpalette cycle on|off <name>');
+                    cpalNotice('Invalid /xiui cpal command. Try /xiui cpal help');
                     return;
                 end
                 local nameParts = {};
@@ -1467,16 +1503,209 @@ ashita.events.register('command', 'command_cb', function (e)
                 end
                 local paletteName = table.concat(nameParts, ' ');
                 local key = palette.BuildUniversalCrossbarStorageKey(paletteName);
-                if not cross.slotActions or not cross.slotActions[key] then
-                    print('[XIUI] Palette not found: ' .. paletteName);
+                if not cross or not cross.slotActions or not cross.slotActions[key] then
+                    cpalNotice('Cannot find the requested Palette.');
                     return;
                 end
                 palette.SetUniversalPaletteIncludeInCycle(paletteName, onoff == 'on');
-                print('[XIUI] ' .. paletteName .. ' include in RB+D-pad cycle: ' .. onoff);
+                if cpalXbLogVerbose() then
+                    print('[XIUI] ' .. paletteName .. ' include in RB+D-pad cycle: ' .. onoff);
+                end
                 return;
             end
 
-            print('[XIUI] Unknown subcommand. Try /xiui cpalette for help.');
+            -- Select crossbar palette: first token at [ps], or after optional "active" at [3].
+            local ps = 3;
+            if sub == 'active' then
+                ps = 4;
+                if #command_args < ps then
+                    cpalNotice('Invalid /xiui cpal command. Try /xiui cpal help');
+                    return;
+                end
+            end
+
+            if #command_args >= ps then
+                local tbarMigration = require('handlers.tbar_migration');
+                local hotbarData = require('modules.hotbar.data');
+
+                local function joinOriginalName(fromIdx)
+                    local nameParts = {};
+                    for i = fromIdx, #originalArgs do
+                        table.insert(nameParts, originalArgs[i]);
+                    end
+                    return table.concat(nameParts, ' ');
+                end
+
+                -- Compact MAIN(3)+SUB(3) only (e.g. WHMSMN).
+                local function splitCompactMainSub(compactTok)
+                    local s = compactTok:upper();
+                    if #s ~= 6 then
+                        return nil, nil;
+                    end
+                    local a = s:sub(1, 3);
+                    local b = s:sub(4, 6);
+                    local j1 = tbarMigration.GetJobId(a);
+                    local j2 = tbarMigration.GetJobId(b);
+                    if not j1 or not j2 then
+                        return nil, nil;
+                    end
+                    return j1, j2;
+                end
+
+                local function paletteNameFromTierIndex(mainJobId, storageTier, idx)
+                    local names = palette.GetCrossbarPaletteNamesForOrderTier(mainJobId, storageTier);
+                    if #names == 0 or idx < 1 or idx > #names or idx ~= math.floor(idx) then
+                        cpalNotice('Cannot find the requested Palette.');
+                        return nil;
+                    end
+                    return names[idx];
+                end
+
+                -- WHMSMN # numbering matches (SJ) rows only in Manage (not full SJ bucket list).
+                local function paletteNameFromSjExtrasIndex(mainJobId, sjId, idx)
+                    local names = palette.GetCrossbarSjOnlyPaletteNamesOrdered(mainJobId, sjId);
+                    if #names == 0 or idx < 1 or idx > #names or idx ~= math.floor(idx) then
+                        cpalNotice('Cannot find the requested Palette.');
+                        return nil;
+                    end
+                    return names[idx];
+                end
+
+                local function applyJobPaletteCli(mainJobId, storageSubjob, paletteName)
+                    if not cross then
+                        cpalNotice('Cannot find the requested Palette.');
+                        return;
+                    end
+                    if not cross.slotActions then
+                        cpalNotice('Cannot find the requested Palette.');
+                        return;
+                    end
+                    local key = palette.BuildPaletteStorageKey(mainJobId, storageSubjob, paletteName);
+                    if not cross.slotActions[key] then
+                        cpalNotice('Cannot find the requested Palette.');
+                        return;
+                    end
+                    local crossCfg = cross;
+                    if crossCfg.enableUniversalCrossbarPalettes and palette.GetCrossbarPaletteScope() == 'universal' then
+                        cpalNotice('Cannot apply Job Palettes to Global.');
+                        return;
+                    end
+                    local liveJob = hotbarData.jobId;
+                    local liveSub = hotbarData.subjobId or 0;
+                    local commit = liveJob
+                        and mainJobId == liveJob
+                        and (storageSubjob == 0 or storageSubjob == liveSub);
+                    local jobs = require('libs.jobs');
+                    local jn = jobs[mainJobId] or ('JOB' .. tostring(mainJobId));
+                    local sjAbbr = (storageSubjob ~= 0) and (jobs[storageSubjob] or nil) or nil;
+                    if commit then
+                        palette.SetActivePaletteForCombo(nil, paletteName, storageSubjob);
+                        cpalLogJobSuccess(jn, storageSubjob, sjAbbr, paletteName);
+                    else
+                        palette.SetCrossbarCliPreview(mainJobId, storageSubjob, paletteName);
+                        cpalLogJobSuccess(jn, storageSubjob, sjAbbr, paletteName);
+                        cpalLogPreviewHint();
+                    end
+                end
+
+                local function parseJobAndApply(firstIdx)
+                    if #command_args < firstIdx + 1 then
+                        cpalNotice('Invalid /xiui cpal command. Try /xiui cpal help');
+                        return true;
+                    end
+                    local mainId = tbarMigration.GetJobId(command_args[firstIdx]:upper());
+                    if not mainId then
+                        return false;
+                    end
+                    local tok = command_args[firstIdx + 1];
+                    local idx = tonumber(tok);
+                    if idx and idx >= 1 and idx == math.floor(idx) then
+                        if #command_args > firstIdx + 1 then
+                            cpalNotice('Invalid /xiui cpal command. Try /xiui cpal help');
+                            return true;
+                        end
+                        local jobs = require('libs.jobs');
+                        local jn = jobs[mainId] or ('JOB' .. tostring(mainId));
+                        local name = paletteNameFromTierIndex(mainId, 0, idx);
+                        if not name then
+                            return true;
+                        end
+                        applyJobPaletteCli(mainId, 0, name);
+                        return true;
+                    end
+                    local paletteName = joinOriginalName(firstIdx + 1);
+                    if paletteName == '' then
+                        cpalNotice('Cannot find the requested Palette.');
+                        return true;
+                    end
+                    applyJobPaletteCli(mainId, 0, paletteName);
+                    return true;
+                end
+
+                local caFirst = command_args[ps];
+
+                if caFirst == 'global' or caFirst == 'g' or caFirst == 'gname' then
+                    local paletteName = joinOriginalName(ps + 1);
+                    if paletteName == '' then
+                        cpalNotice('Invalid /xiui cpal command. Try /xiui cpal help');
+                        return;
+                    end
+                    local key = palette.BuildUniversalCrossbarStorageKey(paletteName);
+                    if cross and cross.slotActions and cross.slotActions[key] then
+                        palette.SetActiveUniversalCrossbarPalette(paletteName);
+                        cpalLogGlobalSuccess(paletteName);
+                    else
+                        cpalNotice('Cannot find the requested Palette.');
+                    end
+                    return;
+                end
+
+                local cMain, cSub = splitCompactMainSub(caFirst);
+                if cMain and cSub and #command_args >= ps + 1 then
+                    local tok = command_args[ps + 1];
+                    local idx = tonumber(tok);
+                    if idx and idx >= 1 and idx == math.floor(idx) then
+                        if #command_args > ps + 1 then
+                            cpalNotice('Invalid /xiui cpal command. Try /xiui cpal help');
+                            return;
+                        end
+                        local name = paletteNameFromSjExtrasIndex(cMain, cSub, idx);
+                        if not name then
+                            return;
+                        end
+                        applyJobPaletteCli(cMain, cSub, name);
+                        return;
+                    end
+                    local paletteName = joinOriginalName(ps + 1);
+                    if paletteName == '' then
+                        cpalNotice('Cannot find the requested Palette.');
+                        return;
+                    end
+                    applyJobPaletteCli(cMain, cSub, paletteName);
+                    return;
+                end
+
+                if caFirst == 'job' then
+                    if #command_args < ps + 2 then
+                        cpalNotice('Invalid /xiui cpal command. Try /xiui cpal help');
+                        return;
+                    end
+                    if parseJobAndApply(ps + 1) then
+                        return;
+                    end
+                    cpalNotice('Cannot find the requested Palette.');
+                    return;
+                end
+
+                if parseJobAndApply(ps) then
+                    return;
+                end
+
+                cpalNotice('Invalid /xiui cpal command. Try /xiui cpal help');
+                return;
+            end
+
+            cpalNotice('Invalid /xiui cpal command. Try /xiui cpal help');
             return;
         end
 

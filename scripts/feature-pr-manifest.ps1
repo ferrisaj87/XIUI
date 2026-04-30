@@ -326,7 +326,7 @@ Why
                 'assets/hotbar/items/04576.png',
                 'assets/hotbar/items/17040.png'
             )
-            Subject = 'Crossbar Edit Full Palette: draft sentinel vs live HUD, deferred drops, and misc UX'
+            Subject = 'Crossbar Edit Full Palette, /xiui cpal job palettes, and deferred drop UX'
             Body    = @'
 What changed
 - data.lua / crossbar.lua: Explicit draft-empty sentinel distinguishes cleared palette slots from sparse untouched slots so overlay swap reads no longer resurrect live binds incorrectly; GetCrossbarSlotRawForSwapOverlay for palette row reads; SyncDraftSlotFromLive merges live gConfig into draft after HUD edits while Edit Full Palette is open so palette stays aligned with gameplay binds.
@@ -337,12 +337,16 @@ What changed
 - palette.lua: ValidatePalettesForJob merges factory crossbar defaults into gConfig.hotbarCrossbar before reading enableUniversal/defaultCrossbarPaletteScope; applies profile Job vs Global [G] scope before job-tier active palette reconciliation; case-insensitive universal/global preference; only forces job scope when universal sets are explicitly disabled (avoids resetting scope when nested keys were missing).
 - crossbar.lua: ImGui window gains dynamic bottom padding so below-slot action labels and corner-outline slack are not clipped by the window rect.
 - modules/hotbar/init.lua: HandleJobChangePacket consumes pending apply-default-crossbar-scope when profile reloaded before job data was readable (char select / logout).
+- /xiui cpal (cpalette, xcpal): Job palette CLI does not require Global Crossbar Sets. g/global/gname + name selects [G]. Job abbreviation + name or # selects [J]-tier (# = Manage order for that tier). Six-letter MAINSUB (e.g. WHMBLM) + name or # selects subjob-tier storage; # uses GetCrossbarSjOnlyPaletteNamesOrdered so indices match only (SJ) rows in Manage (names on job:sub: storage but not on job:0:, excluding empty SJ keys that duplicate J-tier names). Optional active prefix for older macros. Same main job and matching tier as the live character uses SetActivePaletteForCombo; otherwise SetCrossbarCliPreview until cycle, explicit switch, or job change. Chat success lines follow logPaletteNameCrossbar; optional RB+D-pad hint follows logPaletteNameCrossbarCycleHint (config, factories, migration).
+- palette.lua: crossbarCliPreview state, clear on active palette / cycle; GetCrossbarSjOnlyPaletteNamesOrdered.
+- data.lua: GetCrossbarStorageKeyForCombo and display name respect preview; clear CLI preview on job change.
 
 Assets
 - Item PNGs under assets/hotbar/items/ for hotbar/macro display ids bundled here.
 
 Why
 - Removes duplicate/wrong swap behavior when draft clears overlapped live-only slots; keeps HUD draggable during palette editing without forcing draft icons onto the on-screen bar; overlapping palette/HUD drop zones pick palette deterministically.
+- Macros can switch or preview per-job and Main+Sub palettes independently of universal crossbar enablement; WHMABJ numbering matches the SJ-only rows users see in Palette Manager.
 '@
         }
     )

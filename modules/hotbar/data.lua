@@ -1422,6 +1422,17 @@ function M.GetCrossbarStorageKeyForCombo(comboMode)
         return baseKey;
     end
 
+    -- Temporary /xiui cpal summon: another job's named palette (flat layout; skips pet, segment overrides, per-mode [G] attach).
+    if p and p.GetCrossbarCliPreview then
+        local pv = p.GetCrossbarCliPreview();
+        if pv and pv.paletteName and pv.jobId then
+            local sfx = p.GetPaletteKeySuffix(pv.paletteName);
+            if sfx then
+                return string.format('%d:%d:%s', pv.jobId, pv.storageSubjob or 0, sfx);
+            end
+        end
+    end
+
     -- [J] scope: pet can override job-tier storage, including when a combo uses an attached [G] palette name
     if modeSettings and modeSettings.petAware then
         local pp = getPetPalette();
@@ -1475,6 +1486,13 @@ function M.GetCrossbarPaletteDisplayName(comboMode)
         local u = p.GetActiveUniversalCrossbarPalette();
         if u and u ~= '' then
             return u;
+        end
+    end
+
+    if p and p.GetCrossbarCliPreview and p.GetCrossbarPaletteScope() == 'job' then
+        local pv = p.GetCrossbarCliPreview();
+        if pv and pv.paletteName then
+            return pv.paletteName .. ' (preview)';
         end
     end
 
@@ -2509,6 +2527,10 @@ function M.SetPlayerJob()
     -- Invalidate caches if job changed
     if M.jobId ~= currentJobId or M.subjobId ~= currentSubjobId then
         M.InvalidateStorageKeyCache();
+        local okPal, palMod = pcall(require, 'modules.hotbar.palette');
+        if okPal and palMod and palMod.ClearCrossbarCliPreview then
+            palMod.ClearCrossbarCliPreview();
+        end
     end
 
     M.jobId = currentJobId;
