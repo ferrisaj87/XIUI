@@ -790,7 +790,11 @@ function M.HandleJobChangePacket(e)
             if okMg and macroGlobalDefaults and macroGlobalDefaults.SyncUniversalTwoHourGlobalRow and gConfig then
                 macroGlobalDefaults.SyncUniversalTwoHourGlobalRow(gConfig);
             end
-            palette.ValidatePalettesForJob(data.jobId, data.subjobId, { applyDefaultCrossbarScope = false });
+            -- Honor pending "profile loaded before job was readable" (char select / logout) so
+            -- Default Palette Type on Profile Load applies on first zone-in or job packet.
+            palette.ValidatePalettesForJob(data.jobId, data.subjobId, {
+                applyDefaultCrossbarScope = palette.ConsumePendingApplyDefaultCrossbarScopeFromProfile(),
+            });
             display.ClearIconCache();
             if crossbarInitialized then
                 crossbar.ClearIconCache();
