@@ -63,7 +63,10 @@ return {
     ['Weapon Bash']     = { job = 8,  level = 20 },
     ['Souleater']       = { job = 8,  level = 30 },
 
-    -- BST (9)
+    -- BST (9) — Horizon roster only (75 cap). Omit retail-only JAs: Bestial Loyalty, Feral Howl, Killer Instinct, Unleash,
+    -- Snarl, Spur, Run Wild (see horizon_retail_only_job_abilities.lua).
+    -- Ready (pet command, Lv.25): HorizonXI uses it for jug pets; classic-era references sometimes omit it, but it stays here for gameplay + XIUI.
+    -- Jug-family lists key off the same row unless jug_moves = false (petregistry).
     ['Familiar']        = { job = 9,  level = 1 },
     ['Charm']           = { job = 9,  level = 1 },
     ['Gauge']           = { job = 9,  level = 10 },
@@ -71,11 +74,12 @@ return {
     ['Call Beast']      = { job = 9,  level = 23 },
     ['Tame']            = { job = 9,  level = 30 },
 
-    -- BST Pet Commands (9, pet = true)
+    -- BST Pet Commands (9, pet = true) — HorizonXI roster (same retail-only omissions as BST job abilities above)
     ['Fight']           = { job = 9,  level = 1,  pet = true },
     ['Heel']            = { job = 9,  level = 10, pet = true },
     ['Stay']            = { job = 9,  level = 15, pet = true },
     ['Sic']             = { job = 9,  level = 25, pet = true },
+    ['Ready']           = { job = 9,  level = 25, pet = true },
     ['Leave']           = { job = 9,  level = 35, pet = true },
 
     -- BRD (10)
@@ -111,6 +115,8 @@ return {
     ['Spirit Link']     = { job = 14, level = 25 },
     ['High Jump']       = { job = 14, level = 35 },
     ['Super Jump']      = { job = 14, level = 50 },
+    -- Wyvern pet command; players may execute via /pet or /ja (both valid in client).
+    ['Steady Wing']     = { job = 14, level = 30 },
 
     -- SMN (15)
     ['Astral Flow']     = { job = 15, level = 1 },

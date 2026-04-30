@@ -20,6 +20,7 @@ local playerdata = require('modules.hotbar.playerdata');
 local actiondb = require('modules.hotbar.actiondb');
 local iconmatch = require('modules.hotbar.iconmatch');
 local macroBuckets = require('modules.hotbar.macro_palette_buckets');
+local macroGlobalDefaults = require('modules.hotbar.macro_global_defaults');
 local profileManager = require('core.profile_manager');
 local sharedMacroStore = require('core.shared_macro_store');
 -- display and crossbar are loaded lazily to avoid circular dependencies
@@ -44,6 +45,10 @@ MP.selectedPaletteType = nil;
 MP.selectedAvatarPalette = nil;
 -- SMN only: when true, macro grid lists Base SMN + every avatar bucket together.
 MP.smnShowAllAvatarSubsets = false;
+-- BST: jug-family subset (movesKey from petregistry), nil = Base BST bucket.
+MP.selectedBstJugMovesKey = nil;
+-- BST: when true, macro grid lists Base BST + every jug:* macro bucket together.
+MP.bstShowAllJugSubsets = false;
 MP.cachedPetCommands = nil;
 MP.petAvatarFilter = 1;
 MP.searchFilter = { '' };
@@ -432,8 +437,8 @@ end
 -- State
 -- ============================================
 
-local paletteOpen = false;
-local selectedMacroIndex = nil;
+-- Palette open state (table: avoids extra upvalues when palette draw uses MacroPaletteDrawEnv).
+local paletteUi = { open = false, selectedMacroIndex = nil };
 local ICON_AUTO_SOURCES = { 'all', 'spells', 'items', 'custom' };
 local ICON_AUTO_SOURCE_LABELS = {
     ['all'] = 'All',
@@ -1368,6 +1373,8 @@ local function DrawSearchableCombo(label, items, currentValue, onSelect, showIco
         local filter = MP.searchFilter[1];
         local matchCount = 0;
         local iconSize = 16;
+        local GOLD_STAR_COLOR = {1.0, 0.88, 0.12, 1.0};
+        local PINK_STAR_COLOR = {1.0, 0.45, 0.72, 1.0};
         local lastType = nil;
         local isSearching = filter ~= '';
 
@@ -1422,12 +1429,31 @@ local function DrawSearchableCombo(label, items, currentValue, onSelect, showIco
                     imgui.Text(itemName);
                     imgui.PopStyleColor();
 
+                    local starCol, starTip = nil, nil;
+                    if item.pinkStarTooltip then
+                        starCol = PINK_STAR_COLOR;
+                        starTip = item.pinkStarTooltip;
+                    elseif item.familyVarianceReason then
+                        starCol = GOLD_STAR_COLOR;
+                        starTip = item.familyVarianceReason;
+                    end
+                    if starCol then
+                        imgui.SameLine(0, 2);
+                        imgui.TextColored(starCol, '*');
+                    end
+
                     imgui.SetCursorPos({nx, ny});
 
-                    if hovered and item.reason then
-                        imgui.BeginTooltip();
-                        imgui.TextUnformatted(item.reason);
-                        imgui.EndTooltip();
+                    if hovered then
+                        if starTip then
+                            imgui.BeginTooltip();
+                            imgui.TextUnformatted(starTip);
+                            imgui.EndTooltip();
+                        elseif item.reason then
+                            imgui.BeginTooltip();
+                            imgui.TextUnformatted(item.reason);
+                            imgui.EndTooltip();
+                        end
                     end
 
                     if clicked then
@@ -1446,44 +1472,104 @@ local function DrawSearchableCombo(label, items, currentValue, onSelect, showIco
                         textColor = COLORS.usable;
                     end
 
-                    if textColor then imgui.PushStyleColor(ImGuiCol_Text, textColor); end
+                    local starCol, starTip = nil, nil;
+                    if item.familyVarianceReason then
+                        starCol = GOLD_STAR_COLOR;
+                        starTip = item.familyVarianceReason;
+                    elseif item.pinkStarTooltip then
+                        starCol = PINK_STAR_COLOR;
+                        starTip = item.pinkStarTooltip;
+                    end
 
-                    -- Show icon if enabled and item has an id
-                    if showIcons and item.id then
-                        local icon = actions.GetItemIconForBrowsing(item.id);
-                        if icon and icon.image then
-                            local iconPtr = tonumber(ffi.cast("uint32_t", icon.image));
-                            if iconPtr then
-                                imgui.Image(iconPtr, {iconSize, iconSize});
-                                imgui.SameLine();
+                    if starCol and starTip then
+                        local baseCol = isSelected and COLORS.gold or (textColor or COLORS.text);
+                        local cx, cy = imgui.GetCursorPos();
+                        local clicked = imgui.Selectable('##item' .. uid, false);
+                        local hovered = imgui.IsItemHovered();
+                        local nx, ny = imgui.GetCursorPos();
+                        imgui.SetCursorPos({cx, cy});
+
+                        if showIcons and item.id then
+                            local icon = actions.GetItemIconForBrowsing(item.id);
+                            if icon and icon.image then
+                                local iconPtr = tonumber(ffi.cast("uint32_t", icon.image));
+                                if iconPtr then
+                                    imgui.Image(iconPtr, {iconSize, iconSize});
+                                    imgui.SameLine();
+                                end
                             end
                         end
-                    end
 
-                    local itemLabel;
-                    if item.level then
-                        itemLabel = string.format('[%d] %s', item.level, itemName);
-                    elseif item.reqStr then
-                        itemLabel = string.format('%s  (%s)', itemName, item.reqStr);
+                        local labelMain = itemName;
+                        if item.level then
+                            labelMain = string.format('[%d] %s', item.level, itemName);
+                        elseif item.reqStr then
+                            labelMain = string.format('%s  (%s)', itemName, item.reqStr);
+                        end
+                        if item.count and item.count > 1 then
+                            labelMain = labelMain .. ' x' .. item.count;
+                        end
+
+                        imgui.PushStyleColor(ImGuiCol_Text, baseCol);
+                        imgui.Text(labelMain);
+                        imgui.PopStyleColor();
+
+                        imgui.SameLine(0, 2);
+                        imgui.TextColored(starCol, '*');
+
+                        imgui.SetCursorPos({nx, ny});
+
+                        if hovered then
+                            imgui.BeginTooltip();
+                            imgui.TextUnformatted(starTip);
+                            imgui.EndTooltip();
+                        end
+
+                        if clicked then
+                            onSelect(item);
+                            MP.searchFilter[1] = '';
+                            imgui.CloseCurrentPopup();
+                        end
                     else
-                        itemLabel = itemName;
-                    end
-                    if item.count and item.count > 1 then
-                        itemLabel = itemLabel .. ' x' .. item.count;
-                    end
-                    if imgui.Selectable(itemLabel .. '##item' .. uid, isSelected) then
-                        onSelect(item);
-                        MP.searchFilter[1] = '';
-                        imgui.CloseCurrentPopup();
-                    end
+                        if textColor then imgui.PushStyleColor(ImGuiCol_Text, textColor); end
 
-                    if item.reason and imgui.IsItemHovered() then
-                        imgui.BeginTooltip();
-                        imgui.TextUnformatted(item.reason);
-                        imgui.EndTooltip();
-                    end
+                        -- Show icon if enabled and item has an id
+                        if showIcons and item.id then
+                            local icon = actions.GetItemIconForBrowsing(item.id);
+                            if icon and icon.image then
+                                local iconPtr = tonumber(ffi.cast("uint32_t", icon.image));
+                                if iconPtr then
+                                    imgui.Image(iconPtr, {iconSize, iconSize});
+                                    imgui.SameLine();
+                                end
+                            end
+                        end
 
-                    if textColor then imgui.PopStyleColor(); end
+                        local itemLabel;
+                        if item.level then
+                            itemLabel = string.format('[%d] %s', item.level, itemName);
+                        elseif item.reqStr then
+                            itemLabel = string.format('%s  (%s)', itemName, item.reqStr);
+                        else
+                            itemLabel = itemName;
+                        end
+                        if item.count and item.count > 1 then
+                            itemLabel = itemLabel .. ' x' .. item.count;
+                        end
+                        if imgui.Selectable(itemLabel .. '##item' .. uid, isSelected) then
+                            onSelect(item);
+                            MP.searchFilter[1] = '';
+                            imgui.CloseCurrentPopup();
+                        end
+
+                        if item.reason and imgui.IsItemHovered() then
+                            imgui.BeginTooltip();
+                            imgui.TextUnformatted(item.reason);
+                            imgui.EndTooltip();
+                        end
+
+                        if textColor then imgui.PopStyleColor(); end
+                    end
                 end
             end
         end
@@ -1504,6 +1590,22 @@ end
 -- ============================================
 -- Macro Database Functions
 -- ============================================
+
+-- Clear SMN avatar / BST jug subset palette UI state (when switching macro type or job bucket).
+local function ClearSmnMacroSubsetUi()
+    MP.selectedAvatarPalette = nil;
+    MP.smnShowAllAvatarSubsets = false;
+end
+
+local function ClearBstJugMacroSubsetUi()
+    MP.selectedBstJugMovesKey = nil;
+    MP.bstShowAllJugSubsets = false;
+end
+
+local function ResetPetJobMacroPaletteSubsets()
+    ClearSmnMacroSubsetUi();
+    ClearBstJugMacroSubsetUi();
+end
 
 -- Get current effective type for the palette (selected type or player's current job)
 -- Returns GLOBAL_MACRO_KEY, ITEMS_MACRO_KEY, a job ID, or a composite key like "15:avatar:ifrit"
@@ -1533,6 +1635,9 @@ local function GetEffectivePaletteType()
                 if avatarKey then
                     return string.format('%d:avatar:%s', MP.selectedPaletteType, avatarKey);
                 end
+            end
+            if MP.selectedPaletteType == petregistry.JOB_BST and MP.selectedBstJugMovesKey then
+                return petregistry.FormatBstMacroPaletteSaveKeyFromMovesKey(MP.selectedBstJugMovesKey);
             end
             return MP.selectedPaletteType;
         end
@@ -1580,6 +1685,9 @@ local function GetPaletteDisplayName(typeKey)
                     return string.format('%s (%s)', jobs[tonumber(jobId)] or 'SMN', name);
                 end
             end
+        elseif jobId and petType == petregistry.PET_TYPE_JUG and petId then
+            local petLabel = petregistry.GetDisplayNameForKey(petregistry.PET_TYPE_JUG .. ':' .. petId);
+            return string.format('%s (%s)', jobs[tonumber(jobId)] or 'BST', petLabel);
         end
     end
     return tostring(typeKey);
@@ -1594,9 +1702,85 @@ end
 
 -- Cache key so search/icon caches reset when toggling SMN "all subsets" view.
 local SMN_ALL_SUBSETS_VIEW_TAG = '__all_subsets__';
+local BST_ALL_SUBSETS_VIEW_TAG = '__bst_all_jug_subsets__';
 
 local function IsSmnAllSubsetsPaletteView()
     return MP.selectedPaletteType == petregistry.JOB_SMN and MP.smnShowAllAvatarSubsets;
+end
+
+local function IsBstAllSubsetsPaletteView()
+    return MP.selectedPaletteType == petregistry.JOB_BST and MP.bstShowAllJugSubsets;
+end
+
+--- Stable jug subset rows: picker families (deduped by slug) then extra jug:* keys (e.g. Lynx, Arctic).
+local function BstJugSubsetEntriesOrdered()
+    local rows = {};
+    local seen = {};
+    local jid = petregistry.JOB_BST;
+    for _, row in ipairs(petregistry.GetBstJugReadyFamilyPickerList()) do
+        local slug = row.movesKey:lower();
+        if not seen[slug] then
+            seen[slug] = true;
+            table.insert(rows, {
+                movesKey = row.movesKey,
+                label = row.name,
+                fullKey = petregistry.FormatBstMacroPaletteSaveKeyFromMovesKey(row.movesKey),
+            });
+        end
+    end
+    local extras = {};
+    for _, pk in ipairs(petregistry.GetAvailablePetKeys(jid)) do
+        local slug = pk:match('^jug:(.+)$');
+        if slug and not seen[slug] then
+            local mk = petregistry.MovesKeyFromBstMacroPaletteSlug(slug);
+            if mk then
+                seen[slug] = true;
+                table.insert(extras, {
+                    movesKey = mk,
+                    label = petregistry.GetDisplayNameForKey(pk),
+                    fullKey = string.format('%d:%s:%s', jid, petregistry.PET_TYPE_JUG, slug),
+                });
+            end
+        end
+    end
+    table.sort(extras, function(a, b)
+        return (a.label or '') < (b.label or '');
+    end);
+    for _, e in ipairs(extras) do
+        table.insert(rows, e);
+    end
+    return rows;
+end
+
+local function CountBstAllJugSubsetsMacros()
+    local n = CountMacrosInPalette(petregistry.JOB_BST);
+    for _, ent in ipairs(BstJugSubsetEntriesOrdered()) do
+        n = n + CountMacrosInPalette(ent.fullKey);
+    end
+    return n;
+end
+
+local function BuildBstAllJugSubsetsRows()
+    local out = {};
+    local jid = petregistry.JOB_BST;
+    if not gConfig or not gConfig.macroDB then
+        return out;
+    end
+    local baseDb = gConfig.macroDB[jid];
+    if baseDb then
+        for _, m in ipairs(baseDb) do
+            table.insert(out, { macro = m, paletteKey = jid, subsetLabel = 'Base BST' });
+        end
+    end
+    for _, ent in ipairs(BstJugSubsetEntriesOrdered()) do
+        local adb = gConfig.macroDB[ent.fullKey];
+        if adb then
+            for _, m in ipairs(adb) do
+                table.insert(out, { macro = m, paletteKey = ent.fullKey, subsetLabel = ent.label });
+            end
+        end
+    end
+    return out;
 end
 
 local function CountSmnAllSubsetsMacros()
@@ -1766,6 +1950,55 @@ local function SyncPetAvatarFilterFromSaveSubType()
     end
 end
 
+local function SyncBstJugFamilyFromSaveSubType()
+    local key = MP.editorPaletteKey;
+    if not MP.editingMacro then
+        return;
+    end
+    if not key or type(key) ~= 'string' then
+        return;
+    end
+    local jobId, petType, petId = key:match('^(%d+):([^:]+):(.+)$');
+    if not jobId or tonumber(jobId) ~= petregistry.JOB_BST then
+        return;
+    end
+    if petType ~= petregistry.PET_TYPE_JUG then
+        return;
+    end
+    local mk = petregistry.MovesKeyFromBstMacroPaletteSlug(petId);
+    if not mk then
+        return;
+    end
+    MP.editingMacro.bstJugReadyMovesKey = mk;
+    MP.editingMacro.bstJugReadyFamilyLabel = nil;
+    for _, row in ipairs(petregistry.GetBstJugReadyFamilyPickerList()) do
+        if row.movesKey == mk then
+            MP.editingMacro.bstJugReadyFamilyLabel = row.name;
+            break;
+        end
+    end
+end
+
+-- While creating a BST Ready (Use) macro, align Save Sub Type with the picked jug family (SMN avatar parity).
+local function SyncSaveSubTypeFromBstJugFamily()
+    if not MP.isCreatingNew then
+        return;
+    end
+    if EditorSaveKeyToJobId(MP.editorPaletteKey) ~= petregistry.JOB_BST then
+        return;
+    end
+    local mk = MP.editingMacro and MP.editingMacro.bstJugReadyMovesKey;
+    if not mk or mk == '' then
+        return;
+    end
+    MP.editorPaletteKey = petregistry.FormatBstMacroPaletteSaveKeyFromMovesKey(mk);
+end
+
+local function SyncMacroEditorSubtypeFieldsFromSaveKey()
+    SyncPetAvatarFilterFromSaveSubType();
+    SyncBstJugFamilyFromSaveSubType();
+end
+
 -- Sync palette to current player job (call on job change)
 function M.SyncToCurrentJob()
     -- Only sync when viewing a job bucket — preserve shared/custom macro categories across job changes
@@ -1776,8 +2009,7 @@ function M.SyncToCurrentJob()
     playerdata.ClearCache();
     MP.cachedPetCommands = nil;
     MP.petAvatarFilter = 1;
-    MP.selectedAvatarPalette = nil;
-    MP.smnShowAllAvatarSubsets = false;
+    ResetPetJobMacroPaletteSubsets();
     -- Close editor window if open (spells/abilities are job-specific)
     if MP.editingMacro then
         MP.editingMacro = nil;
@@ -1787,9 +2019,9 @@ function M.SyncToCurrentJob()
         ClearEditorPreviewIconCache();
     end
     -- Clear macro selection (macros are per-type)
-    selectedMacroIndex = nil;
+    paletteUi.selectedMacroIndex = nil;
     -- If palette is open, immediately refresh the caches
-    if paletteOpen then
+    if paletteUi.open then
         RefreshCachedLists();
     end
 end
@@ -1824,6 +2056,14 @@ end
 function M.AddMacro(macroData, typeKeyOverride)
     local db, typeKey = M.GetMacroDatabase(typeKeyOverride);
 
+    if typeKey == macroBuckets.GLOBAL and macroGlobalDefaults.IsUniversalTwoHourMacro(macroData) then
+        for _, ex in ipairs(db) do
+            if macroGlobalDefaults.IsUniversalTwoHourMacro(ex) then
+                return nil;
+            end
+        end
+    end
+
     -- Generate unique ID (per palette bucket). In Shared scope, also consider the frozen profile
     -- library so new ids never collide with profile hotbar macroRef values in the same bucket.
     local maxId = 0;
@@ -1854,6 +2094,9 @@ function M.UpdateMacro(macroId, macroData, typeKeyOverride)
 
     for i, macro in ipairs(db) do
         if macro.id == macroId then
+            if macroGlobalDefaults.IsUniversalTwoHourMacro(macro) then
+                return false;
+            end
             macroData.id = macroId;  -- Preserve ID
             db[i] = macroData;
             markSharedMacroLibraryDirtyIfNeeded();
@@ -2060,8 +2303,8 @@ local function DeleteMacroCustomCategoryCompletely(remKey)
     if MP.selectedPaletteType == remKey then
         MP.selectedPaletteType = GLOBAL_MACRO_KEY;
     end
-    MP.smnShowAllAvatarSubsets = false;
-    selectedMacroIndex = nil;
+    ResetPetJobMacroPaletteSubsets();
+    paletteUi.selectedMacroIndex = nil;
     MP.currentPalettePage = 1;
     MP.macroCustomRenameTargetKey = nil;
     playerdata.ClearCache();
@@ -2105,6 +2348,9 @@ function M.DeleteMacro(macroId, typeKeyOverride)
 
     for i, macro in ipairs(db) do
         if macro.id == macroId then
+            if macroGlobalDefaults.IsUniversalTwoHourMacro(macro) then
+                return false;
+            end
             local onlyBucketForThisId = (CountPaletteBucketsWithMacroId(macroId) == 1);
             table.remove(db, i);
             ClearSlotsReferencingMacro(macroId, typeKey, onlyBucketForThisId, deleteKind);
@@ -2156,7 +2402,7 @@ function M.OpenEditorForSlotData(slotData)
             MP.editingMacro = deep_copy_table(macro);
             MP.isCreatingNew = false;
             MP.editorPaletteKey = paletteKey;
-            SyncPetAvatarFilterFromSaveSubType();
+            SyncMacroEditorSubtypeFieldsFromSaveKey();
             RefreshCachedLists();
             return;
         end
@@ -2166,7 +2412,7 @@ function M.OpenEditorForSlotData(slotData)
         MP.editingMacro = deep_copy_table(slotData);
         MP.isCreatingNew = false;
         MP.editorPaletteKey = slotData.macroPaletteKey or GetEffectivePaletteType();
-        SyncPetAvatarFilterFromSaveSubType();
+        SyncMacroEditorSubtypeFieldsFromSaveKey();
     else
         MP.isCreatingNew = true;
         MP.editingMacro = {
@@ -2179,7 +2425,7 @@ function M.OpenEditorForSlotData(slotData)
         };
         MP.editorAutoIconKey = 'xiui_default::ma';
         MP.editorPaletteKey = GetEffectivePaletteType();
-        SyncPetAvatarFilterFromSaveSubType();
+        SyncMacroEditorSubtypeFieldsFromSaveKey();
     end
     RefreshCachedLists();
 end
@@ -2358,8 +2604,8 @@ end
 -- ============================================
 
 function M.OpenPalette()
-    paletteOpen = true;
-    selectedMacroIndex = nil;
+    paletteUi.open = true;
+    paletteUi.selectedMacroIndex = nil;
     MP.editingMacro = nil;
     MP.isCreatingNew = false;
     ClearEditorPreviewIconCache();
@@ -2379,8 +2625,8 @@ function M.ClosePalette()
         SaveSettingsToDisk();
         hotbarDataDirty = false;
     end
-    paletteOpen = false;
-    selectedMacroIndex = nil;
+    paletteUi.open = false;
+    paletteUi.selectedMacroIndex = nil;
     MP.editingMacro = nil;
     MP.isCreatingNew = false;
     MP.currentPalettePage = 1;  -- Reset to page 1
@@ -2398,11 +2644,11 @@ function M.ClosePalette()
 end
 
 function M.IsPaletteOpen()
-    return paletteOpen;
+    return paletteUi.open;
 end
 
 function M.TogglePalette()
-    if paletteOpen then
+    if paletteUi.open then
         M.ClosePalette();
     else
         M.OpenPalette();
@@ -2411,7 +2657,7 @@ end
 
 -- Draw a single macro tile (used in palette)
 local function DrawMacroTile(macro, index, x, y, size)
-    local isSelected = selectedMacroIndex == index;
+    local isSelected = paletteUi.selectedMacroIndex == index;
     local isHovered = false;
 
     -- Set cursor position
@@ -2436,7 +2682,7 @@ local function DrawMacroTile(macro, index, x, y, size)
 
     local buttonId = string.format('##macrotile%d', index);
     if imgui.Button(buttonId, {size, size}) then
-        selectedMacroIndex = index;
+        paletteUi.selectedMacroIndex = index;
     end
 
     imgui.PopStyleColor(4);
@@ -2492,17 +2738,21 @@ local function DrawMacroTile(macro, index, x, y, size)
         imgui.PushStyleColor(ImGuiCol_Border, COLORS.border);
         imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, {8, 6});
         imgui.BeginTooltip();
-        imgui.TextColored(COLORS.gold, macro.displayName or macro.action or 'Unknown');
-        imgui.Spacing();
-        imgui.TextColored(COLORS.textDim, 'Type: ' .. (ACTION_TYPE_LABELS[macro.actionType] or macro.actionType or '?'));
-        if macro.actionType ~= 'macro' and macro.target then
-            local formattedTarget = FormatTargetForDisplay(macro.target);
-            if formattedTarget then
-                imgui.TextColored(COLORS.textDim, 'Target: ' .. formattedTarget);
+        if macroGlobalDefaults.IsUniversalTwoHourMacro(macro) then
+            imgui.TextColored(COLORS.gold, '2-Hour Ability');
+        else
+            imgui.TextColored(COLORS.gold, macro.displayName or macro.action or 'Unknown');
+            imgui.Spacing();
+            imgui.TextColored(COLORS.textDim, 'Type: ' .. (ACTION_TYPE_LABELS[macro.actionType] or macro.actionType or '?'));
+            if macro.actionType ~= 'macro' and macro.target then
+                local formattedTarget = FormatTargetForDisplay(macro.target);
+                if formattedTarget then
+                    imgui.TextColored(COLORS.textDim, 'Target: ' .. formattedTarget);
+                end
             end
+            imgui.Spacing();
+            imgui.TextColored(COLORS.textMuted, 'Drag to hotbar slot');
         end
-        imgui.Spacing();
-        imgui.TextColored(COLORS.textMuted, 'Drag to hotbar slot');
         imgui.EndTooltip();
         imgui.PopStyleVar();
         imgui.PopStyleColor(2);
@@ -2627,17 +2877,135 @@ local function DrawIconPreview(macro, x, y, size)
     DrawMacroJaBadgeOverlay(drawList, macro, x, y, size);
 end
 
--- Draw the palette window
-function M.DrawPalette()
-    -- Macro editor must draw even when the palette list is closed (e.g. opened from Edit Full Palette
-    -- via double-click); otherwise MP.editingMacro is set but no window is ever drawn.
-    if not paletteOpen then
-        if MP.editingMacro then
-            RefreshCachedLists();
-            M.DrawMacroEditor();
-        end
-        return;
-    end
+-- Draw the palette window (Lua 5.1: max 60 upvalues per function; heavy body uses MacroPaletteDrawEnv.)
+local MacroPaletteDrawEnv = {};
+
+local function InitMacroPaletteDrawEnv()
+    local E = MacroPaletteDrawEnv;
+    E.imgui = imgui;
+    E.ffi = ffi;
+    E.data = data;
+    E.actions = actions;
+    E.textures = textures;
+    E.dragdrop = dragdrop;
+    E.petregistry = petregistry;
+    E.playerdata = playerdata;
+    E.petpalette = petpalette;
+    E.sharedMacroStore = sharedMacroStore;
+    E.macroBuckets = macroBuckets;
+    E.COLORS = COLORS;
+    E.MP = MP;
+    E.M = M;
+    E.paletteUi = paletteUi;
+    E.JOB_LIST = JOB_LIST;
+    E.INPUT_BUFFER_SIZE = INPUT_BUFFER_SIZE;
+    E.GLOBAL_MACRO_KEY = GLOBAL_MACRO_KEY;
+    E.ITEMS_MACRO_KEY = ITEMS_MACRO_KEY;
+    E.EQUIPMENT_MACRO_KEY = EQUIPMENT_MACRO_KEY;
+    E.XIUI_MACRO_KEY = XIUI_MACRO_KEY;
+    E.PALETTE_COLUMNS = PALETTE_COLUMNS;
+    E.PALETTE_ROWS = PALETTE_ROWS;
+    E.PALETTE_MACROS_PER_PAGE = PALETTE_MACROS_PER_PAGE;
+    E.PALETTE_TILE_SIZE = PALETTE_TILE_SIZE;
+    E.PALETTE_TILE_GAP = PALETTE_TILE_GAP;
+    E.PALETTE_TILE_ROUNDING = PALETTE_TILE_ROUNDING;
+    E.SMN_ALL_SUBSETS_VIEW_TAG = SMN_ALL_SUBSETS_VIEW_TAG;
+    E.BST_ALL_SUBSETS_VIEW_TAG = BST_ALL_SUBSETS_VIEW_TAG;
+    E.ACTION_TYPE_LABELS = ACTION_TYPE_LABELS;
+    E.RefreshCachedLists = RefreshCachedLists;
+    E.BuildSmnAllSubsetsRows = BuildSmnAllSubsetsRows;
+    E.BuildBstAllJugSubsetsRows = BuildBstAllJugSubsetsRows;
+    E.IsSmnAllSubsetsPaletteView = IsSmnAllSubsetsPaletteView;
+    E.IsBstAllSubsetsPaletteView = IsBstAllSubsetsPaletteView;
+    E.GetPaletteDisplayName = GetPaletteDisplayName;
+    E.PushWindowStyle = PushWindowStyle;
+    E.PopWindowStyle = PopWindowStyle;
+    E.PushComboStyle = PushComboStyle;
+    E.PopComboStyle = PopComboStyle;
+    E.ClearAllIconCaches = ClearAllIconCaches;
+    E.ResetPetJobMacroPaletteSubsets = ResetPetJobMacroPaletteSubsets;
+    E.EnsureMacroCustomCategoriesList = EnsureMacroCustomCategoriesList;
+    E.AddMacroCustomCategory = AddMacroCustomCategory;
+    E.markSharedMacroLibraryDirtyIfNeeded = markSharedMacroLibraryDirtyIfNeeded;
+    E.ApplyRenameMacroCustomCategory = ApplyRenameMacroCustomCategory;
+    E.DeleteMacroCustomCategoryCompletely = DeleteMacroCustomCategoryCompletely;
+    E.CountMacrosInPalette = CountMacrosInPalette;
+    E.CountSmnAllSubsetsMacros = CountSmnAllSubsetsMacros;
+    E.CountBstAllJugSubsetsMacros = CountBstAllJugSubsetsMacros;
+    E.GetEffectivePaletteType = GetEffectivePaletteType;
+    E.ClearBstJugMacroSubsetUi = ClearBstJugMacroSubsetUi;
+    E.ClearSmnMacroSubsetUi = ClearSmnMacroSubsetUi;
+    E.BstJugSubsetEntriesOrdered = BstJugSubsetEntriesOrdered;
+    E.SyncMacroEditorSubtypeFieldsFromSaveKey = SyncMacroEditorSubtypeFieldsFromSaveKey;
+    E.GetCachedPaletteMainIcon = GetCachedPaletteMainIcon;
+    E.DrawMacroJaBadgeOverlay = DrawMacroJaBadgeOverlay;
+    E.FormatTargetForDisplay = FormatTargetForDisplay;
+    E.ClearEditorPreviewIconCache = ClearEditorPreviewIconCache;
+end
+
+InitMacroPaletteDrawEnv();
+
+local function DrawPaletteBody()
+    local E = MacroPaletteDrawEnv;
+    local imgui = E.imgui;
+    local ffi = E.ffi;
+    local data = E.data;
+    local actions = E.actions;
+    local textures = E.textures;
+    local dragdrop = E.dragdrop;
+    local petregistry = E.petregistry;
+    local playerdata = E.playerdata;
+    local petpalette = E.petpalette;
+    local sharedMacroStore = E.sharedMacroStore;
+    local macroBuckets = E.macroBuckets;
+    local COLORS = E.COLORS;
+    local MP = E.MP;
+    local M = E.M;
+    local paletteUi = E.paletteUi;
+    local JOB_LIST = E.JOB_LIST;
+    local INPUT_BUFFER_SIZE = E.INPUT_BUFFER_SIZE;
+    local GLOBAL_MACRO_KEY = E.GLOBAL_MACRO_KEY;
+    local ITEMS_MACRO_KEY = E.ITEMS_MACRO_KEY;
+    local EQUIPMENT_MACRO_KEY = E.EQUIPMENT_MACRO_KEY;
+    local XIUI_MACRO_KEY = E.XIUI_MACRO_KEY;
+    local PALETTE_COLUMNS = E.PALETTE_COLUMNS;
+    local PALETTE_ROWS = E.PALETTE_ROWS;
+    local PALETTE_MACROS_PER_PAGE = E.PALETTE_MACROS_PER_PAGE;
+    local PALETTE_TILE_SIZE = E.PALETTE_TILE_SIZE;
+    local PALETTE_TILE_GAP = E.PALETTE_TILE_GAP;
+    local PALETTE_TILE_ROUNDING = E.PALETTE_TILE_ROUNDING;
+    local SMN_ALL_SUBSETS_VIEW_TAG = E.SMN_ALL_SUBSETS_VIEW_TAG;
+    local BST_ALL_SUBSETS_VIEW_TAG = E.BST_ALL_SUBSETS_VIEW_TAG;
+    local ACTION_TYPE_LABELS = E.ACTION_TYPE_LABELS;
+    local RefreshCachedLists = E.RefreshCachedLists;
+    local BuildSmnAllSubsetsRows = E.BuildSmnAllSubsetsRows;
+    local BuildBstAllJugSubsetsRows = E.BuildBstAllJugSubsetsRows;
+    local IsSmnAllSubsetsPaletteView = E.IsSmnAllSubsetsPaletteView;
+    local IsBstAllSubsetsPaletteView = E.IsBstAllSubsetsPaletteView;
+    local GetPaletteDisplayName = E.GetPaletteDisplayName;
+    local PushWindowStyle = E.PushWindowStyle;
+    local PopWindowStyle = E.PopWindowStyle;
+    local PushComboStyle = E.PushComboStyle;
+    local PopComboStyle = E.PopComboStyle;
+    local ClearAllIconCaches = E.ClearAllIconCaches;
+    local ResetPetJobMacroPaletteSubsets = E.ResetPetJobMacroPaletteSubsets;
+    local EnsureMacroCustomCategoriesList = E.EnsureMacroCustomCategoriesList;
+    local AddMacroCustomCategory = E.AddMacroCustomCategory;
+    local markSharedMacroLibraryDirtyIfNeeded = E.markSharedMacroLibraryDirtyIfNeeded;
+    local ApplyRenameMacroCustomCategory = E.ApplyRenameMacroCustomCategory;
+    local DeleteMacroCustomCategoryCompletely = E.DeleteMacroCustomCategoryCompletely;
+    local CountMacrosInPalette = E.CountMacrosInPalette;
+    local CountSmnAllSubsetsMacros = E.CountSmnAllSubsetsMacros;
+    local CountBstAllJugSubsetsMacros = E.CountBstAllJugSubsetsMacros;
+    local GetEffectivePaletteType = E.GetEffectivePaletteType;
+    local ClearBstJugMacroSubsetUi = E.ClearBstJugMacroSubsetUi;
+    local ClearSmnMacroSubsetUi = E.ClearSmnMacroSubsetUi;
+    local BstJugSubsetEntriesOrdered = E.BstJugSubsetEntriesOrdered;
+    local SyncMacroEditorSubtypeFieldsFromSaveKey = E.SyncMacroEditorSubtypeFieldsFromSaveKey;
+    local GetCachedPaletteMainIcon = E.GetCachedPaletteMainIcon;
+    local DrawMacroJaBadgeOverlay = E.DrawMacroJaBadgeOverlay;
+    local FormatTargetForDisplay = E.FormatTargetForDisplay;
+    local ClearEditorPreviewIconCache = E.ClearEditorPreviewIconCache;
 
     -- Continuously check for job changes while palette is open
     -- This catches cases where job changed but cache wasn't refreshed properly
@@ -2649,6 +3017,7 @@ function M.DrawPalette()
     end
 
     local smnMergeMeta = nil;
+    local bstMergeMeta = nil;
     local db;
     local typeKey;
     if IsSmnAllSubsetsPaletteView() then
@@ -2658,11 +3027,20 @@ function M.DrawPalette()
             db[i] = row.macro;
         end
         typeKey = petregistry.JOB_SMN;
+    elseif IsBstAllSubsetsPaletteView() then
+        bstMergeMeta = BuildBstAllJugSubsetsRows();
+        db = {};
+        for i, row in ipairs(bstMergeMeta) do
+            db[i] = row.macro;
+        end
+        typeKey = petregistry.JOB_BST;
     else
         db, typeKey = M.GetMacroDatabase();
     end
 
-    local paletteViewCacheKey = smnMergeMeta and (tostring(petregistry.JOB_SMN) .. ':' .. SMN_ALL_SUBSETS_VIEW_TAG) or typeKey;
+    local paletteViewCacheKey = smnMergeMeta and (tostring(petregistry.JOB_SMN) .. ':' .. SMN_ALL_SUBSETS_VIEW_TAG)
+        or (bstMergeMeta and (tostring(petregistry.JOB_BST) .. ':' .. BST_ALL_SUBSETS_VIEW_TAG))
+        or typeKey;
     if MP._macroSearchPaletteKey ~= paletteViewCacheKey then
         MP._macroSearchPaletteKey = paletteViewCacheKey;
         MP.macroPaletteSearchName[1] = '';
@@ -2708,16 +3086,16 @@ function M.DrawPalette()
         end
     end
 
-    if selectedMacroIndex then
+    if paletteUi.selectedMacroIndex then
         local selOk = false;
         for _, fi in ipairs(filteredIndices) do
-            if fi == selectedMacroIndex then
+            if fi == paletteUi.selectedMacroIndex then
                 selOk = true;
                 break;
             end
         end
         if not selOk then
-            selectedMacroIndex = nil;
+            paletteUi.selectedMacroIndex = nil;
         end
     end
 
@@ -2866,7 +3244,7 @@ function M.DrawPalette()
                         sharedMacroStore.ApplySwitchToShared(gConfig);
                         data.InvalidateConfigDerivedCaches();
                         SaveSettingsToDisk();
-                        selectedMacroIndex = nil;
+                        paletteUi.selectedMacroIndex = nil;
                         MP.currentPalettePage = 1;
                         RefreshCachedLists();
                         ClearAllIconCaches();
@@ -2889,7 +3267,7 @@ function M.DrawPalette()
                         sharedMacroStore.ApplySwitchToProfile(gConfig);
                         data.InvalidateConfigDerivedCaches();
                         SaveSettingsToDisk();
-                        selectedMacroIndex = nil;
+                        paletteUi.selectedMacroIndex = nil;
                         MP.currentPalettePage = 1;
                         RefreshCachedLists();
                         ClearAllIconCaches();
@@ -2927,7 +3305,7 @@ function M.DrawPalette()
             return 0;
         end
 
-        -- Build display label with macro count (uses current grid, including SMN "all subsets" merge)
+        -- Build display label with macro count (uses current grid, including SMN / BST "all subsets" merge)
         local macroCount = #db;
         local displayLabel = macroCount > 0 and string.format('%s (%d)', typeName, macroCount) or typeName;
 
@@ -2949,11 +3327,10 @@ function M.DrawPalette()
                 imgui.PushStyleColor(ImGuiCol_Text, COLORS.textDim);
             end
 
-            if imgui.Selectable(globalLabel, globalSelected) then
-                MP.selectedPaletteType = GLOBAL_MACRO_KEY;
-                MP.selectedAvatarPalette = nil;
-                MP.smnShowAllAvatarSubsets = false;
-                selectedMacroIndex = nil;
+                if imgui.Selectable(globalLabel, globalSelected) then
+                    MP.selectedPaletteType = GLOBAL_MACRO_KEY;
+                    ResetPetJobMacroPaletteSubsets();
+                    paletteUi.selectedMacroIndex = nil;
                 MP.currentPalettePage = 1;
                 -- Clear caches to force refresh
                 playerdata.ClearCache();
@@ -2982,11 +3359,10 @@ function M.DrawPalette()
                 imgui.PushStyleColor(ImGuiCol_Text, COLORS.textDim);
             end
 
-            if imgui.Selectable(itemsLabel, itemsSelected) then
-                MP.selectedPaletteType = ITEMS_MACRO_KEY;
-                MP.selectedAvatarPalette = nil;
-                MP.smnShowAllAvatarSubsets = false;
-                selectedMacroIndex = nil;
+                if imgui.Selectable(itemsLabel, itemsSelected) then
+                    MP.selectedPaletteType = ITEMS_MACRO_KEY;
+                    ResetPetJobMacroPaletteSubsets();
+                    paletteUi.selectedMacroIndex = nil;
                 MP.currentPalettePage = 1;
                 playerdata.ClearCache();
                 MP.cachedPetCommands = nil;
@@ -3014,11 +3390,10 @@ function M.DrawPalette()
                 imgui.PushStyleColor(ImGuiCol_Text, COLORS.textDim);
             end
 
-            if imgui.Selectable(equipLabel, equipSelected) then
-                MP.selectedPaletteType = EQUIPMENT_MACRO_KEY;
-                MP.selectedAvatarPalette = nil;
-                MP.smnShowAllAvatarSubsets = false;
-                selectedMacroIndex = nil;
+                if imgui.Selectable(equipLabel, equipSelected) then
+                    MP.selectedPaletteType = EQUIPMENT_MACRO_KEY;
+                    ResetPetJobMacroPaletteSubsets();
+                    paletteUi.selectedMacroIndex = nil;
                 MP.currentPalettePage = 1;
                 playerdata.ClearCache();
                 MP.cachedPetCommands = nil;
@@ -3046,11 +3421,10 @@ function M.DrawPalette()
                 imgui.PushStyleColor(ImGuiCol_Text, COLORS.textDim);
             end
 
-            if imgui.Selectable(xiuiLabel, xiuiSelected) then
-                MP.selectedPaletteType = XIUI_MACRO_KEY;
-                MP.selectedAvatarPalette = nil;
-                MP.smnShowAllAvatarSubsets = false;
-                selectedMacroIndex = nil;
+                if imgui.Selectable(xiuiLabel, xiuiSelected) then
+                    MP.selectedPaletteType = XIUI_MACRO_KEY;
+                    ResetPetJobMacroPaletteSubsets();
+                    paletteUi.selectedMacroIndex = nil;
                 MP.currentPalettePage = 1;
                 playerdata.ClearCache();
                 MP.cachedPetCommands = nil;
@@ -3083,9 +3457,8 @@ function M.DrawPalette()
 
                 if imgui.Selectable(cLabel, cSel) then
                     MP.selectedPaletteType = cKey;
-                    MP.selectedAvatarPalette = nil;
-                    MP.smnShowAllAvatarSubsets = false;
-                    selectedMacroIndex = nil;
+                    ResetPetJobMacroPaletteSubsets();
+                    paletteUi.selectedMacroIndex = nil;
                     MP.currentPalettePage = 1;
                     playerdata.ClearCache();
                     MP.cachedPetCommands = nil;
@@ -3135,9 +3508,8 @@ function M.DrawPalette()
 
                 if imgui.Selectable(label, isSelected) then
                     MP.selectedPaletteType = job.id;
-                    MP.selectedAvatarPalette = nil;  -- Clear avatar selection when switching jobs
-                    MP.smnShowAllAvatarSubsets = false;
-                    selectedMacroIndex = nil;  -- Clear selection when switching types
+                    ResetPetJobMacroPaletteSubsets(); -- Clear avatar / jug subset selection when switching jobs
+                    paletteUi.selectedMacroIndex = nil;  -- Clear selection when switching types
                     MP.currentPalettePage = 1;    -- Reset to page 1 when switching types
                     -- Clear caches to force refresh
                     playerdata.ClearCache();
@@ -3204,9 +3576,9 @@ function M.DrawPalette()
                 local nk = AddMacroCustomCategory(MP.macroNewCategoryBuf[1]);
                 if nk then
                     MP.selectedPaletteType = nk;
-                    MP.smnShowAllAvatarSubsets = false;
+                    ResetPetJobMacroPaletteSubsets();
                     MP.macroNewCategoryBuf[1] = '';
-                    selectedMacroIndex = nil;
+                    paletteUi.selectedMacroIndex = nil;
                     MP.currentPalettePage = 1;
                     playerdata.ClearCache();
                     MP.cachedPetCommands = nil;
@@ -3326,9 +3698,10 @@ function M.DrawPalette()
                     imgui.PushStyleColor(ImGuiCol_Text, COLORS.textDim);
                 end
                 if imgui.Selectable(allSubLabel, allSubSel) then
+                    ClearBstJugMacroSubsetUi();
                     MP.smnShowAllAvatarSubsets = true;
                     MP.selectedAvatarPalette = nil;
-                    selectedMacroIndex = nil;
+                    paletteUi.selectedMacroIndex = nil;
                     MP.currentPalettePage = 1;
                     MP.cachedPetCommands = nil;
                 end
@@ -3355,9 +3728,10 @@ function M.DrawPalette()
                 end
 
                 if imgui.Selectable(baseLabel, isBaseSelected) then
+                    ClearBstJugMacroSubsetUi();
                     MP.smnShowAllAvatarSubsets = false;
                     MP.selectedAvatarPalette = nil;
-                    selectedMacroIndex = nil;
+                    paletteUi.selectedMacroIndex = nil;
                     MP.currentPalettePage = 1;
                     MP.cachedPetCommands = nil;
                 end
@@ -3388,15 +3762,140 @@ function M.DrawPalette()
                     end
 
                     if imgui.Selectable(label, isSelected) then
+                        ClearBstJugMacroSubsetUi();
                         MP.smnShowAllAvatarSubsets = false;
                         MP.selectedAvatarPalette = avatar;
-                        selectedMacroIndex = nil;
+                        paletteUi.selectedMacroIndex = nil;
                         MP.currentPalettePage = 1;
                         MP.cachedPetCommands = nil;
                     end
                     imgui.PopStyleColor();
 
                     if isSelected then
+                        imgui.SetItemDefaultFocus();
+                    end
+                end
+                imgui.EndCombo();
+            end
+            PopComboStyle();
+        end
+
+        -- BST: Base / all jug families merged / single jug family (parity with SMN Sub-type)
+        if not isSharedMacroPalette and MP.selectedPaletteType == petregistry.JOB_BST then
+            imgui.Spacing();
+            imgui.TextColored(COLORS.textDim, 'Sub-type:');
+            imgui.SameLine();
+            local bstJugList = BstJugSubsetEntriesOrdered();
+            local allBstSubCount = CountBstAllJugSubsetsMacros();
+            local bstSubLabel;
+            if MP.bstShowAllJugSubsets then
+                bstSubLabel = allBstSubCount > 0 and string.format('All subsets (%d)', allBstSubCount) or 'All subsets';
+            else
+                bstSubLabel = 'Base BST';
+                if MP.selectedBstJugMovesKey ~= nil then
+                    bstSubLabel = MP.selectedBstJugMovesKey;
+                    for _, ent in ipairs(bstJugList) do
+                        if ent.movesKey == MP.selectedBstJugMovesKey then
+                            bstSubLabel = ent.label;
+                            break;
+                        end
+                    end
+                end
+                local curBstKey = GetEffectivePaletteType();
+                local bstFamMacroCount = 0;
+                if gConfig.macroDB and gConfig.macroDB[curBstKey] then
+                    bstFamMacroCount = #gConfig.macroDB[curBstKey];
+                end
+                if bstFamMacroCount > 0 then
+                    bstSubLabel = string.format('%s (%d)', bstSubLabel, bstFamMacroCount);
+                end
+            end
+
+            PushComboStyle();
+            imgui.SetNextItemWidth(148);
+            if imgui.BeginCombo('##BstJugPalette', bstSubLabel, ImGuiComboFlags_None) then
+                local allBstLabel = allBstSubCount > 0 and string.format('All subsets (%d)', allBstSubCount) or 'All subsets';
+                local allBstSel = MP.bstShowAllJugSubsets;
+                if allBstSel then
+                    imgui.PushStyleColor(ImGuiCol_Text, COLORS.gold);
+                elseif allBstSubCount > 0 then
+                    imgui.PushStyleColor(ImGuiCol_Text, COLORS.text);
+                else
+                    imgui.PushStyleColor(ImGuiCol_Text, COLORS.textDim);
+                end
+                if imgui.Selectable(allBstLabel, allBstSel) then
+                    ClearSmnMacroSubsetUi();
+                    MP.bstShowAllJugSubsets = true;
+                    MP.selectedBstJugMovesKey = nil;
+                    paletteUi.selectedMacroIndex = nil;
+                    MP.currentPalettePage = 1;
+                    MP.cachedPetCommands = nil;
+                end
+                imgui.PopStyleColor();
+                if allBstSel then
+                    imgui.SetItemDefaultFocus();
+                end
+
+                imgui.Separator();
+
+                local bstBaseSel = (not MP.bstShowAllJugSubsets and MP.selectedBstJugMovesKey == nil);
+                local bstBaseMacroCount = 0;
+                if gConfig.macroDB and gConfig.macroDB[petregistry.JOB_BST] then
+                    bstBaseMacroCount = #gConfig.macroDB[petregistry.JOB_BST];
+                end
+                local bstBaseLabel = bstBaseMacroCount > 0 and string.format('Base BST (%d)', bstBaseMacroCount) or 'Base BST';
+
+                if bstBaseSel then
+                    imgui.PushStyleColor(ImGuiCol_Text, COLORS.gold);
+                elseif bstBaseMacroCount > 0 then
+                    imgui.PushStyleColor(ImGuiCol_Text, COLORS.text);
+                else
+                    imgui.PushStyleColor(ImGuiCol_Text, COLORS.textDim);
+                end
+
+                if imgui.Selectable(bstBaseLabel, bstBaseSel) then
+                    ClearSmnMacroSubsetUi();
+                    MP.bstShowAllJugSubsets = false;
+                    MP.selectedBstJugMovesKey = nil;
+                    paletteUi.selectedMacroIndex = nil;
+                    MP.currentPalettePage = 1;
+                    MP.cachedPetCommands = nil;
+                end
+                imgui.PopStyleColor();
+
+                if bstBaseSel then
+                    imgui.SetItemDefaultFocus();
+                end
+
+                imgui.Separator();
+
+                for _, ent in ipairs(bstJugList) do
+                    local jugSel = (not MP.bstShowAllJugSubsets and MP.selectedBstJugMovesKey == ent.movesKey);
+                    local jugMc = 0;
+                    if gConfig.macroDB and gConfig.macroDB[ent.fullKey] then
+                        jugMc = #gConfig.macroDB[ent.fullKey];
+                    end
+                    local jugLab = jugMc > 0 and string.format('%s (%d)', ent.label, jugMc) or ent.label;
+
+                    if jugSel then
+                        imgui.PushStyleColor(ImGuiCol_Text, COLORS.gold);
+                    elseif jugMc > 0 then
+                        imgui.PushStyleColor(ImGuiCol_Text, COLORS.text);
+                    else
+                        imgui.PushStyleColor(ImGuiCol_Text, COLORS.textDim);
+                    end
+
+                    if imgui.Selectable(jugLab, jugSel) then
+                        ClearSmnMacroSubsetUi();
+                        MP.bstShowAllJugSubsets = false;
+                        MP.selectedBstJugMovesKey = ent.movesKey;
+                        paletteUi.selectedMacroIndex = nil;
+                        MP.currentPalettePage = 1;
+                        MP.cachedPetCommands = nil;
+                    end
+                    imgui.PopStyleColor();
+
+                    if jugSel then
                         imgui.SetItemDefaultFocus();
                     end
                 end
@@ -3555,16 +4054,25 @@ function M.DrawPalette()
             if smnMergeMeta and smnMergeMeta[idx] then
                 return smnMergeMeta[idx].paletteKey;
             end
+            if bstMergeMeta and bstMergeMeta[idx] then
+                return bstMergeMeta[idx].paletteKey;
+            end
             return typeKey;
         end
         local function rowSubsetLabelForGridIdx(idx)
             if smnMergeMeta and smnMergeMeta[idx] then
                 return smnMergeMeta[idx].subsetLabel;
             end
+            if bstMergeMeta and bstMergeMeta[idx] then
+                return bstMergeMeta[idx].subsetLabel;
+            end
             return nil;
         end
 
-        local hasSelection = selectedMacroIndex and db[selectedMacroIndex];
+        local hasSelection = paletteUi.selectedMacroIndex and db[paletteUi.selectedMacroIndex];
+        local universalLocked = hasSelection and macroGlobalDefaults.IsUniversalTwoHourMacro(db[paletteUi.selectedMacroIndex]);
+        local copyEnabled = hasSelection and not universalLocked;
+        local editDelEnabled = hasSelection and not universalLocked;
 
         -- Button row with XIUI button styling
         imgui.PushStyleColor(ImGuiCol_Button, COLORS.bgLight);
@@ -3595,22 +4103,22 @@ function M.DrawPalette()
             MP.abilityJobFilter = 0;
             MP.petTypeOverride = 0;
             MP.editorIconPrefsHydrated = false;
-            selectedMacroIndex = nil;
+            paletteUi.selectedMacroIndex = nil;
             MP.editorPaletteKey = GetEffectivePaletteType();
-            SyncPetAvatarFilterFromSaveSubType();
+            SyncMacroEditorSubtypeFieldsFromSaveKey();
         end
 
         imgui.SameLine();
 
-        if not hasSelection then
+        if not copyEnabled then
             imgui.PushStyleVar(ImGuiStyleVar_Alpha, 0.4);
         end
-        if imgui.Button('Copy', {60, 26}) and hasSelection then
-            MP.editingMacro = deep_copy_table(db[selectedMacroIndex]);
+        if imgui.Button('Copy', {60, 26}) and copyEnabled then
+            MP.editingMacro = deep_copy_table(db[paletteUi.selectedMacroIndex]);
             MP.editingMacro.id = nil;
             MP.isCreatingNew = true;
-            MP.editorPaletteKey = rowPaletteKeyForGridIdx(selectedMacroIndex);
-            SyncPetAvatarFilterFromSaveSubType();
+            MP.editorPaletteKey = rowPaletteKeyForGridIdx(paletteUi.selectedMacroIndex);
+            SyncMacroEditorSubtypeFieldsFromSaveKey();
             MP.editorDidInitialIconPick = false;
             MP.editorImplicitActionIconDone = false;
             MP.editorIconManuallySet = false;
@@ -3623,7 +4131,7 @@ function M.DrawPalette()
             MP.editorIconPrefsHydrated = false;
             ClearEditorPreviewIconCache();
         end
-        if not hasSelection then
+        if not copyEnabled then
             imgui.PopStyleVar();
         end
 
@@ -3632,16 +4140,16 @@ function M.DrawPalette()
 
         imgui.SameLine();
 
-        -- Edit/Delete buttons (always visible, disabled when no selection)
-        if not hasSelection then
+        -- Edit/Delete buttons (always visible, disabled when no selection or Universal 2Hr locked)
+        if not editDelEnabled then
             imgui.PushStyleVar(ImGuiStyleVar_Alpha, 0.4);
         end
 
-        if imgui.Button('Edit', {60, 26}) and hasSelection then
-            MP.editingMacro = deep_copy_table(db[selectedMacroIndex]);
+        if imgui.Button('Edit', {60, 26}) and editDelEnabled then
+            MP.editingMacro = deep_copy_table(db[paletteUi.selectedMacroIndex]);
             MP.isCreatingNew = false;
-            MP.editorPaletteKey = rowPaletteKeyForGridIdx(selectedMacroIndex);
-            SyncPetAvatarFilterFromSaveSubType();
+            MP.editorPaletteKey = rowPaletteKeyForGridIdx(paletteUi.selectedMacroIndex);
+            SyncMacroEditorSubtypeFieldsFromSaveKey();
             MP.editorDidInitialIconPick = false;
             MP.editorImplicitActionIconDone = false;
             MP.editorIconManuallySet = false;
@@ -3657,22 +4165,22 @@ function M.DrawPalette()
         imgui.SameLine();
 
         -- Delete button with danger styling (or dimmed when disabled)
-        if hasSelection then
+        if editDelEnabled then
             imgui.PushStyleColor(ImGuiCol_Button, COLORS.dangerDim);
             imgui.PushStyleColor(ImGuiCol_ButtonHovered, COLORS.danger);
             imgui.PushStyleColor(ImGuiCol_ButtonActive, {0.9, 0.35, 0.35, 1.0});
         end
 
-        if imgui.Button('Delete', {60, 26}) and hasSelection then
-            M.DeleteMacro(db[selectedMacroIndex].id, rowPaletteKeyForGridIdx(selectedMacroIndex));
-            selectedMacroIndex = nil;
+        if imgui.Button('Delete', {60, 26}) and editDelEnabled then
+            M.DeleteMacro(db[paletteUi.selectedMacroIndex].id, rowPaletteKeyForGridIdx(paletteUi.selectedMacroIndex));
+            paletteUi.selectedMacroIndex = nil;
         end
 
-        if hasSelection then
+        if editDelEnabled then
             imgui.PopStyleColor(3);
         end
 
-        if not hasSelection then
+        if not editDelEnabled then
             imgui.PopStyleVar();
         end
 
@@ -3701,7 +4209,7 @@ function M.DrawPalette()
                             end
 
                             -- Draw the tile inline
-                            local isSelected = selectedMacroIndex == idx;
+                            local isSelected = paletteUi.selectedMacroIndex == idx;
 
                             if isSelected then
                                 imgui.PushStyleColor(ImGuiCol_Button, {0.15, 0.13, 0.08, 0.95});
@@ -3721,7 +4229,7 @@ function M.DrawPalette()
                             local buttonPos = {imgui.GetCursorScreenPos()};
 
                             if imgui.Button(buttonId, {PALETTE_TILE_SIZE, PALETTE_TILE_SIZE}) then
-                                selectedMacroIndex = idx;
+                                paletteUi.selectedMacroIndex = idx;
                             end
 
                             imgui.PopStyleColor(4);
@@ -3771,21 +4279,25 @@ function M.DrawPalette()
                                 imgui.PushStyleColor(ImGuiCol_Border, COLORS.border);
                                 imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, {8, 6});
                                 imgui.BeginTooltip();
-                                imgui.TextColored(COLORS.gold, macro.displayName or macro.action or 'Unknown');
-                                local subLbl = rowSubsetLabelForGridIdx(idx);
-                                if subLbl then
-                                    imgui.TextColored(COLORS.textMuted, 'Subset: ' .. subLbl);
-                                end
-                                imgui.Spacing();
-                                imgui.TextColored(COLORS.textDim, 'Type: ' .. (ACTION_TYPE_LABELS[macro.actionType] or macro.actionType or '?'));
-                                if macro.actionType ~= 'macro' and macro.target then
-                                    local formattedTarget = FormatTargetForDisplay(macro.target);
-                                    if formattedTarget then
-                                        imgui.TextColored(COLORS.textDim, 'Target: ' .. formattedTarget);
+                                if macroGlobalDefaults.IsUniversalTwoHourMacro(macro) then
+                                    imgui.TextColored(COLORS.gold, '2-Hour Ability');
+                                else
+                                    imgui.TextColored(COLORS.gold, macro.displayName or macro.action or 'Unknown');
+                                    local subLbl = rowSubsetLabelForGridIdx(idx);
+                                    if subLbl then
+                                        imgui.TextColored(COLORS.textMuted, 'Subset: ' .. subLbl);
                                     end
+                                    imgui.Spacing();
+                                    imgui.TextColored(COLORS.textDim, 'Type: ' .. (ACTION_TYPE_LABELS[macro.actionType] or macro.actionType or '?'));
+                                    if macro.actionType ~= 'macro' and macro.target then
+                                        local formattedTarget = FormatTargetForDisplay(macro.target);
+                                        if formattedTarget then
+                                            imgui.TextColored(COLORS.textDim, 'Target: ' .. formattedTarget);
+                                        end
+                                    end
+                                    imgui.Spacing();
+                                    imgui.TextColored(COLORS.textMuted, 'Drag to hotbar slot');
                                 end
-                                imgui.Spacing();
-                                imgui.TextColored(COLORS.textMuted, 'Drag to hotbar slot');
                                 imgui.EndTooltip();
                                 imgui.PopStyleVar();
                                 imgui.PopStyleColor(2);
@@ -3819,7 +4331,7 @@ function M.DrawPalette()
         end
         if imgui.Button('<##PrevPage', {30, 22}) and canGoPrev then
             MP.currentPalettePage = MP.currentPalettePage - 1;
-            selectedMacroIndex = nil;
+            paletteUi.selectedMacroIndex = nil;
         end
         if not canGoPrev then
             imgui.PopStyleVar();
@@ -3843,7 +4355,7 @@ function M.DrawPalette()
         end
         if imgui.Button('>##NextPage', {30, 22}) and canGoNext then
             MP.currentPalettePage = MP.currentPalettePage + 1;
-            selectedMacroIndex = nil;
+            paletteUi.selectedMacroIndex = nil;
         end
         if not canGoNext then
             imgui.PopStyleVar();
@@ -3862,6 +4374,19 @@ function M.DrawPalette()
     if MP.editingMacro then
         M.DrawMacroEditor();
     end
+end
+
+function M.DrawPalette()
+    -- Macro editor must draw even when the palette list is closed (e.g. opened from Edit Full Palette
+    -- via double-click); otherwise MP.editingMacro is set but no window is ever drawn.
+    if not paletteUi.open then
+        if MP.editingMacro then
+            RefreshCachedLists();
+            M.DrawMacroEditor();
+        end
+        return;
+    end
+    DrawPaletteBody();
 end
 
 -- ============================================
@@ -5082,7 +5607,7 @@ end
 function M.DrawMacroEditorSaveToSection(creatingNew, contentWidth)
     local function applyEditorSaveKey(newKey)
         MP.editorPaletteKey = newKey;
-        SyncPetAvatarFilterFromSaveSubType();
+        SyncMacroEditorSubtypeFieldsFromSaveKey();
     end
 
     local saveKey = MP.editorPaletteKey or GetEffectivePaletteType();
@@ -5303,6 +5828,54 @@ function M.DrawMacroEditorSaveToSection(creatingNew, contentWidth)
         PopComboStyle();
     end
 
+    if EditorSaveKeyToJobId(saveKey) == petregistry.JOB_BST then
+        imgui.SameLine(0, 10);
+        imgui.TextColored(COLORS.textDim, '/');
+        imgui.SameLine(0, 10);
+
+        local currentJugLabel = 'Base BST';
+        if type(saveKey) == 'string' then
+            local jobId, petType, petId = saveKey:match('^(%d+):([^:]+):(.+)$');
+            if jobId and tonumber(jobId) == petregistry.JOB_BST and petType == petregistry.PET_TYPE_JUG and petId then
+                currentJugLabel = petregistry.GetDisplayNameForKey(petregistry.PET_TYPE_JUG .. ':' .. petId);
+            end
+        end
+
+        local subMaxW = labelTextWidth('Base BST');
+        local bstPetKeys = petregistry.GetAvailablePetKeys(petregistry.JOB_BST);
+        for _, pk in ipairs(bstPetKeys) do
+            local slug = pk:match('^jug:(.+)$');
+            if slug then
+                subMaxW = math.max(subMaxW, labelTextWidth(petregistry.GetDisplayNameForKey(pk)));
+            end
+        end
+        local subComboW = subMaxW + (fpX * 2) + 28;
+        subComboW = math.max(80, math.min(subComboW, contentWidth * 0.35));
+
+        PushComboStyle();
+        imgui.SetNextItemWidth(subComboW);
+        if imgui.BeginCombo('##SaveBstJugPalette', currentJugLabel, ImGuiComboFlags_None) then
+            local isBaseSelected = (type(saveKey) == 'number' and saveKey == petregistry.JOB_BST);
+            if imgui.Selectable('Base BST', isBaseSelected) then
+                applyEditorSaveKey(petregistry.JOB_BST);
+            end
+            imgui.Separator();
+            for _, pk in ipairs(bstPetKeys) do
+                local slug = pk:match('^jug:(.+)$');
+                if slug then
+                    local fullKey = string.format('%d:%s:%s', petregistry.JOB_BST, petregistry.PET_TYPE_JUG, slug);
+                    local label = petregistry.GetDisplayNameForKey(pk);
+                    local isSelected = (saveKey == fullKey);
+                    if imgui.Selectable(label, isSelected) then
+                        applyEditorSaveKey(fullKey);
+                    end
+                end
+            end
+            imgui.EndCombo();
+        end
+        PopComboStyle();
+    end
+
     imgui.SameLine(0, 6);
     imgui.ShowHelp('Palette this macro is saved to.');
     imgui.Separator();
@@ -5364,6 +5937,7 @@ do
     MP.XIUI_MACRO_KEY = XIUI_MACRO_KEY;
     MP.ResolveBestCustomIconMatchForActionName = ResolveBestCustomIconMatchForActionName;
     MP.SyncSaveSubTypeFromPetAvatarFilter = SyncSaveSubTypeFromPetAvatarFilter;
+    MP.SyncSaveSubTypeFromBstJugFamily = SyncSaveSubTypeFromBstJugFamily;
     MP.SyncPetAvatarFilterFromSaveSubType = SyncPetAvatarFilterFromSaveSubType;
     MP.ClearEditorPreviewIconCache = ClearEditorPreviewIconCache;
     MP.ClearPaletteJaBadgeIconCache = ClearPaletteJaBadgeIconCache;

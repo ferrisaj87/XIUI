@@ -74,6 +74,7 @@ Why
             Body    = @'
 What changed
 - Merge retail avatar metadata with horizon_bloodpacts stats and xiui overlays; GetBloodPactByName / RebuildBloodPactIndex for consistent blood pact rows in UI.
+- Astral Flow–gated pacts (requiresFlow): pink asterisk in picker lists with tooltip "only during Astral Flow".
 
 Why
 - Single place to resolve blood pact display and gating for SMN commands.
@@ -81,14 +82,20 @@ Why
         },
         @{
             Branch  = 'pr/06-smn-actions-bloodpacts'
-            Files   = @('modules/hotbar/actions.lua')
+            Files   = @(
+                'modules/hotbar/actions.lua',
+                'modules/hotbar/recast.lua'
+            )
             Subject = 'SMN: blood pact action resolution and icons'
             Body    = @'
 What changed
 - BloodPactRage/BloodPactWard handling, GetBloodPactByName integration, icon resolution for blood pact actions.
+- actions.lua / recast.lua: JA binds resolve Universal 2 Hour sentinel and astral-flow blood pact rows consistently for commands, cooldowns, and icons; BuildCommandString uses resolved ability names and per-job target tokens (party vs RNG enemy); xiui_asset macro icons load like other XIUI assets.
+- NotifySlotExecutionEffects skips Universal 2 Hour arming shimmer while the bind is on cooldown so slots do not pulse during unusable windows.
 
 Why
 - Hotbar and macro layers can resolve correct icons and names for pact abilities.
+- Recast timers and executable commands stay aligned when macros use dynamic job-two-hour placeholders; cooldown state matches visible arming/subtarget cues.
 '@
         },
         @{
@@ -101,10 +108,12 @@ Why
             Body    = @'
 What changed
 - Blood pact corner overlays and status icons; when Edit Full Palette sets editorClipRect, slot body respects ImGui clip (D3D slot.png does not clip by itself).
+- Universal 2 Hour: pink subtarget ring while armed / waiting on subtarget selection; glow suppressed when the ability is on cooldown; slot click notifies execution effects before firing the macro.
 - Default MP cost / Lv / ninjutsu tool (x###) anchor is top-left; display.lua passes the same default when bar settings omit mpCostAnchor.
 
 Why
 - Blood pact state is visible on slots; editor preview matches ImGui window bounds; corner MP text aligns top-left unless overridden in settings.
+- Two-hour macro UX matches Horizon targeting (stpc / RNG stnpc) without misleading glow during cooldown.
 '@
         },
         @{
@@ -144,7 +153,7 @@ Why
             Subject = 'Horizon static databases: abilities, weaponskills, spell omissions'
             Body    = @'
 What changed
-- horizon_abilities.lua: job ability unlock levels from Horizon progression (including BST pet commands with level gates).
+- horizon_abilities.lua: job ability unlock levels from Horizon progression (including BST pet commands with level gates); comments reference retail-only omissions moved to horizon_retail_only_job_abilities.lua for JA filtering.
 - ws_weapon_types.lua: weaponskill to weapon category, required skill level, relic-only flags.
 - horizon_spell_omissions.lua: spell names excluded from Show All (post-75, retail-only, etc.); kept separate from horizonspells.lua so the core spell DB stays untouched.
 
@@ -154,16 +163,21 @@ Why
         },
         @{
             Branch  = 'pr/10-playerdata-show-all-and-spell-sort'
-            Files   = @('modules/hotbar/playerdata.lua')
-            Subject = 'Player data: Show All lists, spell sort, tooltips, and level display'
+            Files   = @(
+                'modules/hotbar/playerdata.lua',
+                'modules/hotbar/database/horizon_retail_only_job_abilities.lua'
+            )
+            Subject = 'Player data: Show All lists, spell sort, tooltips, and retail-only JA omissions'
             Body    = @'
 What changed
 - Expanded GetAll* helpers for abilities, weaponskills, spells with status tiers and reason strings for hover tooltips.
+- JA lists: main-job two-hour abilities sort first; pink asterisk + tooltip for Universal Global macro hint (Horizon jobs 1–20).
+- horizon_retail_only_job_abilities.lua: named job abilities that exist on retail but not on Horizon progression; HasAbility-driven lists and macro hints treat them as unavailable here.
 - Spell sort: within magic type groups, sort by level then name (availability is color-only, not a secondary sort key).
 - Magic type helpers and omission filtering for Show All spells.
 
 Why
-- Macro editor and hotbar can show consistent availability and readable lists on Horizon.
+- Macro editor and hotbar can show consistent availability and readable lists on Horizon without labeling retail-only additions as usable.
 '@
         },
         @{
@@ -176,12 +190,15 @@ Why
             Body    = @'
 What changed
 - Show All toggles and filters (magic type, ability job, WS weapon, pet type); two-color spell rows (magic-type color + status color); group headers; hover reasons on unavailable entries.
+- Ability / blood pact rows: pink asterisk tooltips for main-job two-hour (Global macro note) and Astral Flow–only pacts where applicable; Macro Palette hover on the pinned Universal 2 Hour tile shows a short "2-Hour Ability" label while other surfaces keep full detail.
+- Locked Global-row handling: Universal 2 Hour macro cannot be deleted or edited away through the palette duplicate/remove paths reserved for normal macros.
 - Copy: duplicate selected macro into the editor as a new macro entry.
 - Main slot icon: implicit refresh on macro text edit no longer forces overwrite; Sync refreshes main icon; tooltips updated.
 - JA badge: separate manual vs implicit sync; Sync JA badge clears manual badge overrides and resolves from /ja line; icon picker marks manual badge when Change is used.
 
 Why
 - Large lists stay navigable; Copy speeds palette workflows; icon and badge behavior matches user expectations (manual picks are not silently overwritten).
+- The pinned two-hour shortcut stays discoverable without cluttering palette-only hover text.
 '@
         },
         @{
@@ -224,6 +241,7 @@ Why
         @{
             Branch  = 'pr/14-shared-macro-and-dual-slot-bindings'
             Files   = @(
+                'libs/target.lua',
                 'core/shared_macro_store.lua',
                 'core/settings/migration.lua',
                 'core/settings/user.lua',
@@ -231,17 +249,22 @@ Why
                 'modules/hotbar/skillchain.lua',
                 'modules/hotbar/equipment_ws.lua',
                 'modules/hotbar/macro_palette_buckets.lua',
-                'modules/hotbar/macro_xiui_defaults.lua'
+                'modules/hotbar/macro_global_defaults.lua',
+                'modules/hotbar/macro_xiui_defaults.lua',
+                'modules/hotbar/universal_two_hour.lua'
             )
-            Subject = 'Shared macro file, profile scope, and dual profile/shared per-slot bar bindings'
+            Subject = 'Shared macro file, profile scope, dual per-slot bindings, and Universal 2 Hour Global macro'
             Body    = @'
 What changed
 - shared_macro_store.lua: SharedMacros.lua load/save, frozen profile macroDB in shared mode, id separation vs profile hotbar, disk lookup for cross-scope resolution.
-- migration.lua, user settings: macroStorageScope default; run MigrateSlotDualMacroBindings; settings hooks.
+- migration.lua, user settings: macroStorageScope default; run MigrateSlotDualMacroBindings; settings hooks; Universal 2 Hour Global macro seed migration after XIUI defaults (Horizon icon path, ability display names, stpc/stnpc targets with RNG on stnpc).
+- universal_two_hour.lua / macro_global_defaults.lua: job→two-hour names; sentinel resolution and `/ja` bind targets; arming window (~7.5s) after execute; subtarget-glow eligibility (clears on zone/job changes via init hooks); integrates with shared macro rows.
+- libs/target.lua: subtarget-active detection treats a standalone subtarget as active even when there is no primary target so two-hour targeting UX matches in-game behavior.
 - statushandler, skillchain, equipment_ws, macro_palette_buckets, macro_xiui_defaults: integration for macro/hotbar behavior.
 
 Why
 - One global shared macro library vs per-profile gConfig.macroDB; each physical hotbar/crossbar slot can hold independent macroBindProfile and macroBindShared (active arm follows scope). Deletes, DnD, JSON import, and Edit Full Palette use the same data paths.
+- Players get one pinned Global macro that always reflects the current main job two-hour name, icon, and correct `/ja` targeting without hand-maintaining per-job copies.
 '@
         },
         @{
@@ -251,13 +274,15 @@ Why
                 'config/hotbar.lua',
                 'config/palettemanager.lua',
                 'core/settings/factories.lua',
+                'modules/castcost/display.lua',
                 'modules/hotbar/crossbar.lua',
                 'modules/hotbar/data.lua',
                 'modules/hotbar/macropalette.lua',
                 'modules/hotbar/pet_palette_allowlist.lua',
-                'modules/hotbar/petregistry.lua'
+                'modules/hotbar/petregistry.lua',
+                'scripts/bst_retail_sheet_sync.py'
             )
-            Subject = 'Pet palette: Avatars and Elementals; EFP pet tabs; custom macro type rename, delete, and slot cleanup'
+            Subject = 'Pet palette: Avatars and Elementals; EFP pet tabs; BST jug Ready cost UI; custom macro types'
             Body    = @'
 What changed
 - pet_palette_allowlist.lua: type tokens avatars, elementals, beasts, wyvern, puppet; legacy "summons" still matches avatars+elementals and upgrades in the editor. Slot Configure and Pet Palette use the same names.
@@ -265,9 +290,12 @@ What changed
 - config/hotbar.lua, core/settings/factories.lua: help text and defaults for crossbar hotbar parent petPalettePetKeys; comments for the new type tokens.
 - macropalette.lua: add custom type (+) only in popup; for the selected custom type, red remove and Rename on the type row; delete confirms macro count; rename modal; delete and rename save paths; custom grid section header uses Elementals for spirit pets.
 - data.lua: ApplyMacroPaletteBucketRemovedToSlotAction clears all macro arms bound to a removed custom bucket (profile+shared sweeps) when a custom type is deleted.
+- modules/castcost/display.lua: BST Ready jug moves show pet charge cost as "Cost: N" (gold) instead of mislabeled MP when hovering spell rows fed from petregistry helpers.
+- scripts/bst_retail_sheet_sync.py: optional maintainer script to compare BST jug Ready tiers against public wiki tables.
 
 Why
 - SMN "summons" split into avatars vs elementals for configuration and EFP; macro custom categories can be managed from the type row, with full cleanup of that palette bucket and only affected hotbar/crossbar slots reverted to empty. Slot bindings keep stable storage keys (custom:N) on rename; delete removes the bucket and clears references.
+- Ready charge costs read like gameplay (charges, not MP); wiki sync script supports data upkeep without shipping scraped output into Lua automatically.
 '@
         },
         @{

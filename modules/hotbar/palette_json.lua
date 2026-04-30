@@ -454,6 +454,9 @@ function M.ExportProfile(exportPart)
         if gConfig.macroXiuiDefaultsSeeded ~= nil then
             payload.macroXiuiDefaultsSeeded = gConfig.macroXiuiDefaultsSeeded;
         end
+        if gConfig.macroGlobalUniversalTwoHourSeeded ~= nil then
+            payload.macroGlobalUniversalTwoHourSeeded = gConfig.macroGlobalUniversalTwoHourSeeded;
+        end
     end
 
     local ok, result = pcall(prettyEncode, payload);
@@ -933,6 +936,11 @@ function M.ImportProfile(jsonStr, opts)
             else
                 gConfig.macroXiuiDefaultsSeeded = false;
             end
+            if decoded.macroGlobalUniversalTwoHourSeeded ~= nil then
+                gConfig.macroGlobalUniversalTwoHourSeeded = decoded.macroGlobalUniversalTwoHourSeeded;
+            else
+                gConfig.macroGlobalUniversalTwoHourSeeded = false;
+            end
         end
     end
 
@@ -962,6 +970,13 @@ function M.ImportProfile(jsonStr, opts)
                 decoded.crossbarPalettes.universalCrossbarPaletteOrder,
                 replace
             );
+        end
+    end
+
+    if importMacros and gConfig then
+        local okM, mgd = pcall(require, 'modules.hotbar.macro_global_defaults');
+        if okM and mgd and mgd.SyncUniversalTwoHourGlobalRow then
+            mgd.SyncUniversalTwoHourGlobalRow(gConfig, { persist = false });
         end
     end
 

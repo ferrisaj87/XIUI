@@ -70,7 +70,7 @@ local function buildListForType(typeTab)
                 addKey(k);
             end
         elseif typeTab == T_BEASTS then
-            if k == 'jug' or k == 'charm' then
+            if k == 'jug' or k == 'charm' or k:find('^jug:') then
                 addKey(k);
             end
         elseif typeTab == T_WYVERN then

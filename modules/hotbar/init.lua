@@ -768,6 +768,10 @@ function M.HandleZonePacket()
     petpalette.ClearPetState();
     -- Clear availability cache since player state is invalid during zone
     slotrenderer.ClearAvailabilityCache();
+    local okU, uth = pcall(require, 'modules.hotbar.universal_two_hour');
+    if okU and uth and uth.ResetUniversalTwoHourSubtargetGlowArm then
+        uth.ResetUniversalTwoHourSubtargetGlowArm();
+    end
 end
 
 function M.HandleJobChangePacket(e)
@@ -777,7 +781,15 @@ function M.HandleJobChangePacket(e)
 
         if data.SetPlayerJob() then
             -- Job successfully read - proceed with refresh
+            local okU, uth = pcall(require, 'modules.hotbar.universal_two_hour');
+            if okU and uth and uth.ResetUniversalTwoHourSubtargetGlowArm then
+                uth.ResetUniversalTwoHourSubtargetGlowArm();
+            end
             macropalette.SyncToCurrentJob();
+            local okMg, macroGlobalDefaults = pcall(require, 'modules.hotbar.macro_global_defaults');
+            if okMg and macroGlobalDefaults and macroGlobalDefaults.SyncUniversalTwoHourGlobalRow and gConfig then
+                macroGlobalDefaults.SyncUniversalTwoHourGlobalRow(gConfig);
+            end
             palette.ValidatePalettesForJob(data.jobId, data.subjobId, { applyDefaultCrossbarScope = false });
             display.ClearIconCache();
             if crossbarInitialized then

@@ -97,6 +97,16 @@ local function pcallMaybeSeedXiuiForEmptySharedLibrary(gConfig)
             dat.MarkMacroLookupDirty();
         end
     end
+    local okG, mgd = pcall(require, 'modules.hotbar.macro_global_defaults');
+    if okG and mgd and mgd.SeedUniversalTwoHourIfNeeded then
+        if mgd.SeedUniversalTwoHourIfNeeded(gConfig, { force = true }) then
+            M.MarkSharedLibraryDirty();
+            local ok3, dat = pcall(require, 'modules.hotbar.data');
+            if ok3 and dat and dat.MarkMacroLookupDirty then
+                dat.MarkMacroLookupDirty();
+            end
+        end
+    end
     pcallEnsureMacroCoherence(gConfig);
 end
 

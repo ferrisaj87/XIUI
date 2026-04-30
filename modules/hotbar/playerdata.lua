@@ -28,6 +28,8 @@ local lastEquipSignaturePollClock = 0;
 local EQUIP_SIGNATURE_POLL_INTERVAL = 0.6;
 
 local equipmentWs = require('modules.hotbar.equipment_ws');
+local horizonRetailOnlyJa = require('modules.hotbar.database.horizon_retail_only_job_abilities');
+local universalTwoHour = require('modules.hotbar.universal_two_hour');
 
 -- ============================================
 -- Container Definitions
@@ -192,7 +194,8 @@ end
 -- Type 3: Weapon Skill
 local ABILITY_TYPE_WEAPON_SKILL = 3;
 
--- Pet commands to filter out from ability list (these belong in Pet Command section)
+-- Pet commands shown under Pet Command in the macro UI — excluded from the Job Ability dropdown only.
+-- Players may still macro these as `/ja "Name"` in-game; IsAbilityInCache() accepts them when HasAbility is true.
 local PET_COMMAND_NAMES = {
     ['Assault'] = true,
     ['Retreat'] = true,
@@ -203,20 +206,55 @@ local PET_COMMAND_NAMES = {
     ['Fight'] = true,
     ['Sic'] = true,
     ['Ready'] = true,
-    -- SMN commands
-    ['Assault'] = true,
     ['Avatar\'s Favor'] = true,
-    -- DRG commands
     ['Steady Wing'] = true,
-    -- PUP commands
     ['Deploy'] = true,
     ['Retrieve'] = true,
     ['Activate'] = true,
     ['Deactivate'] = true,
 };
 
+local function sortRankFamiliarFirst(name)
+    return (name == 'Familiar') and 0 or 1;
+end
+
+local function horizonHasBstReadyPetCommand()
+    local ha = require('modules.hotbar.database.horizon_abilities');
+    local row = ha['Ready'];
+    return row ~= nil and row.pet == true;
+end
+
+local function playerHasLearnedNonWsAbilityByName(abilityName)
+    if horizonRetailOnlyJa[abilityName] then
+        return false;
+    end
+    if not abilityName or abilityName == '' then
+        return false;
+    end
+    local player = AshitaCore:GetMemoryManager():GetPlayer();
+    if not player then
+        return false;
+    end
+    local resMgr = AshitaCore:GetResourceManager();
+    if not resMgr then
+        return false;
+    end
+    for abilityId = 1, 1024 do
+        if player:HasAbility(abilityId) then
+            local ability = resMgr:GetAbilityById(abilityId);
+            if ability and ability.Name and ability.Name[1] == abilityName then
+                local abilityType = ability.Type and bit.band(ability.Type, 7) or 0;
+                if abilityType ~= ABILITY_TYPE_WEAPON_SKILL then
+                    return true;
+                end
+            end
+        end
+    end
+    return false;
+end
+
 --- Get player's available job abilities (includes both main job and subjob abilities)
---- Filters out weapon skills (Type 3) and pet commands
+--- Filters out weapon skills (Type 3) and PET_COMMAND_NAMES (those stay in the Pet Command picker).
 ---@return table Array of {id, name, source} where source is 'main' or 'sub'
 function M.GetPlayerAbilities()
     local player = AshitaCore:GetMemoryManager():GetPlayer();
@@ -239,7 +277,9 @@ function M.GetPlayerAbilities()
                 local abilityType = ability.Type and bit.band(ability.Type, 7) or 0;
 
                 local abilityName = ability.Name[1];
-                if abilityType ~= ABILITY_TYPE_WEAPON_SKILL and not PET_COMMAND_NAMES[abilityName] then
+                if not horizonRetailOnlyJa[abilityName]
+                    and abilityType ~= ABILITY_TYPE_WEAPON_SKILL
+                    and not PET_COMMAND_NAMES[abilityName] then
 
                     if not addedAbilities[abilityId] then
                         local source = 'main';
@@ -265,11 +305,14 @@ function M.GetPlayerAbilities()
                             end
                         end
 
+                        local hj = dbEntry and dbEntry.job;
                         table.insert(abilities, {
                             id = abilityId,
                             name = abilityName,
                             level = displayLevel,
                             source = source,
+                            jobId = hj,
+                            pinkStarTooltip = universalTwoHour.GetTwoHourPinkTooltipIfApplicable(hj, abilityName),
                         });
                         addedAbilities[abilityId] = true;
                     end
@@ -279,6 +322,12 @@ function M.GetPlayerAbilities()
     end
 
     table.sort(abilities, function(a, b)
+        local ta = universalTwoHour.TwoHourSortRank(a.jobId, a.name);
+        local tb = universalTwoHour.TwoHourSortRank(b.jobId, b.name);
+        if ta ~= tb then return ta < tb; end
+        local fa = sortRankFamiliarFirst(a.name);
+        local fb = sortRankFamiliarFirst(b.name);
+        if fa ~= fb then return fa < fb; end
         if a.level and b.level and a.level ~= b.level then return a.level < b.level; end
         return a.name < b.name;
     end);
@@ -542,18 +591,33 @@ function M.GetCacheSubJobId()
 end
 
 --- Check if an ability name is in the cached abilities list
---- This ensures availability check uses same data as dropdown
+--- Used for `/ja` macro availability: matches the Job Ability dropdown when populated, plus PET_COMMAND_NAMES when learned.
 ---@param abilityName string The ability name to check
 ---@return boolean isAvailable True if ability is in cached list
 function M.IsAbilityInCache(abilityName)
-    -- No cache yet (or empty): do not assume the player has the ability — avoids wrong-job JAs looking usable
-    if not cachedAbilities or #cachedAbilities == 0 then
+    if abilityName == universalTwoHour.ACTION_SENTINEL then
+        abilityName = universalTwoHour.ResolveJaActionName(abilityName);
+        if not abilityName then
+            return false;
+        end
+    end
+    if horizonRetailOnlyJa[abilityName] then
         return false;
     end
-    for _, ability in ipairs(cachedAbilities) do
-        if ability.name == abilityName then
-            return true;
+    -- Ready: honor horizon_abilities pet row (HorizonXI defines Ready for jug pets).
+    if abilityName == 'Ready' and not horizonHasBstReadyPetCommand() then
+        return false;
+    end
+    if cachedAbilities and #cachedAbilities > 0 then
+        for _, ability in ipairs(cachedAbilities) do
+            if ability.name == abilityName then
+                return true;
+            end
         end
+    end
+    -- Omitted from JA dropdown; `/ja` in macros still uses client HasAbility when the name is a known pet command.
+    if PET_COMMAND_NAMES[abilityName] then
+        return playerHasLearnedNonWsAbilityByName(abilityName);
     end
     return false;
 end
@@ -639,7 +703,7 @@ local STATUS_SORT = { [STATUS_HAVE] = 1, [STATUS_LEARNABLE] = 2, [STATUS_UNAVAIL
 --- Get expanded spell list from horizonspells DB with availability status.
 --- When filterMagicType is 'All' or nil, only spells for the current main/sub job are shown.
 --- When a specific type is given, ALL spells of that type are shown regardless of job.
---- Green = have, Yellow = learnable (right job/level but missing scroll), Red = unavailable.
+--- Green = have, Yellow = learnable (right job/level but spell not yet on character), Red = unavailable.
 ---@param filterMagicType string|nil Magic type filter ('All', 'WhiteMagic', 'BlackMagic', etc.)
 ---@return table Array of {id, name, level, source, type, status, icon_id}
 function M.GetAllSpellsForCurrentJob(filterMagicType)
@@ -710,7 +774,7 @@ function M.GetAllSpellsForCurrentJob(filterMagicType)
                 status = STATUS_LEARNABLE;
                 displayLevel = canCastMain and mainReq or (validSub and subReq or mainReq);
                 source = validMain and 'main' or 'sub';
-                reason = 'Not yet learned (obtain the scroll)';
+                reason = 'Not yet learned';
             else
                 status = STATUS_UNAVAILABLE;
                 local bestLevel = nil;
@@ -841,18 +905,27 @@ function M.GetAllAbilitiesForCurrentJob(filterJobId)
             reason = 'Level too low (requires Lv. ' .. tostring(info.level) .. ')';
         end
 
+        local hj = info.job;
         table.insert(abilities, {
             id = nameToId[abilityName] or 0,
             name = abilityName,
             level = info.level,
+            jobId = hj,
             source = source,
             status = status,
             reason = reason,
+            pinkStarTooltip = universalTwoHour.GetTwoHourPinkTooltipIfApplicable(hj, abilityName),
         });
         ::continue::
     end
 
     table.sort(abilities, function(a, b)
+        local ta = universalTwoHour.TwoHourSortRank(a.jobId, a.name);
+        local tb = universalTwoHour.TwoHourSortRank(b.jobId, b.name);
+        if ta ~= tb then return ta < tb; end
+        local fa = sortRankFamiliarFirst(a.name);
+        local fb = sortRankFamiliarFirst(b.name);
+        if fa ~= fb then return fa < fb; end
         local sa = STATUS_SORT[a.status] or 9;
         local sb = STATUS_SORT[b.status] or 9;
         if sa ~= sb then return sa < sb; end
@@ -1035,33 +1108,8 @@ end
 ---@param playerLevel number The BST job level to check against
 ---@return table Array of {name, level, status}
 function M.GetBstPetCommandsExpanded(playerLevel)
-    local horizonAbilities = require('modules.hotbar.database.horizon_abilities');
-    local commands = {};
-
-    for cmdName, info in pairs(horizonAbilities) do
-        if not info.pet then goto continue; end
-
-        local status;
-        if playerLevel >= info.level then
-            status = STATUS_HAVE;
-        else
-            status = STATUS_UNAVAILABLE;
-        end
-
-        table.insert(commands, {
-            name = cmdName,
-            level = info.level,
-            status = status,
-        });
-        ::continue::
-    end
-
-    table.sort(commands, function(a, b)
-        if a.level ~= b.level then return a.level < b.level; end
-        return a.name < b.name;
-    end);
-
-    return commands;
+    local petregistry = require('modules.hotbar.petregistry');
+    return petregistry.GetBstPetCommandsExpanded(playerLevel, nil);
 end
 
 M.STATUS_HAVE = STATUS_HAVE;

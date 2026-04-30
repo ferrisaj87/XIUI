@@ -13,6 +13,7 @@ local customiconresolve = require('modules.hotbar.customiconresolve');
 local macrosLib = require('libs.ffxi.macros');
 local palette = require('modules.hotbar.palette');
 local macroparse = require('modules.hotbar.macroparse');
+local universalTwoHour = require('modules.hotbar.universal_two_hour');
 
 -- Debug logging (controlled via /xiui debug hotbar)
 local DEBUG_ENABLED = false;
@@ -200,6 +201,31 @@ local function finalizeCustomIconTextureForHotbar(icon)
         icon.height = icon.height or 40;
     end
     icon.path = nil;
+    return icon;
+end
+
+--- Icons bundled under addons/XIUI/ (not assets/hotbar/custom/). Path uses forward slashes; normalized for Windows load.
+local xiuiBundledAssetIconCache = {};
+
+local function loadXiuiBundledAssetIcon(relUnderXiui)
+    if not relUnderXiui or relUnderXiui == '' then
+        return nil;
+    end
+    local norm = relUnderXiui:gsub('/', '\\');
+    if xiuiBundledAssetIconCache[norm] then
+        return xiuiBundledAssetIconCache[norm];
+    end
+    local base = AshitaCore:GetInstallPath();
+    local full = string.format('%saddons\\XIUI\\%s', base, norm);
+    local icon = textures:LoadTextureFromPath(full);
+    if not icon and relUnderXiui:find('/') then
+        full = string.format('%saddons\\XIUI\\%s', base, relUnderXiui:gsub('/', '\\'));
+        icon = textures:LoadTextureFromPath(full);
+    end
+    if icon then
+        finalizeCustomIconTextureForHotbar(icon);
+        xiuiBundledAssetIconCache[norm] = icon;
+    end
     return icon;
 end
 
@@ -1057,14 +1083,17 @@ function M.IsActionAvailable(bind)
 
     -- Handle job abilities
     elseif bind.actionType == 'ja' then
+        local jaName = universalTwoHour.ResolveJaActionName(bind.action);
+        if not jaName then
+            return false, 'N/A';
+        end
         -- Use playerdata's cached abilities as single source of truth
-        -- This ensures availability matches what's shown in the dropdown
         local playerdata = require('modules.hotbar.playerdata');
         if not playerdata.IsAbilityInCache(bind.action) then
-            return false, "N/A";
+            return false, 'N/A';
         end
         -- Blood pacts bound as /ja (e.g. /ja "Judgment Bolt") still follow pact rules: Astral Flow + SMN level
-        local pactJa = GetBloodPactByName(bind.action);
+        local pactJa = GetBloodPactByName(jaName);
         if pactJa and pactJa.requiresFlow then
             if not HasBuffId(55) then
                 return false, "pending";
@@ -1161,6 +1190,8 @@ local function GetIconFromMacroStyleCustomFields(customIconType, customIconId, c
         return LoadItemIconById(customIconId);
     elseif customIconType == 'custom' and customIconPath and customIconPath ~= '' then
         return loadCustomIconByRelativePath(customIconPath);
+    elseif customIconType == 'xiui_asset' and customIconPath and customIconPath ~= '' then
+        return loadXiuiBundledAssetIcon(customIconPath);
     elseif customIconType == 'xiui_default' and customIconPath then
         return LoadXiuiDefaultIcon(customIconPath);
     end
@@ -1330,6 +1361,12 @@ function M.GetBindIcon(bind)
                 return icon, nil;
             end
             return GetMacroFallbackIconAfterMissingCustomFile(bind);
+        elseif bind.customIconType == 'xiui_asset' and bind.customIconPath and bind.customIconPath ~= '' then
+            icon = loadXiuiBundledAssetIcon(bind.customIconPath);
+            if icon and icon.image then
+                return icon, nil;
+            end
+            return GetMacroFallbackIconAfterMissingCustomFile(bind);
         elseif bind.customIconType == 'xiui_default' and bind.customIconPath then
             icon = LoadXiuiDefaultIcon(bind.customIconPath);
             if icon then return icon, nil; end
@@ -1351,6 +1388,12 @@ function M.GetBindIcon(bind)
                 if icon then return icon, iconId; end
             elseif macro.customIconType == 'custom' and macro.customIconPath and macro.customIconPath ~= '' then
                 icon = loadCustomIconByRelativePath(macro.customIconPath);
+                if icon and icon.image then
+                    return icon, nil;
+                end
+                return GetMacroFallbackIconAfterMissingCustomFile(bind);
+            elseif macro.customIconType == 'xiui_asset' and macro.customIconPath and macro.customIconPath ~= '' then
+                icon = loadXiuiBundledAssetIcon(macro.customIconPath);
                 if icon and icon.image then
                     return icon, nil;
                 end
@@ -1435,30 +1478,32 @@ function M.GetBindIcon(bind)
             icon = textures:Get('spells' .. string.format('%05d', spell.id));
         end
     elseif bind.actionType == 'ja' then
+        local jaBindName = universalTwoHour.ResolveJaActionName(bind.action);
+        if jaBindName then
         -- Check for SMN ability icons first
-        local smnIconKey = LookupStringKeyInsensitive(smnAbilityToIconKey, bind.action);
+        local smnIconKey = LookupStringKeyInsensitive(smnAbilityToIconKey, jaBindName);
         if smnIconKey then
             icon = textures:Get(smnIconKey);
             if icon then return icon, iconId; end
         end
         -- Check for RUN ability icons
-        local runIconKey = LookupStringKeyInsensitive(runAbilityToIconKey, bind.action);
+        local runIconKey = LookupStringKeyInsensitive(runAbilityToIconKey, jaBindName);
         if runIconKey then
             icon = textures:Get(runIconKey);
             if icon then return icon, iconId; end
         end
         -- Check for other job ability icons
-        local otherIconKey = LookupStringKeyInsensitive(otherAbilityToIconKey, bind.action);
+        local otherIconKey = LookupStringKeyInsensitive(otherAbilityToIconKey, jaBindName);
         if otherIconKey then
             icon = textures:Get(otherIconKey);
             if icon then return icon, iconId; end
         end
         -- Indexed / Summoning / Summons PNGs before vanilla ability id (macro icons: custom first)
-        icon = textures:GetIconBySpellName(bind.action);
+        icon = textures:GetIconBySpellName(jaBindName);
         if icon and icon.image then
             return icon, iconId;
         end
-        icon = TryLoadCustomHotbarIconByActionName(bind.action);
+        icon = TryLoadCustomHotbarIconByActionName(jaBindName);
         if icon and icon.image then
             return icon, iconId;
         end
@@ -1467,11 +1512,12 @@ function M.GetBindIcon(bind)
         if resMgr then
             for abilityId = 1, 1024 do
                 local ability = resMgr:GetAbilityById(abilityId);
-                if ability and ability.Name and NameEqualsI(ability.Name[1], bind.action) then
+                if ability and ability.Name and NameEqualsI(ability.Name[1], jaBindName) then
                     iconId = abilityId;
                     break;
                 end
             end
+        end
         end
     elseif bind.actionType == 'pet' then
         -- Check for pet command icons first
@@ -1594,7 +1640,13 @@ function M.BuildCommandString(bind)
     if bind.actionType == 'ma' then
         return '/ma "' .. bind.action .. '" ' .. target;
     elseif bind.actionType == 'ja' then
-        return '/ja "' .. bind.action .. '" ' .. target;
+        local jaName = universalTwoHour.ResolveJaActionName(bind.action);
+        if not jaName then
+            return nil;
+        end
+        local rawTarget = universalTwoHour.ResolveJaBindTarget(bind) or bind.target;
+        target = FormatTargetForCommand(rawTarget);
+        return '/ja "' .. jaName .. '" ' .. target;
     elseif bind.actionType == 'ws' then
         return '/ws "' .. bind.action .. '" ' .. target;
     elseif bind.actionType == 'item' then
@@ -1797,6 +1849,10 @@ function M.HandleKeybind(hotbar, slot)
     end
 
     local command = M.BuildCommandString(bind);
+    if not command or command == '' then
+        return false;
+    end
+    M.NotifySlotExecutionEffects(bind);
     return M.ExecuteCommandString(command, bind.actionType == 'macro');
 end
 
@@ -2025,6 +2081,20 @@ function M.GetPressedSlot()
     return currentPressedSlot;
 end
 
+--- Called immediately before QueueCommand for a hotbar/crossbar bind (click, key, controller).
+function M.NotifySlotExecutionEffects(bind)
+    if bind and bind.actionType == 'ja' and bind.action == universalTwoHour.ACTION_SENTINEL then
+        local okR, recastMod = pcall(require, 'modules.hotbar.recast');
+        if okR and recastMod and recastMod.GetCooldownInfo then
+            local cd = recastMod.GetCooldownInfo(bind);
+            if cd and cd.isOnCooldown then
+                return;
+            end
+        end
+        universalTwoHour.NotifyUniversalTwoHourExecuted();
+    end
+end
+
 --- Execute an action directly from slot data
 --- Used by crossbar for controller input
 ---@param slotAction table The slot action with actionType, action, target, etc.
@@ -2034,6 +2104,10 @@ function M.ExecuteAction(slotAction)
     if not slotAction.actionType or not slotAction.action then return false; end
 
     local command = M.BuildCommandString(slotAction);
+    if not command or command == '' then
+        return false;
+    end
+    M.NotifySlotExecutionEffects(slotAction);
     return M.ExecuteCommandString(command, slotAction.actionType == 'macro');
 end
 

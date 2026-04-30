@@ -8,6 +8,7 @@ local abilityRecast = require('libs.abilityrecast');
 local itemRecast = require('libs.itemrecast');
 local actiondb = require('modules.hotbar.actiondb');
 local petregistry = require('modules.hotbar.petregistry');
+local universalTwoHour = require('modules.hotbar.universal_two_hour');
 local imgui = require('imgui');
 
 -- Lazy: same Horizon spell resolution as icons/MP (avoids wrong spell id from Ashita name collisions).
@@ -514,12 +515,13 @@ function M.GetCooldownInfo(actionData)
             remaining, recastText = M.GetActionRecast(actionData.actionType, nil, abilityId, nil);
         end
     elseif actionData.actionType == 'ja' then
-        local rJa, rtJa = getRemainingForPetLikeAbilityName(actionData.action);
+        local jaActionName = universalTwoHour.ResolveJaActionName(actionData.action) or actionData.action;
+        local rJa, rtJa = getRemainingForPetLikeAbilityName(jaActionName);
         if rJa ~= nil then
             remaining = rJa;
             recastText = rtJa;
         else
-            abilityId = actiondb.GetAbilityId(actionData.action);
+            abilityId = actiondb.GetAbilityId(jaActionName);
             remaining, recastText = M.GetActionRecast(actionData.actionType, nil, abilityId, nil);
         end
     elseif actionData.actionType == 'item' or actionData.actionType == 'equip' then

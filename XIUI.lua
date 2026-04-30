@@ -633,6 +633,7 @@ function DuplicateProfile(name, options)
         newSettings.macroCustomCategories = deep_copy_table(defaultUserSettings.macroCustomCategories or T{});
         newSettings.macroCustomNextSeq = defaultUserSettings.macroCustomNextSeq or 1;
         newSettings.macroXiuiDefaultsSeeded = false;
+        newSettings.macroGlobalUniversalTwoHourSeeded = false;
         local ok, hotbarData = pcall(require, 'modules.hotbar.data');
         if (ok and hotbarData and hotbarData.StripPaletteMacroBindsFromSettings) then
             hotbarData.StripPaletteMacroBindsFromSettings(newSettings);

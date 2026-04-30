@@ -82,6 +82,8 @@ function M.createUserSettingsDefaults()
         macroCustomNextSeq = 1,
         -- When false, empty "xiui" macro bucket gets default /xiui slash shortcuts once (see macro_xiui_defaults.lua)
         macroXiuiDefaultsSeeded = false,
+        -- When false, Global bucket may receive default "Universal 2 Hour" macro once (see macro_global_defaults.lua)
+        macroGlobalUniversalTwoHourSeeded = false,
 
         -- "profile" = macros in this profile's lua only; "shared" = one global library (SharedMacros.lua) for all characters using Shared.
         macroStorageScope = 'profile',

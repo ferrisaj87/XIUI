@@ -15,6 +15,7 @@ local macroparse = require('modules.hotbar.macroparse');
 local dragdrop = require('libs.dragdrop');
 local textures = require('modules.hotbar.textures');
 local skillchain = require('modules.hotbar.skillchain');
+local universalTwoHour = require('modules.hotbar.universal_two_hour');
 local statusHandler = require('handlers.statushandler');
 
 -- Manual double-click tracking (more reliable than imgui.IsMouseDoubleClicked across drag systems)
@@ -587,6 +588,49 @@ local function DrawSkillchainHighlight(drawList, x, y, size, scName, color, opac
             );
         end
     end
+end
+
+-- Pink rotating/pulsing ring while Universal 2 Hour waits on <stpc>/<stnpc> confirmation.
+local function DrawUniversalTwoHourSubtargetGlow(drawList, x, y, size, animOpacity, dimFactor)
+    if not drawList or animOpacity <= 0.01 then
+        return;
+    end
+    local cx = x + size * 0.5;
+    local cy = y + size * 0.5;
+    local t = os.clock();
+    local pulse = 0.45 + 0.55 * math.sin(t * 6.8);
+    local baseOp = pulse * animOpacity * dimFactor;
+
+    drawList:AddCircleFilled({ cx, cy }, size * 0.56,
+        imgui.GetColorU32({ 1.0, 0.42, 0.92, 0.14 * baseOp }), 40);
+
+    local spinOuter = t * 4.2;
+    local spinInner = -t * 3.1;
+    local segs = 28;
+
+    for pass = 1, 2 do
+        local spin = (pass == 1) and spinOuter or spinInner;
+        local rad = (pass == 1) and (size * 0.52) or (size * 0.46);
+        local thick = (pass == 1) and 3.2 or 2.2;
+        local segAlpha = (0.72 + pass * 0.08) * baseOp;
+        local col = imgui.GetColorU32({ 1.0, 0.32 + pass * 0.06, 0.88, segAlpha });
+        for i = 0, segs - 1 do
+            if i % 3 ~= 0 then
+                local a0 = spin + (i / segs) * math.pi * 2;
+                local a1 = spin + ((i + 1) / segs) * math.pi * 2;
+                drawList:AddLine(
+                    { cx + math.cos(a0) * rad, cy + math.sin(a0) * rad },
+                    { cx + math.cos(a1) * rad, cy + math.sin(a1) * rad },
+                    col,
+                    thick
+                );
+            end
+        end
+    end
+
+    local ringPulse = 0.55 + 0.45 * math.sin(t * 5.1);
+    drawList:AddCircle({ cx, cy }, size * 0.58 + ringPulse * 1.5,
+        imgui.GetColorU32({ 1.0, 0.55, 0.96, 0.62 * baseOp }), 48, 2.2 + ringPulse);
 end
 
 -- Helper: determine if movement/drag-drop is locked for this slot
@@ -2277,6 +2321,11 @@ function M.DrawSlot(resources, params)
             DrawSkillchainHighlight(fgDrawList, x, y, size, params.skillchainName, scColor, scHighlightOpacity,
                 params.skillchainIconScale, params.skillchainIconOffsetX, params.skillchainIconOffsetY);
         end
+
+        -- Universal two-hour: rotating pink ring while confirming <stpc>/<stnpc> (or brief post-click arming shimmer).
+        if bind and not isOnCooldown and universalTwoHour.ShouldGlowUniversalTwoHourSlot(bind) then
+            DrawUniversalTwoHourSubtargetGlow(fgDrawList, x, y, size, animOpacity, dimFactor);
+        end
     end
 
     -- ========================================
@@ -2481,6 +2530,7 @@ function M.DrawSlot(resources, params)
                 elseif params.onClick then
                     params.onClick();
                 elseif command then
+                    actions.NotifySlotExecutionEffects(bind);
                     actions.ExecuteCommandString(command, bind and bind.actionType == 'macro');
                 end
             end
@@ -2565,6 +2615,9 @@ function M.DrawTooltip(bind)
 
     -- Action name (gold)
     local displayName = bind.displayName or bind.action or 'Unknown';
+    if bind.actionType == 'ja' and bind.action == universalTwoHour.ACTION_SENTINEL then
+        displayName = universalTwoHour.GetTwoHourAbilityNameForMainJob() or displayName;
+    end
     imgui.TextColored(COLORS.gold, displayName);
 
     imgui.Spacing();
@@ -2574,8 +2627,12 @@ function M.DrawTooltip(bind)
     imgui.TextColored(COLORS.textDim, 'Type: ' .. typeLabel);
 
     -- Target (not shown for macro type since targets are embedded in macro text)
-    if bind.actionType ~= 'macro' and bind.target and bind.target ~= '' then
-        local formattedTarget = formatTarget(bind.target);
+    local tgtForTip = bind.target;
+    if bind.actionType == 'ja' and bind.action == universalTwoHour.ACTION_SENTINEL then
+        tgtForTip = universalTwoHour.ResolveJaBindTarget(bind) or tgtForTip;
+    end
+    if bind.actionType ~= 'macro' and tgtForTip and tgtForTip ~= '' then
+        local formattedTarget = formatTarget(tgtForTip);
         if formattedTarget then
             imgui.TextColored(COLORS.textDim, 'Target: ' .. formattedTarget);
         end

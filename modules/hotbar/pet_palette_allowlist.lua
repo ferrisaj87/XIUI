@@ -4,7 +4,7 @@
  * Stored tokens (strings): 'avatars' | 'elementals' | 'beasts' | 'wyvern' | 'puppet'
  *   avatars     → SMN avatars (runtime keys avatar:*)
  *   elementals  → SMN elementals (runtime keys spirit:*)
- *   beasts      → jug + charm
+ *   beasts      → jug + jug:<family> + charm
  *   wyvern      → wyvern
  *   puppet      → automaton
  * Legacy token 'summons' (old saves): treated as avatars+elementals for matching; editor upgrades to avatars+elementals.
@@ -79,6 +79,9 @@ local function legacyEntryImpliedType(entry)
     if entry:match('^spirit:') then
         return TYPE_ELEMENTALS;
     end
+    if entry:match('^jug:') then
+        return TYPE_BEASTS;
+    end
     if entry == 'jug' or entry == 'charm' then
         return TYPE_BEASTS;
     end
@@ -138,7 +141,7 @@ local function typeTokenMatchesPetKey(token, petKey)
         return petKey:match('^avatar:') ~= nil or petKey:match('^spirit:') ~= nil;
     end
     if token == TYPE_BEASTS then
-        return petKey == 'jug' or petKey == 'charm';
+        return petKey == 'jug' or petKey == 'charm' or petKey:match('^jug:') ~= nil;
     end
     if token == TYPE_WYVERN then
         return petKey == 'wyvern';

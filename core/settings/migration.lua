@@ -6,6 +6,7 @@
 local M = {};
 local profileManager = require('core.profile_manager');
 local macroXiuiDefaults = require('modules.hotbar.macro_xiui_defaults');
+local macroGlobalDefaults = require('modules.hotbar.macro_global_defaults');
 
 -- Migrate settings from HXUI to XIUI (one-time migration for users upgrading from HXUI)
 -- IMPORTANT: This must be called BEFORE settings.load() so that copied files are picked up
@@ -1014,6 +1015,13 @@ function M.MigrateCrossbarRemoveDeprecatedMirroredKeys(gConfig)
     xb.skillchainIconOffsetY = nil;
 end
 
+function M.MigrateMacroGlobalUniversalTwoHour(gConfig)
+    if not gConfig then
+        return;
+    end
+    macroGlobalDefaults.SeedUniversalTwoHourIfNeeded(gConfig);
+end
+
 function M.MigrateMacroXiuiDefaults(gConfig)
     if not gConfig then
         return;
@@ -1058,6 +1066,7 @@ function M.RunStructureMigrations(gConfig, defaults)
     M.MigrateCrossbarComboModeSettings(gConfig, defaults);
     M.MigrateLegacyPositionFields(gConfig);
     M.MigrateMacroXiuiDefaults(gConfig);
+    M.MigrateMacroGlobalUniversalTwoHour(gConfig);
 end
 
 -- Legacy function for backward compatibility (if any external code calls it)

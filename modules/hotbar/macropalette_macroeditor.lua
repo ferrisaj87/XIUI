@@ -62,6 +62,43 @@ return function(MP)
         end
     end
 
+    local function ApplyDefaultEditorTargetForJaAbility(abilityName)
+        if abilityName == 'Reward' or abilityName == 'Call Beast' then
+            MP.editorFields.target[1] = MP.FindIndex(MP.TARGET_OPTIONS, 'me');
+            MP.editingMacro.target = 'me';
+        end
+    end
+
+    local function ApplyDefaultEditorTargetForPetCommand(commandName)
+        if commandName == 'Ready'
+            or commandName == 'Ready (Recast)'
+            or commandName == 'Ready (Use)' then
+            MP.editorFields.target[1] = MP.FindIndex(MP.TARGET_OPTIONS, 'me');
+            MP.editingMacro.target = 'me';
+        end
+    end
+
+    --- Primary Pet Command combo shows synthetic Ready rows when jug progression is enabled; map saved macro.action back to the visible row label.
+    local function BstPetPrimaryComboCurrentLabel(macro, viewedPetJobId)
+        if (macro.actionType or '') ~= 'pet' then
+            return macro.action or '';
+        end
+        if viewedPetJobId ~= MP.petregistry.JOB_BST or not MP.petregistry.IsBstJugReadyMovesEnabled() then
+            return macro.action or '';
+        end
+        local act = macro.action or '';
+        if act == 'Ready' then
+            return 'Ready (Recast)';
+        end
+        if macro.bstReadyMode == 'use' and act == '' then
+            return 'Ready (Use)';
+        end
+        if MP.petregistry.IsBstJugReadyMoveName(act) then
+            return 'Ready (Use)';
+        end
+        return act;
+    end
+
     -- Pet commands follow "Saving To" + Avatar Filter in the editor, not the separate Macro Palette avatar.
     local function GetEditorPetJobId()
         if MP.editorPaletteKey and MP.EditorSaveKeyToJobId then
@@ -458,6 +495,7 @@ return function(MP)
                     end
                     if actionType == 'pet' then
                         MP.SyncSaveSubTypeFromPetAvatarFilter();
+                        MP.SyncSaveSubTypeFromBstJugFamily();
                     end
                     MP.editorImplicitActionIconDone = false;
                 end
@@ -849,6 +887,7 @@ return function(MP)
                     MP.editingMacro.action = ability.name;
                     MP.editorFields.action[1] = ability.name;
                     AutoSetDisplayName(ability.name);
+                    ApplyDefaultEditorTargetForJaAbility(ability.name);
                     SyncEditorIconAfterListPick();
                 end, nil, nil, fieldW, useStatusColors);
             else
@@ -1192,8 +1231,8 @@ return function(MP)
                     local petCommands = MP.GetPetCommandsForJob(viewedJobId, avatarName, nil);
                     if petCommands and #petCommands > 0 then
                         MP.DrawSearchableCombo('##recastPetCombo', petCommands, MP.editingMacro.recastSourceAction or '', function(cmd)
-                            MP.editingMacro.recastSourceAction = cmd.name;
-                            MP.editorFields.recastSourceAction[1] = cmd.name;
+                        MP.editingMacro.recastSourceAction = cmd.petMacroAction or cmd.name;
+                        MP.editorFields.recastSourceAction[1] = MP.editingMacro.recastSourceAction;
                         end, nil, nil, fieldW);
                     else
                         MP.imgui.TextColored(MP.COLORS.textMuted, 'No pet commands available');
@@ -1326,6 +1365,29 @@ return function(MP)
                 petJobLevel = subJobLevel;
             end
 
+            local bstActivePetForReady = nil;
+            if viewedJobId == MP.petregistry.JOB_BST then
+                bstActivePetForReady = MP.petpalette.GetCurrentPetEntityName();
+                local act0 = MP.editingMacro.action or '';
+                if act0 == 'Ready' and MP.editingMacro.bstReadyMode == nil then
+                    MP.editingMacro.bstReadyMode = 'recast';
+                end
+                if MP.petregistry.IsBstJugReadyMovesEnabled() and act0 ~= ''
+                    and MP.petregistry.IsBstJugReadyMoveName(act0) then
+                    if MP.editingMacro.bstJugReadyMovesKey == nil then
+                        MP.editingMacro.bstJugReadyMovesKey = MP.petregistry.ResolveBstJugMovesKeyFromMoveName(act0);
+                    end
+                    if MP.editingMacro.bstJugReadyMovesKey and MP.editingMacro.bstJugReadyFamilyLabel == nil then
+                        for _, row in ipairs(MP.petregistry.GetBstJugReadyFamilyPickerList()) do
+                            if row.movesKey == MP.editingMacro.bstJugReadyMovesKey then
+                                MP.editingMacro.bstJugReadyFamilyLabel = row.name;
+                                break;
+                            end
+                        end
+                    end
+                end
+            end
+
             -- ── Build the command list ─────────────────────────────
             local petCommands;
             local useStatusColors = false;
@@ -1337,7 +1399,7 @@ return function(MP)
                 if viewedJobId == MP.petregistry.JOB_SMN then
                     avatarName = SmnAvatarNameFromEditorFilter(avatarList);
                 elseif viewedJobId == MP.petregistry.JOB_BST then
-                    activePetName = MP.petpalette.GetCurrentPetEntityName();
+                    activePetName = bstActivePetForReady;
                 end
 
                 local expandedList;
@@ -1368,15 +1430,98 @@ return function(MP)
 
             -- ── Pet command selector dropdown ──────────────────────
             MP.imgui.SetNextItemWidth(fieldW);
+            local petPrimaryComboValue = BstPetPrimaryComboCurrentLabel(MP.editingMacro, viewedJobId);
             if petCommands and #petCommands > 0 then
-                MP.DrawSearchableCombo('##petCommandCombo', petCommands, MP.editingMacro.action or '', function(cmd)
-                    MP.editingMacro.action = cmd.name;
-                    MP.editorFields.action[1] = cmd.name;
+                MP.DrawSearchableCombo('##petCommandCombo', petCommands, petPrimaryComboValue, function(cmd)
+                    if cmd.bstReadySynthetic == 'recast' then
+                        MP.editingMacro.action = cmd.petMacroAction or 'Ready';
+                        MP.editingMacro.bstReadyMode = 'recast';
+                        MP.editingMacro.bstJugReadyMovesKey = nil;
+                        MP.editingMacro.bstJugReadyFamilyLabel = nil;
+                    elseif cmd.bstReadySynthetic == 'use' then
+                        MP.editingMacro.bstReadyMode = 'use';
+                        MP.editingMacro.action = '';
+                        MP.editingMacro.bstJugReadyMovesKey = nil;
+                        MP.editingMacro.bstJugReadyFamilyLabel = nil;
+                    else
+                        MP.editingMacro.bstReadyMode = nil;
+                        MP.editingMacro.action = cmd.name;
+                        MP.editingMacro.bstJugReadyMovesKey = nil;
+                        MP.editingMacro.bstJugReadyFamilyLabel = nil;
+                    end
+                    MP.editorFields.action[1] = MP.editingMacro.action or '';
                     AutoSetDisplayName(cmd.name);
+                    ApplyDefaultEditorTargetForPetCommand(cmd.name);
                     SyncEditorIconAfterListPick();
                 end, nil, nil, fieldW, useStatusColors);
             else
                 MP.imgui.TextColored(MP.COLORS.textMuted, 'No pet commands available');
+            end
+
+            local showBstJugPicker = viewedJobId == MP.petregistry.JOB_BST
+                and MP.petregistry.IsBstJugReadyMovesEnabled()
+                and (MP.editingMacro.bstReadyMode == 'use'
+                    or MP.petregistry.IsBstJugReadyMoveName(MP.editingMacro.action or ''));
+
+            if showBstJugPicker then
+                MP.imgui.Spacing();
+                MP.imgui.TextColored(MP.COLORS.goldDim, 'Family');
+                MP.imgui.SameLine(0, 2);
+                MP.imgui.ShowHelp('Jug pet families (same Ready abilities per family as SMN avatars share blood pact pools). Pick family, then the Ready move.');
+                local famList = MP.petregistry.GetBstJugReadyFamilyPickerList();
+                MP.imgui.SetNextItemWidth(fieldW);
+                if famList and #famList > 0 then
+                    MP.DrawSearchableCombo('##bstJugFamilyCombo', famList, MP.editingMacro.bstJugReadyFamilyLabel or '', function(row)
+                        MP.editingMacro.bstJugReadyMovesKey = row.movesKey;
+                        MP.editingMacro.bstJugReadyFamilyLabel = row.name;
+                        local movesFam = MP.petregistry.GetReadyMovesForFamilyMovesKey(row.movesKey);
+                        local curAct = MP.editingMacro.action or '';
+                        local moveStillOk = false;
+                        if movesFam and curAct ~= '' then
+                            for _, m in ipairs(movesFam) do
+                                if m.name == curAct then
+                                    moveStillOk = true;
+                                    break;
+                                end
+                            end
+                        end
+                        if not moveStillOk then
+                            MP.editingMacro.action = '';
+                            MP.editorFields.action[1] = '';
+                        end
+                        SyncEditorIconAfterListPick();
+                        MP.SyncSaveSubTypeFromBstJugFamily();
+                    end, nil, nil, fieldW, false);
+                end
+
+                MP.imgui.Spacing();
+                MP.imgui.TextColored(MP.COLORS.goldDim, 'Jug Ready ability');
+                MP.imgui.SameLine(0, 2);
+                MP.imgui.ShowHelp('/pet uses this ability name; charges match your jug. A * beside a Ready move appears only when some jugs in that picker row do not learn it — hover for detail.');
+                local jugMoves = {};
+                local mk = MP.editingMacro.bstJugReadyMovesKey;
+                if mk then
+                    local rm = MP.petregistry.GetReadyMovesForFamilyMovesKey(mk);
+                    if rm then
+                        for _, m in ipairs(rm) do
+                            table.insert(jugMoves, m);
+                        end
+                    end
+                end
+                MP.imgui.SetNextItemWidth(fieldW);
+                if #jugMoves > 0 then
+                    MP.DrawSearchableCombo('##bstJugReadyMoveCombo', jugMoves, MP.editingMacro.action or '', function(move)
+                        MP.editingMacro.action = move.name;
+                        MP.editingMacro.bstReadyMode = nil;
+                        MP.editorFields.action[1] = move.name;
+                        AutoSetDisplayName(move.name);
+                        SyncEditorIconAfterListPick();
+                    end, nil, nil, fieldW, false);
+                elseif MP.editingMacro.bstJugReadyMovesKey then
+                    MP.imgui.TextColored(MP.COLORS.textMuted, 'No Ready moves for this family in database');
+                else
+                    MP.imgui.TextColored(MP.COLORS.textMuted, 'Select a family first');
+                end
             end
 
             MP.imgui.Spacing();
@@ -1471,6 +1616,11 @@ return function(MP)
             end
 
             if not canSave then
+                return;
+            end
+
+            local okMg, mgd = pcall(require, 'modules.hotbar.macro_global_defaults');
+            if okMg and mgd and mgd.IsUniversalTwoHourMacro(MP.editingMacro) and not MP.isCreatingNew then
                 return;
             end
 
