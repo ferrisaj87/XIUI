@@ -60,6 +60,9 @@ MP.macroCustomRenameTargetKey = nil; -- 'custom:N' for MacroCustomRename modal
 MP.macroCustomDeleteKey = nil; -- pending delete: confirm modal
 MP.macroCustomDeleteLabel = nil;
 MP.macroCustomDeleteN = 0;
+MP.macroMoveSourceKey = nil;
+MP.macroMoveMacroId = nil;
+MP.macroMoveDestKey = nil;
 MP._macroSearchPaletteKey = nil;
 MP._lastMacroPaletteSearch = nil;
 -- Which scope switch confirmation is open (single non-modal BeginPopup, no full-screen dim).
@@ -158,9 +161,9 @@ end
 
 local INPUT_BUFFER_SIZE = 64;
 local MACRO_BUFFER_SIZE = 512;  -- 8 lines * ~60 chars each
-local PALETTE_COLUMNS = 6;
+local PALETTE_COLUMNS = 7;
 local PALETTE_ROWS = 6;
-local PALETTE_MACROS_PER_PAGE = PALETTE_COLUMNS * PALETTE_ROWS;  -- 36 macros per page
+local PALETTE_MACROS_PER_PAGE = PALETTE_COLUMNS * PALETTE_ROWS;  -- 42 macros per page
 local PALETTE_TILE_SIZE = 48;
 local PALETTE_TILE_GAP = 4;
 -- Slightly rounded macro grid tiles (ImGui button shape; icons draw square on top).
@@ -321,11 +324,14 @@ local ACTION_TYPE_LABELS = {
     ma = 'Spell (ma)',
     ja = 'Ability (ja)',
     ws = 'Weaponskill (ws)',
-    item = 'Item',
+    item = 'Items',
     equip = 'Equip',
     macro = 'Macro',
     pet = 'Pet Command',
 };
+
+-- Items palette bucket: Action Type combo offers only these (order: Item, Macro, Equip).
+local ACTION_TYPES_ITEMS_BUCKET = { 'item', 'macro', 'equip' };
 
 -- Recast source types for macros (allows displaying cooldown from a different action)
 local RECAST_SOURCE_TYPES = { 'none', 'ma', 'ja', 'item', 'pet' };
@@ -379,6 +385,27 @@ local GLOBAL_MACRO_KEY = macroBuckets.GLOBAL;
 local ITEMS_MACRO_KEY = macroBuckets.ITEMS;
 local EQUIPMENT_MACRO_KEY = macroBuckets.EQUIPMENT;
 local XIUI_MACRO_KEY = macroBuckets.XIUI;
+
+local function DefaultNewMacroBodyForPaletteKey(paletteKey)
+    if data.MacroPaletteKeysEqual(paletteKey, ITEMS_MACRO_KEY) then
+        return {
+            actionType = 'item',
+            action = '',
+            target = 't',
+            displayName = '',
+            customIconType = 'xiui_default',
+            customIconPath = 'item',
+        }, 'xiui_default::item';
+    end
+    return {
+        actionType = 'ma',
+        action = '',
+        target = 't',
+        displayName = '',
+        customIconType = 'xiui_default',
+        customIconPath = 'ma',
+    }, 'xiui_default::ma';
+end
 
 local function IsSharedJobAgnosticMacroSelection(sel)
     if sel == GLOBAL_MACRO_KEY or sel == ITEMS_MACRO_KEY or sel == EQUIPMENT_MACRO_KEY or sel == XIUI_MACRO_KEY then
@@ -1654,6 +1681,47 @@ end
 -- Exposed for crossbar drop: must match fallbacks in HandleDropOnSlot (not raw job id for Global/items/etc.)
 M.GetEffectivePaletteType = GetEffectivePaletteType;
 
+--- True when macros are being saved under the Items palette bucket (`macroDB.items`).
+function M.EditorMacroPaletteKeyIsItems(saveKey)
+    local k = saveKey;
+    if k == nil then
+        k = MP.editorPaletteKey;
+    end
+    if k == nil then
+        k = GetEffectivePaletteType();
+    end
+    return data.MacroPaletteKeysEqual(k, ITEMS_MACRO_KEY);
+end
+
+--- Restrict editor to item/macro/equip types when Saving To (or editing) Items palette; coerce illegal types to Item.
+function M.ClampMacroEditorForItemsPalette()
+    if not MP.editingMacro then
+        return;
+    end
+    if not M.EditorMacroPaletteKeyIsItems(MP.editorPaletteKey) then
+        return;
+    end
+    local allowed = { item = true, macro = true, equip = true };
+    local at = MP.editingMacro.actionType or 'item';
+    if not allowed[at] then
+        MP.editingMacro.actionType = 'item';
+        MP.editingMacro.action = '';
+        MP.editorFields.action[1] = '';
+        MP.searchFilter[1] = '';
+        MP.editingMacro.recastSourceType = nil;
+        MP.editingMacro.recastSourceAction = nil;
+        MP.editingMacro.recastSourceItemId = nil;
+        MP.editorFields.recastSourceType[1] = MP.FindIndex(MP.RECAST_SOURCE_TYPES, 'none');
+        MP.editorFields.recastSourceAction[1] = '';
+        MP.editingMacro.showJaBadgeOnMacro = nil;
+        MP.editingMacro.customIconType = 'xiui_default';
+        MP.editingMacro.customIconPath = 'item';
+        MP.editorAutoIconKey = 'xiui_default::item';
+        MP.editorImplicitActionIconDone = false;
+    end
+    MP.editorFields.actionType[1] = MP.FindIndex(ACTION_TYPES, MP.editingMacro.actionType or 'item');
+end
+
 -- Get display name for a palette type key
 local function GetPaletteDisplayName(typeKey)
     if typeKey == GLOBAL_MACRO_KEY then
@@ -2341,6 +2409,24 @@ local function SweepOtherProfilesForSharedMacroDelete(macroId, typeKey, onlyBuck
     sharedMacroStore.InvalidateDiskSharedCache();
 end
 
+-- Shared macro library: update bindings on other profiles after MoveMacro (same as delete sweep, but rewrite refs).
+local function SweepOtherProfilesForSharedMacroMove(oldId, oldKey, newId, newKey, onlyBucket, currentName)
+    currentName = currentName or (config and config.currentProfile) or 'Default';
+    local globalProfiles = profileManager.GetGlobalProfiles();
+    if not globalProfiles or not globalProfiles.names then
+        return;
+    end
+    for _, name in ipairs(globalProfiles.names) do
+        if name and name ~= currentName then
+            local cfg = profileManager.GetProfileSettings(name);
+            if cfg and data.RewriteMacroPaletteBindingsInConfig(cfg, oldId, oldKey, newId, newKey, onlyBucket, false) then
+                profileManager.SaveProfileSettings(name, cfg);
+            end
+        end
+    end
+    sharedMacroStore.InvalidateDiskSharedCache();
+end
+
 -- Clear hotbar/crossbar live config (gConfig). Edit Full Palette draft buffers are not scanned here;
 -- dead macroRef in an open draft fixes on Apply (resolve) or when the user edits the slot.
 local function ClearSlotsReferencingMacro(macroId, deletedTypeKey, onlyBucketForThisId, deleteKind)
@@ -2373,6 +2459,56 @@ function M.DeleteMacro(macroId, typeKeyOverride)
     end
 
     return false;
+end
+
+--- Copy a macro row into destPaletteKey with a new id, rewrite bindings that pointed at (macroId, sourcePaletteKey), then remove the source row.
+--- Profile + shared arms are both updated on current layout; other profiles are swept when macro storage is shared.
+function M.MoveMacroToPalette(macroId, sourcePaletteKey, destPaletteKey)
+    if not gConfig or not gConfig.macroDB or not macroId or sourcePaletteKey == nil or destPaletteKey == nil then
+        return false;
+    end
+    if data.MacroPaletteKeysEqual(sourcePaletteKey, destPaletteKey) then
+        return false;
+    end
+    local dbSrc = gConfig.macroDB[sourcePaletteKey];
+    if type(dbSrc) ~= 'table' then
+        return false;
+    end
+    local macroRow = nil;
+    local macroIdx = nil;
+    for i, m in ipairs(dbSrc) do
+        if m.id == macroId then
+            macroRow = m;
+            macroIdx = i;
+            break;
+        end
+    end
+    if not macroRow then
+        return false;
+    end
+    if macroGlobalDefaults.IsUniversalTwoHourMacro(macroRow) then
+        return false;
+    end
+    local copy = deepCopyTable(macroRow);
+    copy.id = nil;
+    local newId = M.AddMacro(copy, destPaletteKey);
+    if not newId then
+        return false;
+    end
+    local onlyBucketForThisId = (CountPaletteBucketsWithMacroId(macroId) == 1);
+    data.RewriteMacroPaletteBindingsInConfig(gConfig, macroId, sourcePaletteKey, newId, destPaletteKey, onlyBucketForThisId, true);
+    data.RewriteMacroPaletteBindingsInDraft(macroId, sourcePaletteKey, newId, destPaletteKey, onlyBucketForThisId);
+    local deleteKind = (gConfig and (gConfig.macroStorageScope or 'profile') == 'shared') and 'shared' or 'profile';
+    if deleteKind == 'shared' and config and config.currentProfile then
+        SweepOtherProfilesForSharedMacroMove(macroId, sourcePaletteKey, newId, destPaletteKey, onlyBucketForThisId, config.currentProfile);
+    end
+    table.remove(dbSrc, macroIdx);
+    markSharedMacroLibraryDirtyIfNeeded();
+    SaveSettingsToDisk();
+    ClearAllIconCaches();
+    data.InvalidateConfigDerivedCaches();
+    data.MarkMacroLookupDirty();
+    return true;
 end
 
 -- Get a macro by ID
@@ -2409,6 +2545,7 @@ function M.OpenEditorForSlotData(slotData)
             MP.isCreatingNew = false;
             MP.editorPaletteKey = paletteKey;
             SyncMacroEditorSubtypeFieldsFromSaveKey();
+            M.ClampMacroEditorForItemsPalette();
             RefreshCachedLists();
             return;
         end
@@ -2419,19 +2556,15 @@ function M.OpenEditorForSlotData(slotData)
         MP.isCreatingNew = false;
         MP.editorPaletteKey = slotData.macroPaletteKey or GetEffectivePaletteType();
         SyncMacroEditorSubtypeFieldsFromSaveKey();
+        M.ClampMacroEditorForItemsPalette();
     else
         MP.isCreatingNew = true;
-        MP.editingMacro = {
-            actionType = 'ma',
-            action = '',
-            target = 't',
-            displayName = '',
-            customIconType = 'xiui_default',
-            customIconPath = 'ma',
-        };
-        MP.editorAutoIconKey = 'xiui_default::ma';
         MP.editorPaletteKey = GetEffectivePaletteType();
+        local body, autoKey = DefaultNewMacroBodyForPaletteKey(MP.editorPaletteKey);
+        MP.editingMacro = body;
+        MP.editorAutoIconKey = autoKey;
         SyncMacroEditorSubtypeFieldsFromSaveKey();
+        M.ClampMacroEditorForItemsPalette();
     end
     RefreshCachedLists();
 end
@@ -2810,6 +2943,46 @@ end
 table.sort(JOB_LIST, function(a, b) return a.id < b.id; end);
 for i, job in ipairs(JOB_LIST) do
     JOB_ID_MAP[job.id] = i;
+end
+
+local function PickDefaultMacroMoveDestination(sourceKey)
+    local order = { GLOBAL_MACRO_KEY, ITEMS_MACRO_KEY, EQUIPMENT_MACRO_KEY, XIUI_MACRO_KEY };
+    for _, k in ipairs(order) do
+        if not data.MacroPaletteKeysEqual(k, sourceKey) then
+            return k;
+        end
+    end
+    EnsureMacroCustomCategoriesList();
+    for _, cat in ipairs(gConfig and gConfig.macroCustomCategories or {}) do
+        local k = cat.key;
+        if not data.MacroPaletteKeysEqual(k, sourceKey) then
+            return k;
+        end
+    end
+    for _, job in ipairs(JOB_LIST) do
+        if not data.MacroPaletteKeysEqual(job.id, sourceKey) then
+            return job.id;
+        end
+    end
+    for _, avatar in ipairs(petregistry.GetAvatarList()) do
+        local avatarKey = petregistry.avatars[avatar];
+        if avatarKey then
+            local fk = string.format('%d:avatar:%s', petregistry.JOB_SMN, avatarKey);
+            if not data.MacroPaletteKeysEqual(fk, sourceKey) then
+                return fk;
+            end
+        end
+    end
+    for _, pk in ipairs(petregistry.GetAvailablePetKeys(petregistry.JOB_BST)) do
+        local slug = pk:match('^jug:(.+)$');
+        if slug then
+            local fk = string.format('%d:%s:%s', petregistry.JOB_BST, petregistry.PET_TYPE_JUG, slug);
+            if not data.MacroPaletteKeysEqual(fk, sourceKey) then
+                return fk;
+            end
+        end
+    end
+    return GLOBAL_MACRO_KEY;
 end
 
 -- Bottom-right /ja badge on macro tiles (same corner style as small status icons on slots).
@@ -3668,6 +3841,113 @@ local function DrawPaletteBody()
         end
         imgui.PopStyleColor(3);
 
+        -- Move macro to another palette bucket (modal)
+        imgui.PushStyleColor(ImGuiCol_PopupBg, COLORS.bgDark);
+        imgui.PushStyleColor(ImGuiCol_Border, COLORS.border);
+        imgui.PushStyleColor(ImGuiCol_Text, COLORS.text);
+        if imgui.BeginPopupModal('MacroMoveToPalette##xiui', nil, ImGuiWindowFlags_AlwaysAutoResize) then
+            local srcK = MP.macroMoveSourceKey;
+            local mid = MP.macroMoveMacroId;
+            if not srcK or not mid then
+                MP.macroMoveSourceKey = nil;
+                MP.macroMoveMacroId = nil;
+                MP.macroMoveDestKey = nil;
+                imgui.CloseCurrentPopup();
+            else
+                imgui.TextColored(COLORS.gold, 'Move macro');
+                imgui.PushTextWrapPos(440);
+                imgui.TextWrapped(
+                    'Creates a copy in the destination palette with a new internal id, removes it from the source palette, '
+                        .. 'and updates hotbar and crossbar bindings so slots that already use this macro keep working.');
+                imgui.PopTextWrapPos();
+                imgui.Spacing();
+                imgui.TextColored(COLORS.textDim, 'From');
+                imgui.SameLine(0, 8);
+                imgui.Text(GetPaletteDisplayName(srcK));
+                imgui.Spacing();
+                imgui.TextColored(COLORS.textDim, 'To');
+                imgui.SameLine(0, 8);
+                PushComboStyle();
+                imgui.SetNextItemWidth(360);
+                if imgui.BeginCombo('##macroMoveDest', GetPaletteDisplayName(MP.macroMoveDestKey), ImGuiComboFlags_None) then
+                    local function offerMoveDest(key)
+                        if data.MacroPaletteKeysEqual(key, srcK) then
+                            return;
+                        end
+                        local cnt = CountMacrosInPalette(key);
+                        local lab = GetPaletteDisplayName(key);
+                        if cnt > 0 then
+                            lab = string.format('%s (%d)', lab, cnt);
+                        end
+                        local sel = data.MacroPaletteKeysEqual(key, MP.macroMoveDestKey);
+                        if sel then
+                            imgui.PushStyleColor(ImGuiCol_Text, COLORS.gold);
+                        elseif cnt > 0 then
+                            imgui.PushStyleColor(ImGuiCol_Text, COLORS.text);
+                        else
+                            imgui.PushStyleColor(ImGuiCol_Text, COLORS.textDim);
+                        end
+                        if imgui.Selectable(lab, sel) then
+                            MP.macroMoveDestKey = key;
+                        end
+                        imgui.PopStyleColor();
+                    end
+                    offerMoveDest(GLOBAL_MACRO_KEY);
+                    offerMoveDest(ITEMS_MACRO_KEY);
+                    offerMoveDest(EQUIPMENT_MACRO_KEY);
+                    offerMoveDest(XIUI_MACRO_KEY);
+                    EnsureMacroCustomCategoriesList();
+                    for _, cat in ipairs(gConfig.macroCustomCategories or {}) do
+                        offerMoveDest(cat.key);
+                    end
+                    imgui.Separator();
+                    for _, job in ipairs(JOB_LIST) do
+                        offerMoveDest(job.id);
+                    end
+                    for _, avatar in ipairs(petregistry.GetAvatarList()) do
+                        local avatarKey = petregistry.avatars[avatar];
+                        if avatarKey then
+                            offerMoveDest(string.format('%d:avatar:%s', petregistry.JOB_SMN, avatarKey));
+                        end
+                    end
+                    for _, pk in ipairs(petregistry.GetAvailablePetKeys(petregistry.JOB_BST)) do
+                        local slug = pk:match('^jug:(.+)$');
+                        if slug then
+                            offerMoveDest(string.format('%d:%s:%s', petregistry.JOB_BST, petregistry.PET_TYPE_JUG, slug));
+                        end
+                    end
+                    imgui.EndCombo();
+                end
+                PopComboStyle();
+                imgui.Spacing();
+                local canApply = MP.macroMoveDestKey ~= nil and not data.MacroPaletteKeysEqual(MP.macroMoveDestKey, srcK);
+                if not canApply then
+                    imgui.PushStyleVar(ImGuiStyleVar_Alpha, 0.45);
+                end
+                if imgui.Button('Move##macroMoveApply', {100, 26}) and canApply then
+                    if M.MoveMacroToPalette(mid, srcK, MP.macroMoveDestKey) then
+                        paletteUi.selectedMacroIndex = nil;
+                        MP.macroMoveSourceKey = nil;
+                        MP.macroMoveMacroId = nil;
+                        MP.macroMoveDestKey = nil;
+                        imgui.CloseCurrentPopup();
+                    end
+                end
+                if not canApply then
+                    imgui.PopStyleVar();
+                end
+                imgui.SameLine(0, 8);
+                if imgui.Button('Cancel##macroMoveCancel', {100, 26}) then
+                    MP.macroMoveSourceKey = nil;
+                    MP.macroMoveMacroId = nil;
+                    MP.macroMoveDestKey = nil;
+                    imgui.CloseCurrentPopup();
+                end
+            end
+            imgui.EndPopup();
+        end
+        imgui.PopStyleColor(3);
+
         -- SMN: base / all avatars merged / single avatar (own row so the window stays narrow)
         if not isSharedMacroPalette and MP.selectedPaletteType == petregistry.JOB_SMN then
             imgui.Spacing();
@@ -4090,15 +4370,6 @@ local function DrawPaletteBody()
 
         if imgui.Button('+ New Macro', {115, 26}) then
             MP.isCreatingNew = true;
-            MP.editingMacro = {
-                actionType = 'ma',
-                action = '',
-                target = 't',
-                displayName = '',
-                customIconType = 'xiui_default',
-                customIconPath = 'ma',
-            };
-            MP.editorAutoIconKey = 'xiui_default::ma';
             MP.editorDidInitialIconPick = false;
             MP.editorImplicitActionIconDone = false;
             MP.editorIconManuallySet = false;
@@ -4111,7 +4382,11 @@ local function DrawPaletteBody()
             MP.editorIconPrefsHydrated = false;
             paletteUi.selectedMacroIndex = nil;
             MP.editorPaletteKey = GetEffectivePaletteType();
+            local body, autoKey = DefaultNewMacroBodyForPaletteKey(MP.editorPaletteKey);
+            MP.editingMacro = body;
+            MP.editorAutoIconKey = autoKey;
             SyncMacroEditorSubtypeFieldsFromSaveKey();
+            M.ClampMacroEditorForItemsPalette();
         end
 
         imgui.SameLine();
@@ -4125,6 +4400,7 @@ local function DrawPaletteBody()
             MP.isCreatingNew = true;
             MP.editorPaletteKey = rowPaletteKeyForGridIdx(paletteUi.selectedMacroIndex);
             SyncMacroEditorSubtypeFieldsFromSaveKey();
+            M.ClampMacroEditorForItemsPalette();
             MP.editorDidInitialIconPick = false;
             MP.editorImplicitActionIconDone = false;
             MP.editorIconManuallySet = false;
@@ -4136,6 +4412,21 @@ local function DrawPaletteBody()
             MP.petTypeOverride = 0;
             MP.editorIconPrefsHydrated = false;
             ClearEditorPreviewIconCache();
+        end
+        if not copyEnabled then
+            imgui.PopStyleVar();
+        end
+
+        imgui.SameLine();
+
+        if not copyEnabled then
+            imgui.PushStyleVar(ImGuiStyleVar_Alpha, 0.4);
+        end
+        if imgui.Button('Move', {52, 26}) and copyEnabled then
+            MP.macroMoveSourceKey = rowPaletteKeyForGridIdx(paletteUi.selectedMacroIndex);
+            MP.macroMoveMacroId = db[paletteUi.selectedMacroIndex].id;
+            MP.macroMoveDestKey = PickDefaultMacroMoveDestination(MP.macroMoveSourceKey);
+            imgui.OpenPopup('MacroMoveToPalette##xiui');
         end
         if not copyEnabled then
             imgui.PopStyleVar();
@@ -4156,6 +4447,7 @@ local function DrawPaletteBody()
             MP.isCreatingNew = false;
             MP.editorPaletteKey = rowPaletteKeyForGridIdx(paletteUi.selectedMacroIndex);
             SyncMacroEditorSubtypeFieldsFromSaveKey();
+            M.ClampMacroEditorForItemsPalette();
             MP.editorDidInitialIconPick = false;
             MP.editorImplicitActionIconDone = false;
             MP.editorIconManuallySet = false;
@@ -5614,6 +5906,7 @@ function M.DrawMacroEditorSaveToSection(creatingNew, contentWidth)
     local function applyEditorSaveKey(newKey)
         MP.editorPaletteKey = newKey;
         SyncMacroEditorSubtypeFieldsFromSaveKey();
+        M.ClampMacroEditorForItemsPalette();
     end
 
     local saveKey = MP.editorPaletteKey or GetEffectivePaletteType();
@@ -5904,6 +6197,7 @@ do
     MP.COLORS = COLORS;
     MP.jobs = jobs;
     MP.ACTION_TYPES = ACTION_TYPES;
+    MP.ACTION_TYPES_ITEMS_BUCKET = ACTION_TYPES_ITEMS_BUCKET;
     MP.ACTION_TYPE_LABELS = ACTION_TYPE_LABELS;
     MP.RECAST_SOURCE_TYPES = RECAST_SOURCE_TYPES;
     MP.RECAST_SOURCE_LABELS = RECAST_SOURCE_LABELS;

@@ -655,6 +655,20 @@ function M.GetRawCrossbarSlotAction(comboMode, slotIndex)
     return jobSlotActions[effectiveComboMode][slotIndex];
 end
 
+--- Raw slot blob for `storageKey` (palette editor segment / named palette), ignoring the HUD active palette.
+--- Same shape as GetRawCrossbarSlotAction — used when Edit Full Palette draft inherits an untouched sparse cell.
+function M.GetRawCrossbarSlotActionForStorageKey(storageKey, comboMode, slotIndex)
+    if not storageKey or not gConfig or not gConfig.hotbarCrossbar or not gConfig.hotbarCrossbar.slotActions then
+        return nil;
+    end
+    local effectiveComboMode = M.GetEffectiveComboModeForStorage(comboMode);
+    local jobSlotActions = getSlotActionsForKey(gConfig.hotbarCrossbar.slotActions, storageKey);
+    if not jobSlotActions or not jobSlotActions[effectiveComboMode] then
+        return nil;
+    end
+    return jobSlotActions[effectiveComboMode][slotIndex];
+end
+
 --- Convert legacy layout to dual for swap / merge logic. nil or cleared => empty macro slot (no arms yet).
 function M.DualizeRawMacroSlotForMerge(raw)
     if not raw or type(raw) ~= 'table' or raw.cleared then
@@ -837,6 +851,142 @@ function M.ApplyMacroPaletteBucketRemovedToSlotAction(slotAction, removedBucketK
         return nil, false;
     end
     return emptyWhenGone, true;
+end
+
+--- Compare macro palette bucket keys (job id number vs string forms, reserved string buckets).
+function M.MacroPaletteKeysEqual(a, b)
+    return macroPaletteKeysEqualData(a, b);
+end
+
+-- Arms pointing at `macroId` in `sourceKey`: explicit palette key match, or nil key only when
+-- `onlyBucketForThisId` (macro id appears in a single macroDB bucket worldwide).
+local function macroArmMatchesMoveSource(arm, macroId, sourceKey, onlyBucketForThisId)
+    if not arm or type(arm) ~= 'table' or arm.macroRef ~= macroId then
+        return false;
+    end
+    local spk = arm.macroPaletteKey;
+    if spk ~= nil then
+        return macroPaletteKeysEqualData(spk, sourceKey);
+    end
+    return onlyBucketForThisId;
+end
+
+--- Rewrite palette macro bindings after MoveMacro: same slots keep working under new macroRef + macroPaletteKey.
+function M.ApplyMacroMoveToSlotAction(slotAction, oldId, oldKey, newId, newKey, onlyBucketForThisId)
+    if not slotAction or type(slotAction) ~= 'table' or slotAction.cleared then
+        return nil, false;
+    end
+    if isDualMacroSlotTable(slotAction) then
+        local out = deepCopyTable(slotAction);
+        local chg = false;
+        if macroArmMatchesMoveSource(out[K_BIND_P], oldId, oldKey, onlyBucketForThisId) then
+            out[K_BIND_P].macroRef = newId;
+            out[K_BIND_P].macroPaletteKey = newKey;
+            chg = true;
+        end
+        if macroArmMatchesMoveSource(out[K_BIND_S], oldId, oldKey, onlyBucketForThisId) then
+            out[K_BIND_S].macroRef = newId;
+            out[K_BIND_S].macroPaletteKey = newKey;
+            chg = true;
+        end
+        if not chg then
+            return nil, false;
+        end
+        out.actionType = 'macro';
+        return out, true;
+    end
+    if not slotAction.macroRef or slotAction.macroRef ~= oldId then
+        return nil, false;
+    end
+    if not macroArmMatchesMoveSource(slotAction, oldId, oldKey, onlyBucketForThisId) then
+        return nil, false;
+    end
+    local out = deepCopyTable(slotAction);
+    out.macroRef = newId;
+    out.macroPaletteKey = newKey;
+    return out, true;
+end
+
+local CROSSBAR_COMBO_MODES_FOR_MACRO_SWEEP = { 'L2', 'R2', 'L2R2', 'R2L2', 'L2x2', 'R2x2' };
+
+--- Hotbars + crossbar live slot maps in cfg (typically gConfig).
+function M.RewriteMacroPaletteBindingsInConfig(cfg, oldId, oldKey, newId, newKey, onlyBucketForThisId, notifyLayouts)
+    if not cfg or not oldId or oldKey == nil or not newId or newKey == nil then
+        return false;
+    end
+    local changed = false;
+    for barIndex = 1, 6 do
+        local configKey = 'hotbarBar' .. barIndex;
+        if cfg[configKey] and cfg[configKey].slotActions then
+            local barSettings = cfg[configKey];
+            for storageKey, jobSlotActions in pairs(barSettings.slotActions) do
+                if jobSlotActions then
+                    for slotIndex, slotAction in pairs(jobSlotActions) do
+                        local newSlot, chg = M.ApplyMacroMoveToSlotAction(
+                            slotAction, oldId, oldKey, newId, newKey, onlyBucketForThisId);
+                        if chg then
+                            jobSlotActions[slotIndex] = newSlot;
+                            changed = true;
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if cfg.hotbarCrossbar and cfg.hotbarCrossbar.slotActions then
+        local crossbarSettings = cfg.hotbarCrossbar;
+        for storageKey, jobSlotActions in pairs(crossbarSettings.slotActions) do
+            if jobSlotActions then
+                for _, comboMode in ipairs(CROSSBAR_COMBO_MODES_FOR_MACRO_SWEEP) do
+                    local comboSlots = jobSlotActions[comboMode];
+                    if comboSlots then
+                        for slotIndex, slotAction in pairs(comboSlots) do
+                            local newSlot, chg = M.ApplyMacroMoveToSlotAction(
+                                slotAction, oldId, oldKey, newId, newKey, onlyBucketForThisId);
+                            if chg then
+                                comboSlots[slotIndex] = newSlot;
+                                changed = true;
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if changed and notifyLayouts then
+        NotifySlotDataChanged();
+    end
+    return changed;
+end
+
+--- Edit Full Palette draft crossbar blobs (if open).
+function M.RewriteMacroPaletteBindingsInDraft(oldId, oldKey, newId, newKey, onlyBucketForThisId)
+    if not draftForStorageKey or not draftByKey then
+        return false;
+    end
+    local changed = false;
+    for _, blob in pairs(draftByKey) do
+        if type(blob) == 'table' then
+            for _, comboMode in ipairs(CROSSBAR_COMBO_MODES_FOR_MACRO_SWEEP) do
+                local comboSlots = blob[comboMode];
+                if comboSlots then
+                    for slotIndex, slotAction in pairs(comboSlots) do
+                        local newSlot, chg = M.ApplyMacroMoveToSlotAction(
+                            slotAction, oldId, oldKey, newId, newKey, onlyBucketForThisId);
+                        if chg then
+                            comboSlots[slotIndex] = newSlot;
+                            changed = true;
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if changed then
+        draftDirty = true;
+        NotifySlotDataChanged();
+    end
+    return changed;
 end
 
 local function isLibraryMacroSlotForSwap(s)
@@ -1922,12 +2072,18 @@ end
 
 --- After live `gConfig` crossbar mutations while Edit Full Palette draft is open, copy the affected slot into the draft
 --- blob so the palette row matches HUD (HUD stays authoritative for gameplay binds during the session).
+--- When the HUD is showing a different palette than `rk`, skips — otherwise active-palette hops overwrite the draft.
 function M.SyncDraftSlotFromLive(comboMode, slotIndex)
     if not draftForStorageKey or not draftByKey then
         return;
     end
     local rk = resolveDraftStorageKeyForCombo(comboMode);
     if not rk then
+        return;
+    end
+    local effectiveComboModeForHud = M.GetEffectiveComboModeForStorage(comboMode);
+    local liveKey = M.GetCrossbarStorageKeyForCombo(effectiveComboModeForHud);
+    if liveKey ~= rk then
         return;
     end
     local bucket = ensureDraftBucket(rk);
@@ -2062,7 +2218,8 @@ function M.GetDraftRawSlotData(comboMode, slotIndex)
     return v;
 end
 
---- Swap/drag reads: draft cell wins when present; explicit draft empty beats live; missing cell inherits live.
+--- Swap/drag reads: draft cell wins when present; explicit draft empty beats inherit; missing cell inherits
+--- persisted `gConfig` for the palette being edited (`rk`), not the HUD active palette (see GetRawCrossbarSlotAction).
 function M.GetCrossbarSlotRawForSwapOverlay(comboMode, slotIndex)
     if not draftForStorageKey or not draftByKey then
         return M.GetRawCrossbarSlotAction(comboMode, slotIndex);
@@ -2073,12 +2230,12 @@ function M.GetCrossbarSlotRawForSwapOverlay(comboMode, slotIndex)
     end
     local blob = draftByKey[rk];
     if not blob then
-        return M.GetRawCrossbarSlotAction(comboMode, slotIndex);
+        return M.GetRawCrossbarSlotActionForStorageKey(rk, comboMode, slotIndex);
     end
     local eff = GetEffectiveComboModeForStorage(comboMode);
     local row = blob[eff];
     if not row then
-        return M.GetRawCrossbarSlotAction(comboMode, slotIndex);
+        return M.GetRawCrossbarSlotActionForStorageKey(rk, comboMode, slotIndex);
     end
     local v = row[slotIndex];
     if v == DRAFT_CROSSBAR_SLOT_EMPTY then
@@ -2087,7 +2244,7 @@ function M.GetCrossbarSlotRawForSwapOverlay(comboMode, slotIndex)
     if v ~= nil then
         return v;
     end
-    return M.GetRawCrossbarSlotAction(comboMode, slotIndex);
+    return M.GetRawCrossbarSlotActionForStorageKey(rk, comboMode, slotIndex);
 end
 
 function M.SetDraftSlotData(comboMode, slotIndex, slotData)

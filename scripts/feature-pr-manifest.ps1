@@ -317,6 +317,7 @@ Why
                 'modules/hotbar/data.lua',
                 'modules/hotbar/init.lua',
                 'modules/hotbar/macropalette.lua',
+                'modules/hotbar/macropalette_macroeditor.lua',
                 'modules/hotbar/palette.lua',
                 'modules/hotbar/slotrenderer.lua',
                 'modules/petbar/display.lua',
@@ -326,14 +327,15 @@ Why
                 'assets/hotbar/items/04576.png',
                 'assets/hotbar/items/17040.png'
             )
-            Subject = 'Crossbar Edit Full Palette, /xiui cpal job palettes, and deferred drop UX'
+            Subject = 'Crossbar Edit Full Palette, macro Move palettes, deferred drop UX'
             Body    = @'
 What changed
-- data.lua / crossbar.lua: Explicit draft-empty sentinel distinguishes cleared palette slots from sparse untouched slots so overlay swap reads no longer resurrect live binds incorrectly; GetCrossbarSlotRawForSwapOverlay for palette row reads; SyncDraftSlotFromLive merges live gConfig into draft after HUD edits while Edit Full Palette is open so palette stays aligned with gameplay binds.
+- data.lua / crossbar.lua: Explicit draft-empty sentinel distinguishes cleared palette slots from sparse untouched slots so overlay swap reads no longer resurrect live binds incorrectly; GetCrossbarSlotRawForSwapOverlay for palette row reads; inherited sparse draft cells resolve against the persisted palette storage key (`GetRawCrossbarSlotActionForStorageKey`) instead of HUD-active binds so swaps stay correct after RB-cycling palettes while Edit Full Palette is open on another layout. SyncDraftSlotFromLive merges HUD edits into the draft only when the HUD palette storage key matches the draft segment/palette (`liveKey == rk`) so hops between active palettes do not overwrite unrelated drafts.
+- data.lua / macropalette.lua / macropalette_macroeditor.lua: Move Macro to another palette bucket (palette picker popup); rewires bindings across macro id + palette keys via `RewriteMacroPaletteBindingsInConfig` and Edit Full Palette drafts via `RewriteMacroPaletteBindingsInDraft`. Items-equipment macros: defaults for New/Copy/Open use `DefaultNewMacroBodyForPaletteKey` + `ClampMacroEditorForItemsPalette`; macro editor restricts action-type combo to Items-appropriate types when editing that bucket.
 - crossbar.lua / slotrenderer.lua / init.lua / libs/dragdrop.lua: Palette row stays draft-first with overlapping HUD rects resolved via deferred drops + dropPriority; HUD paths keep raw reads/writes on live while palette uses overlay+draft (FlushDeferredDrops before drag renderer).
 - config/hotbar.lua, config/crossbar.lua, config/crossbar_settings.lua: Layout/help/settings tweaks bundled with this UX pass.
 - core/settings (factories, migration, user): small migrations or defaults aligned with hotbar/crossbar behavior.
-- XIUI.lua, modules/hotbar/macropalette.lua, modules/hotbar/palette.lua, modules/petbar/display.lua: Related hooks or wording/visual tweaks touched alongside palette controller separation.
+- XIUI.lua, modules/hotbar/palette.lua, modules/petbar/display.lua: Related hooks or wording/visual tweaks touched alongside palette controller separation.
 - palette.lua: ValidatePalettesForJob merges factory crossbar defaults into gConfig.hotbarCrossbar before reading enableUniversal/defaultCrossbarPaletteScope; applies profile Job vs Global [G] scope before job-tier active palette reconciliation; case-insensitive universal/global preference; only forces job scope when universal sets are explicitly disabled (avoids resetting scope when nested keys were missing).
 - crossbar.lua: ImGui window gains dynamic bottom padding so below-slot action labels and corner-outline slack are not clipped by the window rect.
 - modules/hotbar/init.lua: HandleJobChangePacket consumes pending apply-default-crossbar-scope when profile reloaded before job data was readable (char select / logout).
@@ -345,7 +347,8 @@ Assets
 - Item PNGs under assets/hotbar/items/ for hotbar/macro display ids bundled here.
 
 Why
-- Removes duplicate/wrong swap behavior when draft clears overlapped live-only slots; keeps HUD draggable during palette editing without forcing draft icons onto the on-screen bar; overlapping palette/HUD drop zones pick palette deterministically.
+- Removes duplicate/wrong swap behavior when draft clears overlapped live-only slots or when HUD active palette no longer matches the palette under edit; HUD edits still mirror into the draft only for the palette you are actively playing while the editor stays open on that same storage bucket.
+- Move Macro avoids broken binds after relocating a macro library row; Items bucket editing stays coherent for action types.
 - Macros can switch or preview per-job and Main+Sub palettes independently of universal crossbar enablement; WHMABJ numbering matches the SJ-only rows users see in Palette Manager.
 '@
         }

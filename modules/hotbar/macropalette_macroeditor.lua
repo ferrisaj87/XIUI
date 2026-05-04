@@ -33,6 +33,8 @@ return function(MP)
     MP.editorFields.recastSourceType[1] = MP.FindIndex(MP.RECAST_SOURCE_TYPES, MP.editingMacro.recastSourceType or 'none');
     MP.editorFields.recastSourceAction[1] = MP.editingMacro.recastSourceAction or '';
 
+    MP.M.ClampMacroEditorForItemsPalette();
+
     local saveDisplayName = MP.M.GetEditorSaveDisplayName and MP.M.GetEditorSaveDisplayName() or nil;
     local titlePrefix = MP.isCreatingNew and 'Create Macro' or 'Edit Macro';
     local title;
@@ -472,9 +474,14 @@ return function(MP)
         MP.imgui.TextColored(MP.COLORS.goldDim, 'Action Type');
         MP.PushComboStyle();
         MP.imgui.SetNextItemWidth(fieldW);
+        local typesForCombo = MP.ACTION_TYPES;
+        if MP.M.EditorMacroPaletteKeyIsItems(MP.editorPaletteKey) then
+            typesForCombo = MP.ACTION_TYPES_ITEMS_BUCKET;
+        end
         local currentType = MP.ACTION_TYPES[MP.editorFields.actionType[1]];
         if MP.imgui.BeginCombo('##actionType', MP.ACTION_TYPE_LABELS[currentType] or 'Select...') then
-            for i, actionType in ipairs(MP.ACTION_TYPES) do
+            for _, actionType in ipairs(typesForCombo) do
+                local i = MP.FindIndex(MP.ACTION_TYPES, actionType);
                 local isSelected = MP.editorFields.actionType[1] == i;
                 if isSelected then
                     MP.imgui.PushStyleColor(ImGuiCol_Text, MP.COLORS.gold);
