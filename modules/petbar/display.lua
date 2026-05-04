@@ -19,11 +19,12 @@ local defaultPositions = require('libs.defaultpositions');
 
 local display = {};
 
--- Window state for bottom alignment
+-- Window state for bottom alignment (anchorBottom = locked screen Y of window bottom edge)
 local windowState = {
     x = nil,
     y = nil,
     height = nil,
+    anchorBottom = nil,
 };
 
 -- Position saving state
@@ -652,6 +653,51 @@ local function DrawRecastFullCharged(drawList, x, y, timerInfo, colorConfig, ful
     return barHeight;
 end
 
+-- gConfig.petBarResizeAnchor: 'top' | 'bottom' pins which edge when auto-resize changes height.
+-- When unset/nil (should not persist after migrate), falls back to per-type alignBottom for legacy saves.
+local function PetBarResizeAnchoredBottom(typeSettings)
+    local mode = gConfig.petBarResizeAnchor;
+    if mode == 'bottom' then
+        return true;
+    end
+    if mode == 'top' then
+        return false;
+    end
+    return typeSettings.alignBottom == true;
+end
+
+-- Resize-anchor preview stripe (Pet Bar Preview + XIUI config open): shows top vs bottom pin edge.
+local function DrawResizeAnchorEdgePreview(px, py, w, h, anchorBottom)
+    if not (showConfig and showConfig[1] and gConfig.petBarPreview) then
+        return;
+    end
+
+    local strip = math.min(7, math.max(5, math.floor(h * 0.04)));
+    local inset = 3;
+    local x0 = px + inset;
+    local x1 = px + w - inset;
+
+    local dl = imgui.GetWindowDrawList();
+    local fillCol;
+    local outlineCol;
+    local y0;
+    local y1;
+    if anchorBottom then
+        fillCol = imgui.GetColorU32({1.0, 0.52, 0.1, 0.76});
+        outlineCol = imgui.GetColorU32({1.0, 1.0, 0.95, 0.92});
+        y0 = py + h - strip;
+        y1 = py + h;
+    else
+        fillCol = imgui.GetColorU32({0.15, 0.82, 0.95, 0.74});
+        outlineCol = imgui.GetColorU32({0.95, 0.98, 1.0, 0.9});
+        y0 = py;
+        y1 = py + strip;
+    end
+
+    dl:AddRectFilled({ x0, y0 }, { x1, y1 }, fillCol);
+    dl:AddRect({ x0, y0 }, { x1, y1 }, outlineCol, 0, ImDrawCornerFlags_All, 1.5);
+end
+
 -- ============================================
 -- DrawWindow - Main Pet Bar Rendering
 -- ============================================
@@ -679,6 +725,7 @@ function display.DrawWindow(settings)
         windowState.x = nil;
         windowState.y = nil;
         windowState.height = nil;
+        windowState.anchorBottom = nil;
         return false;
     end
 
@@ -784,7 +831,6 @@ function display.DrawWindow(settings)
 
     ApplyWindowPosition('PetBar');
     if imgui.Begin('PetBar', true, windowFlags) then
-        SaveWindowPosition('PetBar');
         windowPosX, windowPosY = imgui.GetWindowPos();
         local startX, startY = imgui.GetCursorScreenPos();
 
@@ -1322,14 +1368,22 @@ function display.DrawWindow(settings)
         -- Get final window size for background
         local windowWidth, windowHeight = imgui.GetWindowSize();
 
-        -- Handle bottom alignment
-        -- AlwaysAutoResize can report +/-1px frame-to-frame; strict ~= caused Y to creep upward
-        -- when heights flickered. Only adjust when the delta is meaningful.
-        if typeSettings.alignBottom then
-            if windowState.height ~= nil then
-                local dh = windowHeight - windowState.height;
-                if math.abs(dh) > 1 then
-                    local newPosY = windowState.y + windowState.height - windowHeight;
+        local resizeAnchoredBottom = PetBarResizeAnchoredBottom(typeSettings);
+
+        -- Handle bottom alignment: keep the window's bottom edge at a stable screen Y so
+        -- AlwaysAutoResize content changes can't crawl the bar (+1 height steps never
+        -- fired the old >1px delta gate). Skip correction while dragging so placement isn't fought.
+        local petBarCanMove = not gConfig.lockPositions or (showConfig and showConfig[1] and gConfig.petBarPreview);
+        local petBarDragging = petBarCanMove and imgui.IsMouseDragging(0) and imgui.IsWindowHovered();
+        if resizeAnchoredBottom then
+            local curBottom = windowPosY + windowHeight;
+            if windowState.anchorBottom == nil then
+                windowState.anchorBottom = curBottom;
+            elseif petBarDragging then
+                windowState.anchorBottom = curBottom;
+            else
+                local newPosY = windowState.anchorBottom - windowHeight;
+                if math.abs(newPosY - windowPosY) > 0.01 then
                     imgui.SetWindowPos('PetBar', { windowPosX, newPosY });
                     windowPosY = newPosY;
                 end
@@ -1342,6 +1396,7 @@ function display.DrawWindow(settings)
             windowState.x = nil;
             windowState.y = nil;
             windowState.height = nil;
+            windowState.anchorBottom = nil;
         end
 
         -- Store main window position for pet target window (top = stable anchor for snap Y offset)
@@ -1351,6 +1406,8 @@ function display.DrawWindow(settings)
 
         -- Update background primitives
         data.UpdateBackground(windowPosX, windowPosY, windowWidth, windowHeight, settings);
+
+        DrawResizeAnchorEdgePreview(windowPosX, windowPosY, windowWidth, windowHeight, resizeAnchoredBottom);
 
         -- Save position when user moves window (check on mouse release)
         local canMove = not gConfig.lockPositions or (showConfig[1] and gConfig.petBarPreview);
@@ -1367,6 +1424,8 @@ function display.DrawWindow(settings)
                 lastSavedPosY = windowPosY;
             end
         end
+
+        SaveWindowPosition('PetBar');
     end
     imgui.End();
 
@@ -1382,6 +1441,7 @@ display.ResetPositions = function()
     windowState.x = nil;
     windowState.y = nil;
     windowState.height = nil;
+    windowState.anchorBottom = nil;
 end
 
 return display;

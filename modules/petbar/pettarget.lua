@@ -1,7 +1,7 @@
 --[[
 * XIUI Pet Bar - Pet Target Module
 * Displays information about what the pet is targeting
-* Separate window that appears below the main pet bar
+* Separate window that can snap below or above the main pet bar (Snap to Pet Bar settings)
 ]]--
 
 require('common');
@@ -160,23 +160,38 @@ function pettarget.DrawWindow(settings)
     -- Get pet target specific color config
     local colorConfig = gConfig.colorCustomization and gConfig.colorCustomization.petTarget or {};
 
-    -- Handle snap to petbar positioning (anchor: bottom = offset from bottom, top = offset from top so it stays static when buffs change height)
+    -- Snap position must win over ApplyWindowPosition (otherwise first-frame Always apply from disk overwrites snap).
     local snapEnabled = gConfig.petTargetSnapToPetBar;
-    local anchor = gConfig.petTargetSnapAnchor or 'bottom';
-    local anchorY = (anchor == 'top' and data.lastMainWindowTop) or data.lastMainWindowBottom;
-    if snapEnabled and data.lastMainWindowPosX ~= nil and anchorY ~= nil then
-        local snapOffsetX = gConfig.petTargetSnapOffsetX or 0;
-        local snapOffsetY = gConfig.petTargetSnapOffsetY or 16;
+    local snapAnchor = gConfig.petTargetSnapAnchor or 'bottom';
+    local snapOffsetX = gConfig.petTargetSnapOffsetX or 0;
+    local snapOffsetY = gConfig.petTargetSnapOffsetY;
+    if snapOffsetY == nil then
+        snapOffsetY = (snapAnchor == 'top') and -6 or 16;
+    end
+    if not snapEnabled then
+        ApplyWindowPosition('PetBarTarget');
+    end
+    if snapEnabled and data.lastMainWindowPosX ~= nil then
         local snapX = data.lastMainWindowPosX + snapOffsetX;
-        local snapY = anchorY + snapOffsetY;
-        imgui.SetNextWindowPos({snapX, snapY}, ImGuiCond_Always);
+        local snapY;
+        if snapAnchor == 'top' then
+            -- Place target window fully above pet bar top (uses last-frame inner height).
+            local th = tonumber(data.lastPetBarTargetWindowHeight) or 52;
+            snapY = data.lastMainWindowTop - th + snapOffsetY;
+        else
+            local bottomY = data.lastMainWindowBottom;
+            if bottomY ~= nil then
+                snapY = bottomY + snapOffsetY;
+            end
+        end
+        if snapY ~= nil then
+            imgui.SetNextWindowPos({ snapX, snapY }, ImGuiCond_Always);
+        end
     end
 
     if (gConfig.lockPositions and not isPreview) or snapEnabled then
         windowFlags = bit.bor(windowFlags, ImGuiWindowFlags_NoMove);
     end
-
-    ApplyWindowPosition('PetBarTarget');
     if imgui.Begin('PetBarTarget', true, windowFlags) then
         SaveWindowPosition('PetBarTarget');
         local targetWinPosX, targetWinPosY = imgui.GetWindowPos();
@@ -283,6 +298,7 @@ function pettarget.DrawWindow(settings)
 
         -- Update background
         local targetWinWidth, targetWinHeight = imgui.GetWindowSize();
+        data.lastPetBarTargetWindowHeight = targetWinHeight;
         UpdateBackground(targetWinPosX, targetWinPosY, targetWinWidth, targetWinHeight, settings);
     end
     imgui.End();

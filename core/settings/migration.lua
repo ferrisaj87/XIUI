@@ -610,6 +610,20 @@ function M.MigrateIndividualSettings(gConfig, defaults)
             if petType.tpFontSize == nil then petType.tpFontSize = oldVitalsFontSize; end
         end
     end
+
+    if gConfig.petBarResizeAnchor == nil then
+        local wantsBottom = false;
+        for _, pt in ipairs(petTypeTables) do
+            if pt and pt.alignBottom then
+                wantsBottom = true;
+                break;
+            end
+        end
+        gConfig.petBarResizeAnchor = wantsBottom and 'bottom' or 'top';
+    end
+    if gConfig.petTargetSnapAnchor == 'top' and type(gConfig.petTargetSnapOffsetX) == 'number' and gConfig.petTargetSnapOffsetX >= 100 then
+        gConfig.petTargetSnapOffsetX = 0;
+    end
 end
 
 -- Migrate flat castCost* settings to nested castCost table

@@ -320,7 +320,6 @@ Why
                 'modules/hotbar/macropalette_macroeditor.lua',
                 'modules/hotbar/palette.lua',
                 'modules/hotbar/slotrenderer.lua',
-                'modules/petbar/display.lua',
                 'assets/hotbar/items/01105.png',
                 'assets/hotbar/items/03100.png',
                 'assets/hotbar/items/04270.png',
@@ -335,7 +334,7 @@ What changed
 - crossbar.lua / slotrenderer.lua / init.lua / libs/dragdrop.lua: Palette row stays draft-first with overlapping HUD rects resolved via deferred drops + dropPriority; HUD paths keep raw reads/writes on live while palette uses overlay+draft (FlushDeferredDrops before drag renderer).
 - config/hotbar.lua, config/crossbar.lua, config/crossbar_settings.lua: Layout/help/settings tweaks bundled with this UX pass.
 - core/settings (factories, migration, user): small migrations or defaults aligned with hotbar/crossbar behavior.
-- XIUI.lua, modules/hotbar/palette.lua, modules/petbar/display.lua: Related hooks or wording/visual tweaks touched alongside palette controller separation.
+- XIUI.lua, modules/hotbar/palette.lua: Related hooks alongside palette/controller separation where touched in this UX pass.
 - palette.lua: ValidatePalettesForJob merges factory crossbar defaults into gConfig.hotbarCrossbar before reading enableUniversal/defaultCrossbarPaletteScope; applies profile Job vs Global [G] scope before job-tier active palette reconciliation; case-insensitive universal/global preference; only forces job scope when universal sets are explicitly disabled (avoids resetting scope when nested keys were missing).
 - crossbar.lua: ImGui window gains dynamic bottom padding so below-slot action labels and corner-outline slack are not clipped by the window rect.
 - modules/hotbar/init.lua: HandleJobChangePacket consumes pending apply-default-crossbar-scope when profile reloaded before job data was readable (char select / logout).
@@ -362,6 +361,28 @@ What changed
 
 Why
 - Fixes intermittent crashes on login or character swap when Party A draws buff/debuff icons — unrelated to macro or hotbar edits.
+'@
+        },
+        @{
+            Branch  = 'pr/18-pet-bar-resize-anchor-and-target-snap'
+            Files   = @(
+                'config/petbar.lua',
+                'core/settings/migration.lua',
+                'core/settings/user.lua',
+                'modules/petbar/data.lua',
+                'modules/petbar/display.lua',
+                'modules/petbar/pettarget.lua'
+            )
+            Subject = 'Pet bar: global resize anchor, preview stripe, anchored-bottom math, snap top fix'
+            Body    = @'
+What changed
+- display.lua / data.lua: Global gConfig.petBarResizeAnchor (top vs bottom pinned edge when auto-resize changes height); PetBarResizeAnchoredBottom prefers that value and falls back to legacy per-type alignBottom until migrate runs. Stable bottom-edge math for align-bottom resize; Preview Mode stripes the anchored edge. Cache lastPetBarTargetWindowHeight for snap placement.
+- pettarget.lua: Snap-with-top places Pet Target above the pet bar using last-frame window height plus offsets; skips ApplyWindowPosition when snap wins. Snap Y/X defaults corrected (no sideways offset for top preset).
+- config/petbar.lua: Resize anchor combo above Preview Mode; Pet Target anchor help/presets ASCII-only.
+- migration.lua / user.lua: Migrate petBarResizeAnchor from legacy per-type alignBottom; repair petTargetSnapOffsetX >= 100 when anchor is top; default petBarResizeAnchor in factory defaults.
+
+Why
+- Resize behavior is one global HUD choice regardless of Pet Target snapping or disconnected target window. Top snap aligns vertically above the pet bar instead of drifting sideways from old preset offsets.
 '@
         }
     )

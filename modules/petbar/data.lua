@@ -518,6 +518,7 @@ data.recastMaxTimers = {};
 data.lastMainWindowPosX = 0;
 data.lastMainWindowTop = 0;   -- Top of pet bar (stable anchor for snap Y offset)
 data.lastMainWindowBottom = 0;
+data.lastPetBarTargetWindowHeight = nil; -- inner height from last PetBarTarget frame (snap above pet bar)
 data.lastTotalRowWidth = 150;
 data.lastWindowFlags = nil;
 data.lastColorConfig = nil;

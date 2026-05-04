@@ -688,6 +688,7 @@ function M.createUserSettingsDefaults()
         petBarScaleY = 1.0,
         petBarHideDuringEvents = true,
         petBarPreview = true,
+        petBarResizeAnchor = 'top',              -- Pet bar resize: 'top' or 'bottom' fixed edge when height changes
         petBarPreviewType = 2, -- Avatar (SMN)
         petBarShowDistance = true,
         petBarShowTarget = true,
@@ -813,8 +814,8 @@ function M.createUserSettingsDefaults()
         petTargetDistanceOffsetY = 44,
 
         -- Pet Target snap to petbar (positions pet target directly below petbar)
-        petTargetSnapToPetBar = true,        -- When enabled, pet target snaps below petbar
-        petTargetSnapAnchor = 'bottom',      -- 'bottom' = offset from bottom of pet bar, 'top' = offset from top (static when buffs change height)
+        petTargetSnapToPetBar = true,        -- When enabled, pet target snaps relative to pet bar geometry
+        petTargetSnapAnchor = 'bottom',      -- bottom: pet target window below pet bar; top: above pet bar
         petTargetSnapOffsetX = 0,            -- Horizontal offset from petbar position
         petTargetSnapOffsetY = 16,           -- Vertical offset below petbar (accounts for background border)
 
