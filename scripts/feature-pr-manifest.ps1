@@ -351,6 +351,18 @@ Why
 - Move Macro avoids broken binds after relocating a macro library row; Items bucket editing stays coherent for action types.
 - Macros can switch or preview per-job and Main+Sub palettes independently of universal crossbar enablement; WHMABJ numbering matches the SJ-only rows users see in Palette Manager.
 '@
+        },
+        @{
+            Branch  = 'pr/17-party-list-buff-split-indexing'
+            Files   = @('modules/partylist/display.lua')
+            Subject = 'Party list: buff/debuff split uses 1-based status ids'
+            Body    = @'
+What changed
+- display.lua (HorizonXI/FFXI status lists): When splitting `memInfo.buffs` into reusable buff vs debuff arrays for the status icon rows, iterate from index 1 through `#memInfo.buffs` (ids are stored 1-based from packet decode and `player:GetBuffs()`). The prior loop used `i = 0`, so `buffs[0]` was always nil, was treated as a debuff, and `DrawStatusIcons` passed nil into the native theme lookup (Sol: expected number, got nil). Break on nil, -1, and 255 terminators.
+
+Why
+- Fixes intermittent crashes on login or character swap when Party A draws buff/debuff icons — unrelated to macro or hotbar edits.
+'@
         }
     )
 }

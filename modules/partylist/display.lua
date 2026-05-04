@@ -1029,13 +1029,19 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
 
                 local buffCount = 0;
                 local debuffCount = 0;
-                for i = 0, #memInfo.buffs do
-                    if (buffTable.IsBuff(memInfo.buffs[i])) then
+                -- Buff IDs are stored 1-based (see statushandler.ReadPartyBuffsFromPacket); index 0 is always nil —
+                -- looping from 0 put nil through IsBuff(nil) → "debuff", then DrawStatusIcons hit native with nil id.
+                for i = 1, #memInfo.buffs do
+                    local sid = memInfo.buffs[i];
+                    if sid == nil or sid == -1 or sid == 255 then
+                        break;
+                    end
+                    if buffTable.IsBuff(sid) then
                         buffCount = buffCount + 1;
-                        data.reusableBuffs[buffCount] = memInfo.buffs[i];
+                        data.reusableBuffs[buffCount] = sid;
                     else
                         debuffCount = debuffCount + 1;
-                        data.reusableDebuffs[debuffCount] = memInfo.buffs[i];
+                        data.reusableDebuffs[debuffCount] = sid;
                     end
                 end
 
