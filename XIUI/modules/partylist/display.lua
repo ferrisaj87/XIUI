@@ -36,7 +36,12 @@ end
 -- DrawMember - Render a single party member
 -- ============================================
 function display.DrawMember(memIdx, settings, isLastVisibleMember)
-    local textDrawList = imgui.GetWindowDrawList();
+    -- Must share the same draw list as the window background (drawn in
+    -- DrawPartyWindow via GetUIDrawList()) so call order = z-order.
+    -- WindowDrawList always renders below ForegroundDrawList regardless of
+    -- call order, so leaving content on WindowDrawList puts the bg on top
+    -- of HP/MP/TP bars, names, etc.
+    local textDrawList = GetUIDrawList();
     local memInfo = data.GetMemberInformation(memIdx);
     if (memInfo == nil) then
         memInfo = {
@@ -186,7 +191,8 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
 
     -- Draw selection box
     if memInfo.targeted then
-        local drawList = imgui.GetBackgroundDrawList();
+        -- Share the bg/bars draw list so the selection isn't hidden behind the foreground bg.
+        local drawList = textDrawList;
 
         local selectionWidth = allBarsLengths + settings.cursorPaddingX1 + settings.cursorPaddingX2;
         local selectionScaleY = cache.selectionBoxScaleY or 1;
@@ -297,9 +303,10 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
         if (jobIcon ~= nil) then
             namePosX = namePosX + jobIconSize + settings.nameTextOffsetX;
             distanceBaseX = distanceBaseX + jobIconSize; -- Only add job icon width, not name offset
-            -- Use background draw list to render outside window clipping
+            -- Share the bg/bars draw list so the icon isn't hidden behind the foreground bg
+            -- (and so it batches with other party-list draws on the same list).
             local jobIconPtr = tonumber(ffi.cast("uint32_t", jobIcon));
-            local draw_list = imgui.GetBackgroundDrawList();
+            local draw_list = textDrawList;
             draw_list:AddImage(
                 jobIconPtr,
                 {hpStartX, offsetStartY},
@@ -474,7 +481,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
 
     -- Draw HP bar
     if (memInfo.inzone) then
-        progressbar.ProgressBar(hpPercentData, {hpBarWidth, hpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
+        progressbar.ProgressBar(hpPercentData, {hpBarWidth, hpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex), drawList = textDrawList});
     elseif (memInfo.zone == '' or memInfo.zone == nil) then
         local zoneBarWidth = allBarsLengths;
         local zoneBarHeight;
@@ -496,7 +503,8 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
         local zoneBarStartX, zoneBarStartY = imgui.GetCursorScreenPos();
         imgui.Dummy({zoneBarWidth, zoneBarHeight});
 
-        local drawList = imgui.GetWindowDrawList();
+        -- Share the bg/bars draw list so the rect isn't hidden behind the foreground bg.
+        local drawList = textDrawList;
         drawList:AddRect(
             {zoneBarStartX, zoneBarStartY},
             {zoneBarStartX + zoneBarWidth, zoneBarStartY + zoneBarHeight},
@@ -616,7 +624,8 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
                     {
                         decorate = false,
                         absolutePosition = {castBarX, castBarY},
-                        borderColorOverride = data.getBarBorderOverride(partyIndex)
+                        borderColorOverride = data.getBarBorderOverride(partyIndex),
+                        drawList = textDrawList,
                     }
                 );
             end
@@ -762,7 +771,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
             if showMpBar then
                 if showingCastInMpSlot then
                     local castGradient = GetCustomGradient(cache.colors, 'castBarGradient') or {'#ffaa00', '#ffcc44'};
-                    progressbar.ProgressBar({{castProgress, castGradient}}, {mpBarWidth, mpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
+                    progressbar.ProgressBar({{castProgress, castGradient}}, {mpBarWidth, mpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex), drawList = textDrawList});
                     -- Set MP text to spell name with cast text color
                     mpDisplayText = castData.spellName;
                     mpColor = cache.colors.castTextColor or 0xFFFFCC44;
@@ -819,7 +828,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
                         mpPercentData = {{memInfo.mpp, mpGradient}};
                     end
 
-                    progressbar.ProgressBar(mpPercentData, {mpBarWidth, mpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
+                    progressbar.ProgressBar(mpPercentData, {mpBarWidth, mpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex), drawList = textDrawList});
                     mpColor = cache.colors.mpTextColor;
                 end
 
@@ -841,7 +850,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
                 -- Render cast bar or MP bar based on style and job type
                 if showingCastInMpSlot then
                     local castGradient = GetCustomGradient(cache.colors, 'castBarGradient') or {'#ffaa00', '#ffcc44'};
-                    progressbar.ProgressBar({{castProgress, castGradient}}, {mpBarWidth, mpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
+                    progressbar.ProgressBar({{castProgress, castGradient}}, {mpBarWidth, mpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex), drawList = textDrawList});
                     -- Set MP text to spell name with cast text color
                     mpDisplayText = castData.spellName;
                     mpColor = cache.colors.castTextColor or 0xFFFFCC44;
@@ -898,7 +907,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
                         mpPercentData = {{memInfo.mpp, mpGradient}};
                     end
 
-                    progressbar.ProgressBar(mpPercentData, {mpBarWidth, mpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
+                    progressbar.ProgressBar(mpPercentData, {mpBarWidth, mpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex), drawList = textDrawList});
                     mpColor = cache.colors.mpTextColor;
                 end
 
@@ -921,7 +930,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
                 if showingCastInTpSlot then
                     -- Render cast bar in TP slot
                     local castGradient = GetCustomGradient(cache.colors, 'castBarGradient') or {'#ffaa00', '#ffcc44'};
-                    progressbar.ProgressBar({{castProgress, castGradient}}, {tpBarWidth, tpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
+                    progressbar.ProgressBar({{castProgress, castGradient}}, {tpBarWidth, tpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex), drawList = textDrawList});
                     -- Set TP text to spell name with cast text color
                     local castTextColor = cache.colors.castTextColor or 0xFFFFCC44;
                     tpText = castData.spellName;
@@ -946,7 +955,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
                         mainPercent = memInfo.tp / 1000;
                     end
 
-                    progressbar.ProgressBar({{mainPercent, tpGradient}}, {tpBarWidth, tpBarHeight}, {overlayBar=tpOverlay, decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
+                    progressbar.ProgressBar({{mainPercent, tpGradient}}, {tpBarWidth, tpBarHeight}, {overlayBar=tpOverlay, decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex), drawList = textDrawList});
 
                     local desiredTpColor = (memInfo.tp >= 1000) and cache.colors.tpFullTextColor or cache.colors.tpEmptyTextColor;
                     tpColor = desiredTpColor;
