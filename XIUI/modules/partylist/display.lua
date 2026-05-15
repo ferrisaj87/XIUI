@@ -36,11 +36,6 @@ end
 -- DrawMember - Render a single party member
 -- ============================================
 function display.DrawMember(memIdx, settings, isLastVisibleMember)
-    -- Must share the same draw list as the window background (drawn in
-    -- DrawPartyWindow via GetUIDrawList()) so call order = z-order.
-    -- WindowDrawList always renders below ForegroundDrawList regardless of
-    -- call order, so leaving content on WindowDrawList puts the bg on top
-    -- of HP/MP/TP bars, names, etc.
     local textDrawList = GetUIDrawList();
     local memInfo = data.GetMemberInformation(memIdx);
     if (memInfo == nil) then
@@ -191,7 +186,6 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
 
     -- Draw selection box
     if memInfo.targeted then
-        -- Share the bg/bars draw list so the selection isn't hidden behind the foreground bg.
         local drawList = textDrawList;
 
         local selectionWidth = allBarsLengths + settings.cursorPaddingX1 + settings.cursorPaddingX2;
@@ -303,8 +297,6 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
         if (jobIcon ~= nil) then
             namePosX = namePosX + jobIconSize + settings.nameTextOffsetX;
             distanceBaseX = distanceBaseX + jobIconSize; -- Only add job icon width, not name offset
-            -- Share the bg/bars draw list so the icon isn't hidden behind the foreground bg
-            -- (and so it batches with other party-list draws on the same list).
             local jobIconPtr = tonumber(ffi.cast("uint32_t", jobIcon));
             local draw_list = textDrawList;
             draw_list:AddImage(
@@ -503,7 +495,6 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
         local zoneBarStartX, zoneBarStartY = imgui.GetCursorScreenPos();
         imgui.Dummy({zoneBarWidth, zoneBarHeight});
 
-        -- Share the bg/bars draw list so the rect isn't hidden behind the foreground bg.
         local drawList = textDrawList;
         drawList:AddRect(
             {zoneBarStartX, zoneBarStartY},

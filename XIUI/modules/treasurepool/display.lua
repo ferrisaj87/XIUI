@@ -344,9 +344,6 @@ function M.DrawWindow(settings)
     if imgui.Begin('TreasurePool', true, windowFlags) then
         SaveWindowPosition('TreasurePool');
         local startX, startY = imgui.GetCursorScreenPos();
-        -- Single shared draw list: bg, icons, scroll bar, clip rects all batch
-        -- on the same list. Required so call order = z-order; using a separate
-        -- BackgroundDrawList here would put icons/buttons under the foreground bg.
         local uiDrawList = GetUIDrawList();
         local drawList = uiDrawList;
 
@@ -431,7 +428,6 @@ function M.DrawWindow(settings)
             local poolTabClicked = button.DrawPrim('tpTabPool', poolTabX, btnY, tabBtnWidth, btnHeight, {
                 colors = poolTabColors,
                 tooltip = 'Treasure Pool',
-                drawList = uiDrawList,
             });
             if poolTabClicked then
                 debugLog('Pool tab clicked, setting selectedTab = 1');
@@ -451,7 +447,6 @@ function M.DrawWindow(settings)
             local historyTabClicked = button.DrawPrim('tpTabHistory', historyTabX, btnY, tabBtnWidth, btnHeight, {
                 colors = historyTabColors,
                 tooltip = 'Recent Winners',
-                drawList = uiDrawList,
             });
             if historyTabClicked then
                 debugLog('History tab clicked, setting selectedTab = 2');
@@ -478,7 +473,7 @@ function M.DrawWindow(settings)
                 local minimizeClicked = button.DrawMinimizePrim('tpMinimize', minimizeX, btnY, toggleSize, isMinimized, {
                     colors = button.COLORS_NEUTRAL,
                     tooltip = isMinimized and 'Maximize window' or 'Minimize to header only',
-                }, GetUIDrawList());
+                });
                 if minimizeClicked then
                     gConfig.treasurePoolMinimized = not gConfig.treasurePoolMinimized;
                     SaveSettingsToDisk();
@@ -491,7 +486,7 @@ function M.DrawWindow(settings)
                     tooltip = isMinimized
                         and (isExpanded and 'Maximize and collapse' or 'Maximize and expand')
                         or (isExpanded and 'Collapse' or 'Expand'),
-                }, GetUIDrawList());
+                });
                 if toggleClicked then
                     -- If minimized, maximize first then apply expand/collapse
                     if isMinimized then
@@ -508,7 +503,6 @@ function M.DrawWindow(settings)
                     local passAllClicked = button.DrawPrim('tpPassAll', passAllX, btnY, textBtnWidth, btnHeight, {
                         colors = button.COLORS_NEGATIVE,
                         tooltip = 'Pass on all items',
-                        drawList = uiDrawList,
                     });
                     if passAllClicked then
                         actions.PassAll();
@@ -526,7 +520,6 @@ function M.DrawWindow(settings)
                         local lotAllClicked = button.DrawPrim('tpLotAll', lotAllX, btnY, textBtnWidth, btnHeight, {
                             colors = button.COLORS_POSITIVE,
                             tooltip = 'Lot on all items',
-                            drawList = uiDrawList,
                         });
                         if lotAllClicked then
                             actions.LotAll();
@@ -560,7 +553,7 @@ function M.DrawWindow(settings)
                 local minimizeClicked = button.DrawMinimizePrim('tpMinimize', minimizeX, btnY, toggleSize, isMinimized, {
                     colors = button.COLORS_NEUTRAL,
                     tooltip = isMinimized and 'Maximize window' or 'Minimize to header only',
-                }, GetUIDrawList());
+                });
                 if minimizeClicked then
                     gConfig.treasurePoolMinimized = not gConfig.treasurePoolMinimized;
                     SaveSettingsToDisk();
@@ -573,7 +566,7 @@ function M.DrawWindow(settings)
                     tooltip = isMinimized
                         and (isExpanded and 'Maximize and collapse' or 'Maximize and expand')
                         or (isExpanded and 'Collapse' or 'Expand'),
-                }, GetUIDrawList());
+                });
                 if toggleClicked then
                     -- If minimized, maximize first then apply expand/collapse
                     if isMinimized then
@@ -790,7 +783,6 @@ function M.DrawWindow(settings)
                                 colors = button.COLORS_POSITIVE,
                                 tooltip = lotTooltip,
                                 disabled = lotDisabled,
-                                drawList = uiDrawList,
                             });
                             if lotItemClicked and not lotDisabled then
                                 actions.LotItem(slot);
@@ -817,7 +809,6 @@ function M.DrawWindow(settings)
                                 colors = button.COLORS_NEGATIVE,
                                 tooltip = passTooltip,
                                 disabled = passDisabled,
-                                drawList = uiDrawList,
                             });
                             if passItemClicked and not passDisabled then
                                 actions.PassItem(slot);
