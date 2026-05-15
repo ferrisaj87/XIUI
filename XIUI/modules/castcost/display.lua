@@ -37,12 +37,6 @@ local windowState = {
     height = nil,
 };
 
--- Position saving state
-local hasAppliedSavedPosition = false;
-local lastSavedPosX = nil;
-local lastSavedPosY = nil;
-local forcePositionReset = false;
-
 -- ============================================
 -- Initialization
 -- ============================================
@@ -444,7 +438,16 @@ function M.Render(itemInfo, itemType, settings, colors)
             local winPosX, winPosY = imgui.GetWindowPos();
             local totalHeight = contentHeight + (paddingY * 2);
 
-            if windowState.height ~= nil and windowState.height ~= totalHeight then
+            -- Detect external position change (forced reset, user drag, etc.)
+            local positionChanged = windowState.y ~= nil and windowState.y ~= winPosY;
+
+            if positionJustApplied or positionChanged then
+                -- Position was externally moved; clear tracking so height adjustment
+                -- doesn't fire until state is re-established on the next frame
+                windowState.x = nil;
+                windowState.y = nil;
+                windowState.height = nil;
+            elseif windowState.height ~= nil and windowState.height ~= totalHeight then
                 -- Height changed, adjust Y to keep bottom edge fixed
                 local newPosY = windowState.y + windowState.height - totalHeight;
                 imgui.SetWindowPos('CastCost', { winPosX, newPosY });
@@ -474,13 +477,19 @@ function M.Render(itemInfo, itemType, settings, colors)
                 lastSavedPosY = winPosY;
             end
         end
+
     end
     imgui.End();
 end
 
 M.ResetPositions = function()
-    forcePositionReset = true;
-    hasAppliedSavedPosition = false;
+    local defX, defY = defaultPositions.GetCastCostPosition();
+    if gConfig.windowPositions then
+        gConfig.windowPositions['CastCost'] = { x = defX, y = defY };
+    end
+    if gConfig.appliedPositions then
+        gConfig.appliedPositions['CastCost'] = nil;
+    end
 end
 
 return M;

@@ -9,11 +9,6 @@ local actionTracker = require('handlers.actiontracker');
 local progressbar = require('libs.progressbar');
 local defaultPositions = require('libs.defaultpositions');
 
--- Position save/restore state
-local hasAppliedSavedPosition = false;
-local forcePositionReset = false;
-local lastSavedPosX, lastSavedPosY = nil, nil;
-
 -- Note: RENDER_FLAG_VISIBLE and RENDER_FLAG_HIDDEN are now imported from helpers.lua
 
 -- Background rendering constants
@@ -140,20 +135,6 @@ enemylist.DrawWindow = function(settings)
 	local singleColumnWidth = settings.barWidth;
 	local windowWidth = (windowMargin * 2) + (singleColumnWidth * maxColumns) + (columnSpacing * (maxColumns - 1));
 	imgui.SetNextWindowSize({ windowWidth, -1, }, ImGuiCond_Always);
-
-	-- Handle position reset or restore
-	if forcePositionReset then
-		local defX, defY = defaultPositions.GetEnemyListPosition();
-		imgui.SetNextWindowPos({defX, defY}, ImGuiCond_Always);
-		forcePositionReset = false;
-		hasAppliedSavedPosition = true;
-		lastSavedPosX, lastSavedPosY = defX, defY;
-	elseif not hasAppliedSavedPosition and gConfig.enemyListWindowPosX ~= nil then
-		imgui.SetNextWindowPos({gConfig.enemyListWindowPosX, gConfig.enemyListWindowPosY}, ImGuiCond_Once);
-		hasAppliedSavedPosition = true;
-		lastSavedPosX = gConfig.enemyListWindowPosX;
-		lastSavedPosY = gConfig.enemyListWindowPosY;
-	end
 
 	-- Draw the main target window
 	local windowFlags = GetBaseWindowFlags(gConfig.lockPositions);
@@ -603,18 +584,6 @@ enemylist.DrawWindow = function(settings)
 			imgui.Dummy({windowWidth, 0});
 		end
 
-		-- Save position if moved (with change detection to avoid spam)
-		local winPosX, winPosY = imgui.GetWindowPos();
-		if not gConfig.lockPositions then
-			if lastSavedPosX == nil or
-			   math.abs(winPosX - lastSavedPosX) > 1 or
-			   math.abs(winPosY - lastSavedPosY) > 1 then
-				gConfig.enemyListWindowPosX = winPosX;
-				gConfig.enemyListWindowPosY = winPosY;
-				lastSavedPosX = winPosX;
-				lastSavedPosY = winPosY;
-			end
-		end
 	end
 
 	-- Restore ImGui style variables (must be before End() to avoid affecting other windows)
@@ -713,8 +682,13 @@ enemylist.Cleanup = function()
 end
 
 enemylist.ResetPositions = function()
-	forcePositionReset = true;
-	hasAppliedSavedPosition = false;
+	local defX, defY = defaultPositions.GetEnemyListPosition();
+	if gConfig.windowPositions then
+		gConfig.windowPositions['EnemyList'] = { x = defX, y = defY };
+	end
+	if gConfig.appliedPositions then
+		gConfig.appliedPositions['EnemyList'] = nil;
+	end
 end
 
 return enemylist;

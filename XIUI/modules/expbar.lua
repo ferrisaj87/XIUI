@@ -8,11 +8,6 @@ local defaultPositions = require('libs.defaultpositions');
 
 -- Thank you @onimitch for the help with tons of the EXPbar module!
 
--- Position save/restore state
-local hasAppliedSavedPosition = false;
-local forcePositionReset = false;
-local lastSavedPosX, lastSavedPosY = nil, nil;
-
 local expbar = {
     limitPoints = {},
     meritPoints = {},
@@ -326,19 +321,6 @@ expbar.DrawWindow = function(settings)
 
             -- Right-aligned: position is right edge, draw at rightEdge - width
             imtext.Draw(drawList, percentString, percentTextX + percentOffsetX - percentTextWidth, percentTextY + percentOffsetY, gConfig.colorCustomization.expBar.percentTextColor, settings.percent_font_settings.font_height);
-        end
-
-        -- Save position if moved (with change detection to avoid spam)
-        local winPosX, winPosY = imgui.GetWindowPos();
-        if not gConfig.lockPositions then
-            if lastSavedPosX == nil or
-               math.abs(winPosX - lastSavedPosX) > 1 or
-               math.abs(winPosY - lastSavedPosY) > 1 then
-                gConfig.expBarWindowPosX = winPosX;
-                gConfig.expBarWindowPosY = winPosY;
-                lastSavedPosX = winPosX;
-                lastSavedPosY = winPosY;
-            end
         end
     end
     imgui.End();

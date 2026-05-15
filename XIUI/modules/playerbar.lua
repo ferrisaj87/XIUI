@@ -242,20 +242,6 @@ playerbar.DrawWindow = function(settings)
 	playerbar.interpolation.lastFrameTime = currentTime;
 
 	-- Draw the player window
-	-- Handle position reset or restore
-	if forcePositionReset then
-		local defX, defY = defaultPositions.GetPlayerBarPosition();
-		imgui.SetNextWindowPos({defX, defY}, ImGuiCond_Always);
-		forcePositionReset = false;
-		hasAppliedSavedPosition = true;
-		lastSavedPosX, lastSavedPosY = defX, defY;
-	elseif not hasAppliedSavedPosition and gConfig.playerBarWindowPosX ~= nil then
-		imgui.SetNextWindowPos({gConfig.playerBarWindowPosX, gConfig.playerBarWindowPosY}, ImGuiCond_Once);
-		hasAppliedSavedPosition = true;
-		lastSavedPosX = gConfig.playerBarWindowPosX;
-		lastSavedPosY = gConfig.playerBarWindowPosY;
-	end
-
 	-- Get base window flags with NoMove dynamically added if positions are locked
 	local windowFlags = GetBaseWindowFlags(gConfig.lockPositions);
     ApplyWindowPosition('PlayerBar');
@@ -627,8 +613,13 @@ playerbar.Cleanup = function()
 end
 
 playerbar.ResetPositions = function()
-	forcePositionReset = true;
-	hasAppliedSavedPosition = false;
+	local defX, defY = defaultPositions.GetPlayerBarPosition();
+	if gConfig.windowPositions then
+		gConfig.windowPositions['PlayerBar'] = { x = defX, y = defY };
+	end
+	if gConfig.appliedPositions then
+		gConfig.appliedPositions['PlayerBar'] = nil;
+	end
 end
 
 return playerbar;
