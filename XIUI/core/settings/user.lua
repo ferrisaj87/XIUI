@@ -28,6 +28,7 @@ function M.createUserSettingsDefaults()
         showPetBar = true,
         showCastCost = true,
         showNotifications = true,
+        showReadyCheck = true,
 
         -- Hide when game menu is open (default off)
         playerBarHideOnMenuFocus = false,
