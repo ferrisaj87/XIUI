@@ -195,6 +195,7 @@ function DrawImpl(id, x, y, width, height, options)
     local borderThickness = options.borderThickness or 1;
     local disabled = options.disabled or false;
 
+    -- Get draw list
     local drawList = options.drawList or GetUIDrawList();
 
     -- Set cursor position for invisible button
@@ -298,6 +299,7 @@ function DrawArrowImpl(id, x, y, size, direction, options)
     local arrowColor = options.arrowColor or arrowColors.normal or 0xFFCCCCCC;
     local arrowHoverColor = options.arrowHoverColor or arrowColors.hovered or 0xFFFFFFFF;
 
+    -- Get draw list
     local drawList = options.drawList or GetUIDrawList();
 
     -- Set cursor position for invisible button

@@ -473,7 +473,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
 
     -- Draw HP bar
     if (memInfo.inzone) then
-        progressbar.ProgressBar(hpPercentData, {hpBarWidth, hpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex), drawList = textDrawList});
+        progressbar.ProgressBar(hpPercentData, {hpBarWidth, hpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
     elseif (memInfo.zone == '' or memInfo.zone == nil) then
         local zoneBarWidth = allBarsLengths;
         local zoneBarHeight;
@@ -615,8 +615,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
                     {
                         decorate = false,
                         absolutePosition = {castBarX, castBarY},
-                        borderColorOverride = data.getBarBorderOverride(partyIndex),
-                        drawList = textDrawList,
+                        borderColorOverride = data.getBarBorderOverride(partyIndex)
                     }
                 );
             end
@@ -762,7 +761,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
             if showMpBar then
                 if showingCastInMpSlot then
                     local castGradient = GetCustomGradient(cache.colors, 'castBarGradient') or {'#ffaa00', '#ffcc44'};
-                    progressbar.ProgressBar({{castProgress, castGradient}}, {mpBarWidth, mpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex), drawList = textDrawList});
+                    progressbar.ProgressBar({{castProgress, castGradient}}, {mpBarWidth, mpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
                     -- Set MP text to spell name with cast text color
                     mpDisplayText = castData.spellName;
                     mpColor = cache.colors.castTextColor or 0xFFFFCC44;
@@ -819,7 +818,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
                         mpPercentData = {{memInfo.mpp, mpGradient}};
                     end
 
-                    progressbar.ProgressBar(mpPercentData, {mpBarWidth, mpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex), drawList = textDrawList});
+                    progressbar.ProgressBar(mpPercentData, {mpBarWidth, mpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
                     mpColor = cache.colors.mpTextColor;
                 end
 
@@ -841,7 +840,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
                 -- Render cast bar or MP bar based on style and job type
                 if showingCastInMpSlot then
                     local castGradient = GetCustomGradient(cache.colors, 'castBarGradient') or {'#ffaa00', '#ffcc44'};
-                    progressbar.ProgressBar({{castProgress, castGradient}}, {mpBarWidth, mpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex), drawList = textDrawList});
+                    progressbar.ProgressBar({{castProgress, castGradient}}, {mpBarWidth, mpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
                     -- Set MP text to spell name with cast text color
                     mpDisplayText = castData.spellName;
                     mpColor = cache.colors.castTextColor or 0xFFFFCC44;
@@ -898,7 +897,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
                         mpPercentData = {{memInfo.mpp, mpGradient}};
                     end
 
-                    progressbar.ProgressBar(mpPercentData, {mpBarWidth, mpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex), drawList = textDrawList});
+                    progressbar.ProgressBar(mpPercentData, {mpBarWidth, mpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
                     mpColor = cache.colors.mpTextColor;
                 end
 
@@ -921,7 +920,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
                 if showingCastInTpSlot then
                     -- Render cast bar in TP slot
                     local castGradient = GetCustomGradient(cache.colors, 'castBarGradient') or {'#ffaa00', '#ffcc44'};
-                    progressbar.ProgressBar({{castProgress, castGradient}}, {tpBarWidth, tpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex), drawList = textDrawList});
+                    progressbar.ProgressBar({{castProgress, castGradient}}, {tpBarWidth, tpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
                     -- Set TP text to spell name with cast text color
                     local castTextColor = cache.colors.castTextColor or 0xFFFFCC44;
                     tpText = castData.spellName;
@@ -946,7 +945,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
                         mainPercent = memInfo.tp / 1000;
                     end
 
-                    progressbar.ProgressBar({{mainPercent, tpGradient}}, {tpBarWidth, tpBarHeight}, {overlayBar=tpOverlay, decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex), drawList = textDrawList});
+                    progressbar.ProgressBar({{mainPercent, tpGradient}}, {tpBarWidth, tpBarHeight}, {overlayBar=tpOverlay, decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
 
                     local desiredTpColor = (memInfo.tp >= 1000) and cache.colors.tpFullTextColor or cache.colors.tpEmptyTextColor;
                     tpColor = desiredTpColor;
