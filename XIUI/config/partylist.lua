@@ -34,7 +34,8 @@ local function CopyPartySettings(sourcePartyName, targetPartyName)
     end
 
     -- Save and update
-    UpdateSettings();
+    SaveSettingsOnly();
+    DeferredUpdateVisuals();
 end
 
 -- Helper function to draw per-party settings tab content
@@ -248,7 +249,8 @@ local function DrawPartyTabContent(party, partyName)
                     local isSelected = (currentStyleIndex == i);
                     if imgui.Selectable(castBarStyleItems[i] .. '##' .. i, isSelected) then
                         party.castBarStyle = (i == 1) and 'mp' or ((i == 2) and 'tp' or 'name');
-                        UpdateSettings();
+                        SaveSettingsOnly();
+                        DeferredUpdateVisuals();
                     end
                     if isSelected then
                         imgui.SetItemDefaultFocus();
@@ -365,7 +367,8 @@ local function CopyPartyColorSettings(sourcePartyName, targetPartyName)
     end
 
     -- Save and update
-    UpdateSettings();
+    SaveSettingsOnly();
+    DeferredUpdateVisuals();
 end
 
 -- Helper function to draw color settings for a specific party
@@ -417,7 +420,8 @@ local function DrawPartyColorTabContent(colors, partyName)
         local overrideActive = {colors.barBackgroundOverride.active};
         if (imgui.Checkbox("Enable Background Override##" .. partyName, overrideActive)) then
             colors.barBackgroundOverride.active = overrideActive[1];
-            UpdateSettings();
+            SaveSettingsOnly();
+            DeferredUpdateVisuals();
         end
         imgui.ShowHelp("When enabled, uses the colors below instead of the global bar background color");
         if colors.barBackgroundOverride.active then
@@ -429,7 +433,8 @@ local function DrawPartyColorTabContent(colors, partyName)
         local borderOverrideActive = {colors.barBorderOverride.active};
         if (imgui.Checkbox("Enable Border Override##" .. partyName, borderOverrideActive)) then
             colors.barBorderOverride.active = borderOverrideActive[1];
-            UpdateSettings();
+            SaveSettingsOnly();
+            DeferredUpdateVisuals();
         end
         imgui.ShowHelp("When enabled, uses the color below instead of the global bar background color for borders");
         if colors.barBorderOverride.active then

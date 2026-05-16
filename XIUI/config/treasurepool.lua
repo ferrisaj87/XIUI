@@ -101,7 +101,7 @@ function M.DrawSettings()
         -- Background theme dropdown
         local themes = getBackgroundThemes();
         components.Combo('Theme##treasurePoolBg', gConfig, 'treasurePoolBackgroundTheme',
-            themes, nil, 'Plain', function() UpdateSettings(); end);
+            themes, nil, 'Plain', function() SaveSettingsOnly(); DeferredUpdateVisuals(); end);
         imgui.ShowHelp('Window background style (Plain = solid, Window1-8 = themed with borders)');
 
         -- Scale/opacity sliders

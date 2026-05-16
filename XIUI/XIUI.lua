@@ -90,6 +90,8 @@ local statusHandler = require('handlers.statushandler');
 local progressbar = require('libs.progressbar');
 local diagnostics = require('libs.diagnostics');
 local TextureManager = require('libs.texturemanager');
+local imtext = require('libs.imtext');
+local components = require('config.components');
 
 -- Global switch to hard-disable functionality that is limited on HX servers
 HzLimitedMode = true;
@@ -953,6 +955,12 @@ ashita.events.register('d3d_present', 'present_cb', function ()
     if not bInitialized then return; end
 
     local ok, err = pcall(function()
+        -- Drop references to textures evicted/cleared during the PREVIOUS
+        -- frame so Lua GC is free to run d3d8.gc_safe_release on them.
+        -- Must run before anything else this frame queues new draws or
+        -- triggers another cache clear.
+        TextureManager.FlushPendingReleases();
+
         -- Clear internal save flag (deferred for Ashita 4.3+ async callbacks)
         if bPendingInternalSaveClear then
             bInternalSave = false;
@@ -971,11 +979,16 @@ ashita.events.register('d3d_present', 'present_cb', function ()
             end
         end
 
-        -- Process pending visual updates outside the render loop
+        -- Process pending visual updates outside the render loop.
+        -- Mirrors UpdateSettings() so SaveSettingsOnly+DeferredUpdateVisuals
+        -- can fully replace inline UpdateSettings() in config callbacks.
         if pendingVisualUpdate then
             pendingVisualUpdate = false;
             statusHandler.clear_cache();
             UpdateUserSettings();
+            CheckVisibility();
+            InvalidateInterpolationColorCache();
+            InvalidateColorCaches();
             uiModules.UpdateVisualsAll(gAdjustedSettings);
         end
 
@@ -1031,6 +1044,12 @@ ashita.events.register('load', 'load_cb', function ()
     profileManager.SyncProfilesWithDisk();
     gConfig.appliedPositions = {};
     UpdateUserSettings();
+
+    -- Populate the ImGui font atlas now, before the first d3d_present, so
+    -- no font change in the config menu has to mutate the atlas mid-frame.
+    -- See libs/imtext.lua PrewarmFonts comment for the underlying constraint.
+    imtext.PrewarmFonts(components.available_fonts);
+
     uiModules.InitializeAll(gAdjustedSettings);
 
     -- Load mob data for current zone

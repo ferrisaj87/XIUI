@@ -36,17 +36,21 @@ local colorCache = {};
 local pos = {0, 0};
 
 local fontFamilyToFile = {
-    tahoma        = { regular = 'tahoma.ttf',     bold = 'tahomabd.ttf' },
-    arial         = { regular = 'arial.ttf',       bold = 'arialbd.ttf' },
-    consolas      = { regular = 'consola.ttf',     bold = 'consolab.ttf' },
-    calibri       = { regular = 'calibri.ttf',     bold = 'calibrib.ttf' },
-    segoeui       = { regular = 'segoeui.ttf',     bold = 'segoeuib.ttf' },
-    ['segoe ui']  = { regular = 'segoeui.ttf',     bold = 'segoeuib.ttf' },
-    verdana       = { regular = 'verdana.ttf',     bold = 'verdanab.ttf' },
-    trebuchet     = { regular = 'trebuc.ttf',      bold = 'trebucbd.ttf' },
-    lucida        = { regular = 'lucon.ttf',       bold = 'lucon.ttf' },
-    ['courier new'] = { regular = 'cour.ttf',      bold = 'courbd.ttf' },
-    georgia       = { regular = 'georgia.ttf',     bold = 'georgiab.ttf' },
+    tahoma                   = { regular = 'tahoma.ttf',   bold = 'tahomabd.ttf' },
+    arial                    = { regular = 'arial.ttf',    bold = 'arialbd.ttf' },
+    consolas                 = { regular = 'consola.ttf',  bold = 'consolab.ttf' },
+    calibri                  = { regular = 'calibri.ttf',  bold = 'calibrib.ttf' },
+    segoeui                  = { regular = 'segoeui.ttf',  bold = 'segoeuib.ttf' },
+    ['segoe ui']             = { regular = 'segoeui.ttf',  bold = 'segoeuib.ttf' },
+    verdana                  = { regular = 'verdana.ttf',  bold = 'verdanab.ttf' },
+    trebuchet                = { regular = 'trebuc.ttf',   bold = 'trebucbd.ttf' },
+    ['trebuchet ms']         = { regular = 'trebuc.ttf',   bold = 'trebucbd.ttf' },
+    lucida                   = { regular = 'lucon.ttf',    bold = 'lucon.ttf' },
+    ['lucida console']       = { regular = 'lucon.ttf',    bold = 'lucon.ttf' },
+    ['courier new']          = { regular = 'cour.ttf',     bold = 'courbd.ttf' },
+    georgia                  = { regular = 'georgia.ttf',  bold = 'georgiab.ttf' },
+    ['times new roman']      = { regular = 'times.ttf',    bold = 'timesbd.ttf' },
+    ['microsoft sans serif'] = { regular = 'micross.ttf',  bold = 'micross.ttf' },
 };
 
 local function resolveFontPath(fontFamily, isBold)
@@ -137,6 +141,25 @@ function M.SetConfigFromSettings(fontSettings)
     local isBold = bit.band(flags, 1) ~= 0;
     local ow = fontSettings.outline_width or 2;
     M.SetConfig(family, isBold, ow);
+end
+
+--- Pre-load every font family/weight pair the user can pick. Call from
+--- the addon's `load` event so AddFontFromFileTTF runs once, outside any
+--- d3d_present frame. After this, loadFont() becomes a pure cache lookup
+--- and the font atlas is never mutated mid-frame. Required for Ashita
+--- v4.16 (main lineage), which lacks the Q3 binary patches that let
+--- 4.3.x tolerate mid-frame atlas mutation.
+--- @param families string[] family names the user can select (e.g. config.components.available_fonts)
+function M.PrewarmFonts(families)
+    if type(families) ~= 'table' then return; end
+    for _, family in ipairs(families) do
+        if type(family) == 'string' then
+            loadFont(family, false);
+            loadFont(family, true);
+        end
+    end
+    activeFont = nil;
+    activeFontKey = '';
 end
 
 --- Reset transient frame caches (call on settings change).

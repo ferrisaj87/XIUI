@@ -80,14 +80,16 @@ function M.DrawSettings()
         -- Font Family Selector
         components.DrawComboBox('Font Family', gConfig.fontFamily, components.available_fonts, function(newValue)
             gConfig.fontFamily = newValue;
-            UpdateSettings();
+            SaveSettingsOnly();
+            DeferredUpdateVisuals();
         end);
         imgui.ShowHelp('The font family to use for all text in XIUI. Fonts must be installed on your system.');
 
         -- Font Weight Selector
         components.DrawComboBox('Font Weight', gConfig.fontWeight, {'Normal', 'Bold'}, function(newValue)
             gConfig.fontWeight = newValue;
-            UpdateSettings();
+            SaveSettingsOnly();
+            DeferredUpdateVisuals();
         end);
         imgui.ShowHelp('The font weight (boldness) to use for all text in XIUI.');
 
