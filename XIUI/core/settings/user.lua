@@ -306,6 +306,7 @@ function M.createUserSettingsDefaults()
         expBarShowPercent = true,
         expBarInlineMode = false,
         expBarLimitPointsMode = false,
+        expBarMasteryMode = false,
         -- Text position offsets (relative to default positions)
         expBarJobTextOffsetX = 0,
         expBarJobTextOffsetY = 0,
