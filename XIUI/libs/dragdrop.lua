@@ -335,15 +335,13 @@ function dragdrop.Render()
         local cfg = state.preview;
         local iconSize = cfg.iconSize;
 
-        -- Check if we have an icon to display
-        local hasIcon = payload.icon and payload.icon.image;
-
-        if hasIcon then
-            -- Draw icon centered on cursor (slightly offset so cursor is at top-left)
+        -- Draw the icon at the cursor when one is attached to the payload.
+        -- The unified tooltip (rendered by slotrenderer.FlushTooltip) provides the
+        -- name/type/target labels for both the icon and no-icon (abbreviation) cases,
+        -- so we don't draw a separate cursor label here.
+        if payload.icon and payload.icon.image then
             local iconX = mouseX - 4;
             local iconY = mouseY - 4;
-
-            -- Draw the icon
             local iconPtr = tonumber(ffi.cast("uint32_t", payload.icon.image));
             if iconPtr then
                 drawList:AddImage(
@@ -352,40 +350,6 @@ function dragdrop.Render()
                     {iconX + iconSize, iconY + iconSize}
                 );
             end
-
-            -- Tooltip is rendered by slotrenderer.FlushTooltip() so it shares the
-            -- hover tooltip's styling and z-order (the previous imgui.BeginTooltip
-            -- variant rendered behind the hotbar windows).
-        else
-            -- No icon - fall back to text label at cursor
-            local label = payload.label or payload.type or 'Drag';
-            local textWidth = imgui.CalcTextSize(label) or 50;
-
-            local previewX = mouseX + 8;
-            local previewY = mouseY + 8;
-            local previewWidth = textWidth + cfg.padding * 2;
-            local previewHeight = 20 + cfg.padding;
-
-            local bgColorU32 = imgui.GetColorU32(ARGBToImGuiColor(cfg.backgroundColor));
-            local borderColorU32 = imgui.GetColorU32(ARGBToImGuiColor(cfg.borderColor));
-            local labelColorU32 = imgui.GetColorU32(ARGBToImGuiColor(cfg.labelColor));
-
-            drawList:AddRectFilled(
-                {previewX, previewY},
-                {previewX + previewWidth, previewY + previewHeight},
-                bgColorU32,
-                cfg.rounding
-            );
-            drawList:AddRect(
-                {previewX, previewY},
-                {previewX + previewWidth, previewY + previewHeight},
-                borderColorU32,
-                cfg.rounding,
-                0,
-                2
-            );
-
-            drawList:AddText({previewX + cfg.padding, previewY + cfg.padding - 2}, labelColorU32, label);
         end
     end
 
