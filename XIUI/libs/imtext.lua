@@ -139,11 +139,14 @@ function M.SetConfigFromSettings(fontSettings)
     M.SetConfig(family, isBold, ow);
 end
 
---- Reset font state (call on settings change to force font reload).
+--- Reset transient frame caches (call on settings change).
+--- NOTE: fontCache and activeFont are intentionally NOT cleared. ImFont
+--- pointers are owned by ImGui's atlas and remain valid for the addon's
+--- lifetime; re-calling AddFontFromFileTTF mid-frame from d3d_present
+--- mutates the atlas while drawList entries are pending render, which
+--- causes EXCEPTION_ACCESS_VIOLATION. The (family, isBold) cache key
+--- already routes new selections without needing a reload.
 function M.Reset()
-    fontCache = {};
-    activeFont = nil;
-    activeFontKey = '';
     cachedOutlineCol = nil;
     lineHeightFrame = -1;
     colorCache = {};
