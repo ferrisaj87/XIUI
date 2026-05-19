@@ -164,24 +164,20 @@ function profileManager.SaveTable(path, t)
         return false;
     end
 
-    f:write("local settings = {};\n");
-    -- Pass a new table for lines to start fresh
-    f:write(SerializeLegacy(t, "settings", {}));
-    f:write("\nreturn settings;");
-    f:close();
+    -- Lua 5.1 file:write returns the handle on success, nil+err on failure
+    -- (e.g., disk full). Check each call instead of validating by reload — a
+    -- loadfile+execute validation materializes the entire profile table mid-
+    -- frame, which can trigger GC mid-d3d_present and crash the renderer
+    -- (see lessons.md: "Texture cache evictions/clears must defer COM release").
+    local body = SerializeLegacy(t, "settings", {});
+    local w1 = f:write("local settings = {};\n");
+    local w2 = w1 and f:write(body);
+    local w3 = w2 and f:write("\nreturn settings;");
+    local closeOk, closeErr = f:close();
 
-    -- Validate the freshly-written tmp actually parses and returns a value.
-    -- Catches truncation, disk-full, or anything else that produced a corrupt write.
-    local func = loadfile(tmpPath);
-    if (not func) then
+    if (not w1) or (not w2) or (not w3) or (not closeOk) then
         pcall(os.remove, tmpPath);
-        print(chat.header(addon.name):append(chat.message('Profile temp file failed to parse, save aborted: ')):append(chat.error(path)));
-        return false;
-    end
-    local validOk, validResult = pcall(func);
-    if (not validOk) or validResult == nil then
-        pcall(os.remove, tmpPath);
-        print(chat.header(addon.name):append(chat.message('Profile temp file failed validation, save aborted: ')):append(chat.error(path)));
+        print(chat.header(addon.name):append(chat.message('Profile write failed, save aborted: ')):append(chat.error(tostring(closeErr or 'write error'))));
         return false;
     end
 
