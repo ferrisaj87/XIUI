@@ -154,13 +154,36 @@ function M.DrawBorders(drawList, x, y, w, h, options)
         drawList:AddImage(brPtr, {brX, brY}, {brX + pieceSize, brY + pieceSize}, {0, 0}, {1, 1}, tint);
     end
 
-    -- Top-right (pieceSize wide, spans down to br)
+    -- Top-right: rendered as two UV-sliced pieces. Some themes (Window1/3/5)
+    -- only have content in the top 21 rows of the 21x491 source — the right
+    -- end of the top border line. Stretching the full source to (pieceSize,
+    -- trH) made the line position depend on window height, so the right
+    -- corner drifted out of alignment with the TL top arm whenever
+    -- borderScale != 1. Pin the top corner region at pieceSize x pieceSize
+    -- and stretch only the remaining vertical strip (which is empty in
+    -- horizontal-only themes, content-bearing in full-border themes).
     local trX = brX;
     local trY = bgY - offset;
     local trH = brY - trY;
     local trPtr = LoadPiecePtr(theme, 'tr');
     if trPtr ~= nil then
-        drawList:AddImage(trPtr, {trX, trY}, {trX + pieceSize, trY + trH}, {0, 0}, {1, 1}, tint);
+        -- Top corner piece: top 21 rows of source -> pieceSize x pieceSize
+        drawList:AddImage(
+            trPtr,
+            {trX, trY}, {trX + pieceSize, trY + pieceSize},
+            {0, 0}, {1, CORNER_UV},
+            tint
+        );
+        -- Right arm: rest of the source stretched along the long (vertical) axis
+        local armH = trH - pieceSize;
+        if armH > 0 then
+            drawList:AddImage(
+                trPtr,
+                {trX, trY + pieceSize}, {trX + pieceSize, trY + trH},
+                {0, CORNER_UV}, {1, 1},
+                tint
+            );
+        end
     end
 
     -- Top-left: rendered as three UV-sliced pieces so the 21x21 source corner
