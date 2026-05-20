@@ -1213,7 +1213,7 @@ function display.DrawPartyWindow(settings, party, partyIndex)
         local lastVisibleMemberIdx = firstPlayerIndex;
         for i = firstPlayerIndex, lastPlayerIndex do
             local relIndex = i - firstPlayerIndex
-            if ((partyIndex == 1 and shouldExpandHeight) or relIndex < partyMemberCount or relIndex < settings.minRows) then
+            if ((partyIndex == 1 and shouldExpandHeight) or relIndex < partyMemberCount or relIndex < cache.minRows) then
                 lastVisibleMemberIdx = i;
             end
         end
@@ -1222,7 +1222,7 @@ function display.DrawPartyWindow(settings, party, partyIndex)
 
         for i = firstPlayerIndex, lastPlayerIndex do
             local relIndex = i - firstPlayerIndex
-            if ((partyIndex == 1 and shouldExpandHeight) or relIndex < partyMemberCount or relIndex < settings.minRows) then
+            if ((partyIndex == 1 and shouldExpandHeight) or relIndex < partyMemberCount or relIndex < cache.minRows) then
                 display.DrawMember(i, settings, i == lastVisibleMemberIdx);
             else
             end
