@@ -710,49 +710,55 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
             imgui.Dummy({0, 1});
             local rowStartX, rowStartY = imgui.GetCursorScreenPos();
 
-            -- TP text (or spell name if casting with 'tp' style)
-            if showingCastInTpSlot then
-                -- Show spell name instead of TP when casting with 'tp' style
-                local castTextColor = cache.colors.castTextColor or 0xFFFFCC44;
-                tpText = castData.spellName;
-                tpColor = castTextColor;
-            else
-                -- Normal TP text color with optional flashing
-                local desiredTpColor;
-                if memInfo.tp >= 1000 and cache.flashTP then
-                    local flashTime = os.clock();
-                    local timePerPulse = 1;
-                    local phase = flashTime % timePerPulse;
-                    local pulseAlpha = (2 / timePerPulse) * phase;
-                    if pulseAlpha > 1 then pulseAlpha = 2 - pulseAlpha; end
-                    local baseColor = cache.colors.tpFullTextColor or 0xFFFFFFFF;
-                    local flashColor = cache.colors.tpFlashColor or 0xFF3ECE00;
-                    local baseA = bit.band(bit.rshift(baseColor, 24), 0xFF);
-                    local baseR = bit.band(bit.rshift(baseColor, 16), 0xFF);
-                    local baseG = bit.band(bit.rshift(baseColor, 8), 0xFF);
-                    local baseB = bit.band(baseColor, 0xFF);
-                    local flashA = bit.band(bit.rshift(flashColor, 24), 0xFF);
-                    local flashR = bit.band(bit.rshift(flashColor, 16), 0xFF);
-                    local flashG = bit.band(bit.rshift(flashColor, 8), 0xFF);
-                    local flashB = bit.band(flashColor, 0xFF);
-                    local interpA = math.floor(baseA + (flashA - baseA) * pulseAlpha);
-                    local interpR = math.floor(baseR + (flashR - baseR) * pulseAlpha);
-                    local interpG = math.floor(baseG + (flashG - baseG) * pulseAlpha);
-                    local interpB = math.floor(baseB + (flashB - baseB) * pulseAlpha);
-                    desiredTpColor = bit.bor(bit.lshift(interpA, 24), bit.lshift(interpR, 16), bit.lshift(interpG, 8), interpB);
-                    tpColor = desiredTpColor;
+            -- TP text (or spell name if casting with 'tp' style). Hidden when
+            -- showTP is off and we're not displaying a cast in the TP slot;
+            -- in that case the MP bar shifts left to reclaim the space.
+            local renderTpSlot = (showTP or showingCastInTpSlot);
+            if renderTpSlot then
+                if showingCastInTpSlot then
+                    -- Show spell name instead of TP when casting with 'tp' style
+                    local castTextColor = cache.colors.castTextColor or 0xFFFFCC44;
+                    tpText = castData.spellName;
+                    tpColor = castTextColor;
                 else
-                    desiredTpColor = (memInfo.tp >= 1000) and cache.colors.tpFullTextColor or cache.colors.tpEmptyTextColor;
-                    tpColor = desiredTpColor;
+                    -- Normal TP text color with optional flashing
+                    local desiredTpColor;
+                    if memInfo.tp >= 1000 and cache.flashTP then
+                        local flashTime = os.clock();
+                        local timePerPulse = 1;
+                        local phase = flashTime % timePerPulse;
+                        local pulseAlpha = (2 / timePerPulse) * phase;
+                        if pulseAlpha > 1 then pulseAlpha = 2 - pulseAlpha; end
+                        local baseColor = cache.colors.tpFullTextColor or 0xFFFFFFFF;
+                        local flashColor = cache.colors.tpFlashColor or 0xFF3ECE00;
+                        local baseA = bit.band(bit.rshift(baseColor, 24), 0xFF);
+                        local baseR = bit.band(bit.rshift(baseColor, 16), 0xFF);
+                        local baseG = bit.band(bit.rshift(baseColor, 8), 0xFF);
+                        local baseB = bit.band(baseColor, 0xFF);
+                        local flashA = bit.band(bit.rshift(flashColor, 24), 0xFF);
+                        local flashR = bit.band(bit.rshift(flashColor, 16), 0xFF);
+                        local flashG = bit.band(bit.rshift(flashColor, 8), 0xFF);
+                        local flashB = bit.band(flashColor, 0xFF);
+                        local interpA = math.floor(baseA + (flashA - baseA) * pulseAlpha);
+                        local interpR = math.floor(baseR + (flashR - baseR) * pulseAlpha);
+                        local interpG = math.floor(baseG + (flashG - baseG) * pulseAlpha);
+                        local interpB = math.floor(baseB + (flashB - baseB) * pulseAlpha);
+                        desiredTpColor = bit.bor(bit.lshift(interpA, 24), bit.lshift(interpR, 16), bit.lshift(interpG, 8), interpB);
+                        tpColor = desiredTpColor;
+                    else
+                        desiredTpColor = (memInfo.tp >= 1000) and cache.colors.tpFullTextColor or cache.colors.tpEmptyTextColor;
+                        tpColor = desiredTpColor;
+                    end
                 end
+
+                local tpBaselineOffset = tpRefHeight - tpHeight;
+                local tpTextX = rowStartX + 4 + textOffsets.tpX;
+                local tpTextY = rowStartY + tpBaselineOffset + textOffsets.tpY;
+                imtext.Draw(textDrawList, tpText, tpTextX, tpTextY, tpColor, fontSizes.tp);
             end
 
-            local tpBaselineOffset = tpRefHeight - tpHeight;
-            local tpTextX = rowStartX + 4 + textOffsets.tpX;
-            local tpTextY = rowStartY + tpBaselineOffset + textOffsets.tpY;
-            imtext.Draw(textDrawList, tpText, tpTextX, tpTextY, tpColor, fontSizes.tp);
-
-            local mpBarStartX = rowStartX + 4 + maxTpTextWidth + 4;
+            local effectiveTpTextWidth = renderTpSlot and maxTpTextWidth or 0;
+            local mpBarStartX = rowStartX + 4 + effectiveTpTextWidth + 4;
             mpStartX = mpBarStartX;
             mpStartY = rowStartY;
             imgui.SetCursorScreenPos({mpStartX, mpStartY});
