@@ -668,9 +668,16 @@ config.DrawWindow = function(us)
     -- Push theme styles AFTER validating DisplaySize to avoid leaking
     -- style/var pushes on early returns (which corrupt ImGui state).
     PushThemeStyles();
-    -- Global UI Scale extends to the config window: scale ideal/maximum size
-    -- (clamped to screen) and bump fonts via SetWindowFontScale below.
+    -- Global UI Scale extends to the config window. Ashita's ImGui binding
+    -- doesn't expose SetWindowFontScale or FontGlobalScale, so we can't scale
+    -- glyphs themselves. Scale window dimensions and override the style-var
+    -- spacings on top of PushThemeStyles so padding/sliders/checkboxes grow
+    -- with the slider even though text stays at base size.
     local configScale = math.max(0.5, gConfig.globalScale or 1.0);
+    imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, {12 * configScale, 12 * configScale});
+    imgui.PushStyleVar(ImGuiStyleVar_FramePadding, {6 * configScale, 4 * configScale});
+    imgui.PushStyleVar(ImGuiStyleVar_ItemSpacing, {8 * configScale, 6 * configScale});
+    imgui.PushStyleVar(ImGuiStyleVar_ItemInnerSpacing, {4 * configScale, 4 * configScale});
     local maxW = math.min(900 * configScale, sw - 40);
     local maxH = math.min(650 * configScale, sh - 40);
     imgui.SetNextWindowSizeConstraints({ 400 * configScale, 300 * configScale }, { sw, sh });
@@ -692,12 +699,6 @@ config.DrawWindow = function(us)
     end
     local configVisible = imgui.Begin("XIUI Config - v" .. addon.version, showConfig, bit.bor(ImGuiWindowFlags_NoSavedSettings, ImGuiWindowFlags_NoDocking));
     if configVisible then
-        -- SetWindowFontScale isn't part of Ashita's IGuiManager binding, so
-        -- feature-detect it. Without it the window dimensions still scale,
-        -- the font just stays at the default size on this Ashita build.
-        if imgui.SetWindowFontScale ~= nil then
-            pcall(imgui.SetWindowFontScale, configScale);
-        end
         local windowWidth = imgui.GetContentRegionAvail();
         local sidebarWidth = 180;
         local contentWidth = windowWidth - sidebarWidth - 20;
@@ -1003,6 +1004,8 @@ config.DrawWindow = function(us)
         hotbarModule.migrationWizard.Draw();
     end
 
+    -- Pop the 4 globalScale-adjusted style vars pushed before imgui.Begin.
+    imgui.PopStyleVar(4);
     PopThemeStyles();
 end
 
