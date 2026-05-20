@@ -668,19 +668,12 @@ config.DrawWindow = function(us)
     -- Push theme styles AFTER validating DisplaySize to avoid leaking
     -- style/var pushes on early returns (which corrupt ImGui state).
     PushThemeStyles();
-    -- Global UI Scale extends to the config window. Ashita's ImGui binding
-    -- doesn't expose SetWindowFontScale or FontGlobalScale, so we can't scale
-    -- glyphs themselves. Scale window dimensions and override the style-var
-    -- spacings on top of PushThemeStyles so padding/sliders/checkboxes grow
-    -- with the slider even though text stays at base size.
-    local configScale = math.max(0.5, gConfig.globalScale or 1.0);
-    imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, {12 * configScale, 12 * configScale});
-    imgui.PushStyleVar(ImGuiStyleVar_FramePadding, {6 * configScale, 4 * configScale});
-    imgui.PushStyleVar(ImGuiStyleVar_ItemSpacing, {8 * configScale, 6 * configScale});
-    imgui.PushStyleVar(ImGuiStyleVar_ItemInnerSpacing, {4 * configScale, 4 * configScale});
-    local maxW = math.min(900 * configScale, sw - 40);
-    local maxH = math.min(650 * configScale, sh - 40);
-    imgui.SetNextWindowSizeConstraints({ 400 * configScale, 300 * configScale }, { sw, sh });
+    -- Note: globalScale intentionally does NOT apply to this window.
+    -- The config is the place users go to fix bad scale values; scaling it
+    -- with the same slider can lock them out at extreme values.
+    local maxW = math.min(900, sw - 40);
+    local maxH = math.min(650, sh - 40);
+    imgui.SetNextWindowSizeConstraints({ 400, 300 }, { sw, sh });
     -- On open: set ideal size for the current resolution and reset position if off-screen.
     if configJustOpened then
         if not configHasBeenOpened then
@@ -1004,8 +997,6 @@ config.DrawWindow = function(us)
         hotbarModule.migrationWizard.Draw();
     end
 
-    -- Pop the 4 globalScale-adjusted style vars pushed before imgui.Begin.
-    imgui.PopStyleVar(4);
     PopThemeStyles();
 end
 

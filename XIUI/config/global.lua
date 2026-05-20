@@ -41,7 +41,7 @@ function M.DrawSettings()
         imgui.ShowHelp('The folder to pull job icons from. [XIUI\\assets\\jobs]');
 
         components.DrawSlider('Global UI Scale', 'globalScale', 0.5, 5.0, '%.2f');
-        imgui.ShowHelp('Scales all XIUI elements proportionally. Stacks on top of individual module scale settings.');
+        imgui.ShowHelp('Scales all XIUI elements proportionally. Stacks on top of individual module scale settings. Doesn\'t scale the config window.');
 
         components.DrawCheckbox('Hide During Events', 'hideDuringEvents');
 

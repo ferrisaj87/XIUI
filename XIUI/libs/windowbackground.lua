@@ -32,10 +32,15 @@ local DEFAULT_PADDING = 8;
 local DEFAULT_BORDER_SIZE = 21;
 local DEFAULT_BG_OFFSET = 1;
 
--- The tl corner image is laid out as: 21x21 native corner artwork in the
--- top-left, then a 21px-tall top arm and 21px-wide left arm extending out to
--- 491x491. We split rendering into three UV-sliced pieces so the corner stays
--- pixel-correct and the arms stretch only along their long axis.
+-- Corner pieces bake multiple regions into one image:
+--   tl (491x491): 21x21 corner top-left, then a top arm extending right and a
+--                 left arm extending down. Split into 3 UV pieces.
+--   tr (21x491):  21x21 corner content in top 21 rows, vertical right arm below.
+--                 Split into 2 UV pieces (corner + arm).
+--   bl (491x21):  21x21 corner content in left 21 cols (vertical up-tail + bend),
+--                 horizontal bottom arm to the right. Split into 2 UV pieces.
+--   br (21x21):   pure corner, uniform scaling — no UV slicing needed.
+-- Slicing keeps the native 21px line thickness regardless of window size.
 local SOURCE_CORNER_SIZE = 21;
 local SOURCE_FULL_SIZE = 491;
 local CORNER_UV = SOURCE_CORNER_SIZE / SOURCE_FULL_SIZE;
@@ -224,12 +229,33 @@ function M.DrawBorders(drawList, x, y, w, h, options)
         end
     end
 
-    -- Bottom-left (spans bottom edge to br)
+    -- Bottom-left: mirror of TL's split. The 491x21 source bakes a 21x21 corner
+    -- piece on the left (containing the up-tail of the left vertical border +
+    -- the bend into the bottom horizontal line) and a 470x21 bottom arm to the
+    -- right. Stretching the whole source to (tlW, pieceSize) squished the
+    -- corner from 21 source px to (21/491)*tlW screen px, so the vertical
+    -- tail drifted out of alignment with TL's left arm at borderScale != 1.
     local blX = tlX;
     local blY = brY;
     local blPtr = LoadPiecePtr(theme, 'bl');
     if blPtr ~= nil then
-        drawList:AddImage(blPtr, {blX, blY}, {blX + tlW, blY + pieceSize}, {0, 0}, {1, 1}, tint);
+        -- Corner (left 21x21 of source -> pieceSize x pieceSize)
+        drawList:AddImage(
+            blPtr,
+            {blX, blY}, {blX + pieceSize, blY + pieceSize},
+            {0, 0}, {CORNER_UV, 1},
+            tint
+        );
+        -- Bottom arm: source spans right past the corner, stretched horizontally only
+        local armW = tlW - pieceSize;
+        if armW > 0 then
+            drawList:AddImage(
+                blPtr,
+                {blX + pieceSize, blY}, {blX + tlW, blY + pieceSize},
+                {CORNER_UV, 0}, {1, 1},
+                tint
+            );
+        end
     end
 end
 
