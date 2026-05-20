@@ -125,7 +125,6 @@ function M.MigratePartyListLayoutSettings(gConfig, defaults)
             hpBarWidth = 150,
             mpBarWidth = 100,
             tpBarWidth = 100,
-            barHeight = 20,
             barSpacing = 8,
 
             nameTextOffsetX = 1,
