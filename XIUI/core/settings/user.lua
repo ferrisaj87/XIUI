@@ -15,7 +15,6 @@ function M.createUserSettingsDefaults()
     return T{
         lockPositions = false,
         globalScale = 1.0,
-        tooltipScale = 1.0,
         hideDuringEvents = true,
 
         showPlayerBar = true,
