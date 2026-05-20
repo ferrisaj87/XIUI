@@ -699,22 +699,28 @@ function display.DrawWindow(settings)
     local recastScaleX = typeSettings.recastScaleX or 1.0;
     local recastScaleY = typeSettings.recastScaleY or 0.5;  -- Default to half height for recast bars
 
-    -- Calculate scaled bar dimensions
-    -- HP bar is full width
+    -- Calculate scaled bar dimensions. Each bar's X scale is independent —
+    -- previously halfBarWidth/recastBarWidth/totalRowWidth all derived from
+    -- the HP-scaled width, so scaling HP X cascaded into MP/TP/recast widths
+    -- and the window total. TP X scale appeared to do nothing because the
+    -- half it lived in had already been resized by the HP slider.
     local hpBarWidth = barWidth * hpScaleX;
     local hpBarHeight = barHeight * hpScaleY;
-    -- MP and TP bars split the HP bar width (minus spacing between them)
-    local halfBarWidth = (hpBarWidth - barSpacing) / 2;
+    -- MP and TP bars split the un-scaled base width so their own scales
+    -- operate on a stable half regardless of HP X.
+    local halfBarWidth = (barWidth - barSpacing) / 2;
     local mpBarWidth = halfBarWidth * mpScaleX;
     local mpBarHeight = barHeight * mpScaleY;
     local tpBarWidth = halfBarWidth * tpScaleX;
     local tpBarHeight = barHeight * tpScaleY;
-    -- Recast bars use full HP bar width by default, scaled height
-    local recastBarWidth = hpBarWidth * recastScaleX;
+    -- Recast bars scale off the base width, independent of HP X.
+    local recastBarWidth = barWidth * recastScaleX;
     local recastBarHeight = barHeight * recastScaleY;
 
-    -- Total row width for proper window sizing (based on HP bar width)
-    local totalRowWidth = hpBarWidth;
+    -- Window auto-fits whichever bar is widest so the user never loses a
+    -- bar to clipping when they push one scale up.
+    local mpTpRowWidth = mpBarWidth + barSpacing + tpBarWidth;
+    local totalRowWidth = math.max(hpBarWidth, mpTpRowWidth, recastBarWidth);
 
     -- Store for pet target window
     data.lastTotalRowWidth = totalRowWidth;
