@@ -1528,8 +1528,11 @@ local function DrawVisualSettingsContent(settings, configKey)
         components.DrawPartySliderInt(settings, 'Slot X Padding##' .. configKey, 'slotXPadding', 0, 32, '%d', nil, 8);
         imgui.ShowHelp('Horizontal gap between slots.');
 
-        components.DrawPartySliderInt(settings, 'Slot Y Padding##' .. configKey, 'slotYPadding', 0, 32, '%d', nil, 6);
-        imgui.ShowHelp('Vertical gap between rows.');
+        -- Slot Y Padding slider removed: each hotbar is now positioned
+        -- independently, so bar-to-bar spacing is handled by drag-positioning.
+        -- The setting still exists on the data side and controls the row gap
+        -- inside multi-row bars; we keep the saved value but hide the slider
+        -- to avoid misleading users.
 
         -- Show Hotbar Number with inline offsets
         components.DrawPartyCheckbox(settings, 'Show Hotbar Number##' .. configKey, 'showHotbarNumber');
