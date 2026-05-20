@@ -130,7 +130,9 @@ end
 --- @param ow number Outline width in pixels
 function M.SetConfig(fontFamily, isBold, ow)
     loadFont(fontFamily, isBold);
-    outlineWidth = math.max(0, ow or 2);
+    -- Clamp to [0, 2]. Past 2 the 4-cardinal outline renders as 4 ghosted
+    -- copies because the offsets exceed glyph stroke width.
+    outlineWidth = math.max(0, math.min(2, ow or 2));
 end
 
 --- Apply font settings from a font_settings table (as used by gAdjustedSettings).

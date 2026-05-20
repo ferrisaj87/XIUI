@@ -94,7 +94,9 @@ function M.DrawSettings()
         imgui.ShowHelp('The font weight (boldness) to use for all text in XIUI.');
 
         -- Font Outline Width Slider
-        components.DrawSlider('Font Outline Width', 'fontOutlineWidth', 0, 5, nil, function()
+        -- Capped at 2: the 4-cardinal outline in libs/imtext.lua produces visible
+        -- ghosting past 2 because the offsets exceed glyph stroke width.
+        components.DrawSlider('Font Outline Width', 'fontOutlineWidth', 0, 2, nil, function()
             DeferredUpdateVisuals();
         end);
         imgui.ShowHelp('The thickness of the text outline/stroke for all text in XIUI.');
