@@ -284,7 +284,7 @@ enemylist.DrawWindow = function(settings)
 				-- Background fill
 				local bgColor = gConfig.colorCustomization.enemyList.backgroundColor;
 				local bgOpacity = gConfig.enemyListBackgroundOpacity;
-				if (bgOpacity ~= nil and bgOpacity < 1.0) then
+				if (bgOpacity ~= nil) then
 					bgColor = ApplyOpacityToColor(bgColor, bgOpacity);
 				end
 				drawList:AddRectFilled(
@@ -445,7 +445,7 @@ enemylist.DrawWindow = function(settings)
 						-- Target container background fill
 						local targetBgColor = gConfig.colorCustomization.enemyList.targetBackgroundColor or gConfig.colorCustomization.enemyList.backgroundColor;
 						local targetBgOpacity = gConfig.enemyListTargetBackgroundOpacity;
-						if (targetBgOpacity ~= nil and targetBgOpacity < 1.0) then
+						if (targetBgOpacity ~= nil) then
 							targetBgColor = ApplyOpacityToColor(targetBgColor, targetBgOpacity);
 						end
 						drawList:AddRectFilled(
