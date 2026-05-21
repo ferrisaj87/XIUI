@@ -959,6 +959,21 @@ local function DrawCrossbarSettings(selectedCrossbarTab, menuState)
             end, 0.05);
             imgui.ShowHelp('Minimum time the trigger must be held before releasing for the release to count toward double-tap detection. Prevents false double-taps from analog jitter or accidental taps. Default: 0.050 sec (50ms)');
         end
+
+        imgui.Spacing();
+        components.DrawPartyCheckbox(crossbarSettings, 'Show Double-Tap Crossbars Preview##crossbar', 'showDoubleTapPreview', DeferredUpdateVisuals);
+        imgui.ShowHelp('Show two small floating crossbar windows that always display your L2x2 and R2x2 double-tap bars,\nincluding cooldowns. While a double-tap is active, the preview swaps to show your base bar so you\ncan reference both at once. Drag anchors (visible when config is open) to reposition each preview.');
+
+        if crossbarSettings.showDoubleTapPreview then
+            imgui.Indent(20);
+            components.DrawPartySlider(crossbarSettings, 'Preview Scale##crossbar', 'doubleTapPreviewScale', 0.30, 1.0, '%.2f', DeferredUpdateVisuals, 0.60);
+            imgui.ShowHelp('Size of the preview windows relative to the main crossbar. 0.60 = 60% of full size.');
+            components.DrawPartySlider(crossbarSettings, 'Preview Opacity##crossbar', 'doubleTapPreviewOpacity', 0.20, 1.0, '%.2f', DeferredUpdateVisuals, 1.0);
+            imgui.ShowHelp('Base opacity of the preview windows. Follows trigger-dim behaviour: the inactive preview dims when\nthe opposite trigger is held, matching how the main crossbar dims its inactive side.');
+            components.DrawPartyCheckbox(crossbarSettings, 'Lock Preview Positions##crossbar', 'doubleTapPreviewLocked', DeferredUpdateVisuals);
+            imgui.ShowHelp('Lock the L2x2 and R2x2 preview windows in place so they cannot be dragged.\nIndependent of the main crossbar position lock.');
+            imgui.Unindent(20);
+        end
     end
 
     imgui.Spacing();

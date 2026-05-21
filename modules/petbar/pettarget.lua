@@ -6,6 +6,7 @@
 
 require('common');
 require('handlers.helpers');
+require('handlers.imgui_compat');
 local imgui = require('imgui');
 local gdi = require('submodules.gdifonts.include');
 local windowBg = require('libs.windowbackground');
@@ -76,6 +77,72 @@ local function UpdateBackground(x, y, width, height, settings)
     windowBg.update(backgroundPrim, x, y, width, height, bgOptions);
 end
 
+local function clearPetTargetSpatialState()
+    data.petBarTargetHitRect = nil;
+    data.petBarClusterDragActive = false;
+end
+
+local function pointInPetTargetHitRect(px, py, r)
+    return r and px >= r.x and px <= r.x + r.w and py >= r.y and py <= r.y + r.h;
+end
+
+local function anyImGuiItemHovered()
+    local ok, v = pcall(function() return imgui.IsAnyItemHovered(); end);
+    return ok and v;
+end
+
+--- While pet target uses NoInputs (snap), ImGui won't report hover; use last-frame rect + MouseDelta to move PetBar.
+local function maybeDragSnappedPetClusterFromTarget(snapEnabled)
+    local canClusterMove = not gConfig.lockPositions or (showConfig and showConfig[1] and gConfig.petBarPreview);
+    if not (snapEnabled and canClusterMove and data.petBarTargetHitRect) then
+        if not snapEnabled then
+            data.petBarClusterDragActive = false;
+        end
+        return;
+    end
+
+    local r = data.petBarTargetHitRect;
+    local mx, my = imgui.GetMousePos();
+    local inRect = pointInPetTargetHitRect(mx, my, r);
+
+    if imgui.IsMouseClicked(0) then
+        if inRect and not anyImGuiItemHovered() then
+            data.petBarClusterDragActive = true;
+        else
+            data.petBarClusterDragActive = false;
+        end
+    end
+    if imgui.IsMouseReleased(0) then
+        data.petBarClusterDragActive = false;
+    end
+
+    if data.petBarClusterDragActive and imgui.IsMouseDown(0) and imgui.IsMouseDragging(0) then
+        local io = imgui.GetIO();
+        local mdx, mdy = 0, 0;
+        if io then
+            if io.MouseDelta then
+                mdx = tonumber(io.MouseDelta.x) or 0;
+                mdy = tonumber(io.MouseDelta.y) or 0;
+            end
+            if mdx == 0 and mdy == 0 then
+                mdx = tonumber(io.MouseDeltaX) or 0;
+                mdy = tonumber(io.MouseDeltaY) or 0;
+            end
+        end
+        if mdx ~= 0 or mdy ~= 0 then
+            local bx = tonumber(data.lastMainWindowPosX) or 0;
+            local by = tonumber(data.lastMainWindowTop) or 0;
+            imgui.SetWindowPos('PetBar', { bx + mdx, by + mdy });
+            data.petBarSyncResizeAnchorNextFrame = true;
+            data.lastMainWindowPosX = math.floor(bx + mdx + 0.5);
+            data.lastMainWindowTop = math.floor(by + mdy + 0.5);
+            data.petBarSnapTopReferenceY = data.lastMainWindowTop - 8;
+            local ph = tonumber(data.lastPetBarWindowHeight) or 0;
+            data.lastMainWindowBottom = math.floor(data.lastMainWindowTop + ph + 0.5) + 4;
+        end
+    end
+end
+
 -- ============================================
 -- DrawWindow
 -- ============================================
@@ -88,6 +155,7 @@ function pettarget.DrawWindow(settings)
         if targetHpText then targetHpText:set_visible(false); end
         if targetDistanceText then targetDistanceText:set_visible(false); end
         HideBackground();
+        clearPetTargetSpatialState();
         return;
     end
 
@@ -111,6 +179,7 @@ function pettarget.DrawWindow(settings)
                 targetDistanceText:set_visible(false);
             end
             HideBackground();
+            clearPetTargetSpatialState();
             return;
         end
 
@@ -127,6 +196,7 @@ function pettarget.DrawWindow(settings)
                 targetDistanceText:set_visible(false);
             end
             HideBackground();
+            clearPetTargetSpatialState();
             return;
         end
 
@@ -143,6 +213,7 @@ function pettarget.DrawWindow(settings)
             end
             HideBackground();
             data.petTargetServerId = nil;
+            clearPetTargetSpatialState();
             return;
         end
 
@@ -161,6 +232,9 @@ function pettarget.DrawWindow(settings)
     local colorConfig = gConfig.colorCustomization and gConfig.colorCustomization.petTarget or {};
 
     -- Snap position must win over ApplyWindowPosition (otherwise first-frame Always apply from disk overwrites snap).
+    -- Anchor semantics (pet bar uses AlwaysAutoResize; coordinates are ImGui outer rect, NoDecoration):
+    --   bottom: PetBarTarget window TOP = pet bar bottom (+ small border fudge in lastMainWindowBottom) + offsetY (positive = down).
+    --   top: PetBarTarget window TOP = pet bar visual top - target height + offsetY - topGap (see petBarSnapTopReferenceY)
     local snapEnabled = gConfig.petTargetSnapToPetBar;
     local snapAnchor = gConfig.petTargetSnapAnchor or 'bottom';
     local snapOffsetX = gConfig.petTargetSnapOffsetX or 0;
@@ -168,20 +242,38 @@ function pettarget.DrawWindow(settings)
     if snapOffsetY == nil then
         snapOffsetY = (snapAnchor == 'top') and -6 or 16;
     end
+    -- Bottom snap uses positive Y below the bar; top snap uses non-positive Y. A leftover +16 from bottom mode removes the visible gap.
+    if snapAnchor == 'top' and snapOffsetY > 0 then
+        snapOffsetY = 0;
+    end
+
+    maybeDragSnappedPetClusterFromTarget(snapEnabled);
+
     if not snapEnabled then
         ApplyWindowPosition('PetBarTarget');
     end
     if snapEnabled and data.lastMainWindowPosX ~= nil then
-        local snapX = data.lastMainWindowPosX + snapOffsetX;
+        local snapX = math.floor(data.lastMainWindowPosX + snapOffsetX + 0.5);
         local snapY;
         if snapAnchor == 'top' then
-            -- Place target window fully above pet bar top (uses last-frame inner height).
-            local th = tonumber(data.lastPetBarTargetWindowHeight) or 52;
-            snapY = data.lastMainWindowTop - th + snapOffsetY;
+            -- Height: prefer last frame, then profile cache (stable across loads), then safe default.
+            local th = tonumber(data.lastPetBarTargetWindowHeight)
+                or tonumber(gConfig.petTargetSnapCachedHeight)
+                or 52;
+            th = math.floor(th + 0.5);
+            -- petTargetSnapTopGap: buffer between target window bottom and pet bar top (nil = default 5)
+            local topGap = tonumber(gConfig.petTargetSnapTopGap);
+            if topGap == nil then
+                topGap = 5;
+            end
+            if topGap < 0 then topGap = 0; end
+            topGap = math.floor(topGap + 0.5);
+            local barTopY = math.floor(tonumber(data.petBarSnapTopReferenceY) or tonumber(data.lastMainWindowTop) or 0);
+            snapY = math.floor(barTopY - th + snapOffsetY - topGap + 0.5);
         else
             local bottomY = data.lastMainWindowBottom;
             if bottomY ~= nil then
-                snapY = bottomY + snapOffsetY;
+                snapY = math.floor(bottomY + snapOffsetY + 0.5);
             end
         end
         if snapY ~= nil then
@@ -191,6 +283,22 @@ function pettarget.DrawWindow(settings)
 
     if (gConfig.lockPositions and not isPreview) or snapEnabled then
         windowFlags = bit.bor(windowFlags, ImGuiWindowFlags_NoMove);
+    end
+    -- When snapped, Pet Target is positioned relative to the pet bar—treat as one cluster: no separate drag here,
+    -- and do not steal mouse from hotbar/macro UI stacked underneath (NoInputs). When unsnapped, this is a normal
+    -- window: omit NoInputs so it can be moved (unless lock all) and ImGui can receive drag/drop.
+    if snapEnabled then
+        local noInputs = ImGuiWindowFlags_NoInputs;
+        if noInputs == nil or noInputs == 0 then
+            if ImGuiWindowFlags_NoMouseInputs and ImGuiWindowFlags_NoNavInputs then
+                noInputs = bit.bor(ImGuiWindowFlags_NoMouseInputs, ImGuiWindowFlags_NoNavInputs);
+            else
+                noInputs = 1536; -- typical NoMouseInputs|NoNavInputs (Dear ImGui ~1.83); last resort if globals missing
+            end
+        end
+        if noInputs ~= 0 then
+            windowFlags = bit.bor(windowFlags, noInputs);
+        end
     end
     if imgui.Begin('PetBarTarget', true, windowFlags) then
         SaveWindowPosition('PetBarTarget');
@@ -296,10 +404,24 @@ function pettarget.DrawWindow(settings)
         end
         targetDistanceText:set_visible(true);
 
-        -- Update background
+        -- Update background; cache full window height for top-snap placement (and persist for next session)
         local targetWinWidth, targetWinHeight = imgui.GetWindowSize();
-        data.lastPetBarTargetWindowHeight = targetWinHeight;
+        local hRounded = math.floor(tonumber(targetWinHeight) + 0.5);
+        data.lastPetBarTargetWindowHeight = hRounded;
+        if snapEnabled and snapAnchor == 'top' then
+            local prev = gConfig.petTargetSnapCachedHeight;
+            if prev ~= hRounded then
+                gConfig.petTargetSnapCachedHeight = hRounded;
+            end
+        end
         UpdateBackground(targetWinPosX, targetWinPosY, targetWinWidth, targetWinHeight, settings);
+
+        data.petBarTargetHitRect = {
+            x = math.floor(targetWinPosX + 0.5),
+            y = math.floor(targetWinPosY + 0.5),
+            w = math.floor(tonumber(targetWinWidth) + 0.5),
+            h = math.floor(tonumber(targetWinHeight) + 0.5),
+        };
     end
     imgui.End();
 end
@@ -387,6 +509,7 @@ function pettarget.SetHidden(hidden)
             targetDistanceText:set_visible(false);
         end
         HideBackground();
+        clearPetTargetSpatialState();
     end
 end
 

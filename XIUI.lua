@@ -1011,6 +1011,14 @@ ashita.events.register('d3d_present', 'present_cb', function ()
     if not bInitialized then return; end
 
     local ok, err = pcall(function()
+        -- Reset ImGui cursor to Arrow at the start of every frame.
+        -- FFXI uses a DirectX hardware cursor that can get lost on alt+tab;
+        -- resetting here ensures we never leave a stale Hand/None cursor
+        -- state that survives into the first frame after the game regains focus.
+        if imgui and imgui.SetMouseCursor then
+            imgui.SetMouseCursor(0); -- 0 = ImGuiMouseCursor_Arrow
+        end
+
         -- Clear internal save flag (deferred for Ashita 4.3+ async callbacks)
         if bPendingInternalSaveClear then
             bInternalSave = false;
@@ -1152,6 +1160,16 @@ ashita.events.register('command', 'command_cb', function (e)
         -- Open macro palette: /xiui macro or /xiui macros
         if (#command_args == 2 and command_args[2]:any('macro', 'macros')) then
             macropalette.TogglePalette();
+            return;
+        end
+
+        -- Debug: print the current FFXI menu name to chat: /xiui menuname
+        if (#command_args == 2 and command_args[2]:any('menuname', 'menu')) then
+            local gamestate = require('core.gamestate');
+            local raw  = gamestate.GetMenuName();
+            local isContainer = gamestate.IsContainerNavigationMenu();
+            AshitaCore:GetChatManager():QueueCommand(1, string.format(
+                '/echo [XIUI] Menu: "%s" | container-nav: %s', raw, tostring(isContainer)));
             return;
         end
 
@@ -1599,6 +1617,11 @@ ashita.events.register('command', 'command_cb', function (e)
                     local jn = jobs[mainJobId] or ('JOB' .. tostring(mainJobId));
                     local sjAbbr = (storageSubjob ~= 0) and (jobs[storageSubjob] or nil) or nil;
                     if commit then
+                        palette.SetCpalJobAnchorIfUnset(
+                            palette.GetActivePaletteForCombo(nil),
+                            palette.GetCrossbarActiveStorageSubjob(),
+                            hotbarData.jobId
+                        );
                         palette.SetActivePaletteForCombo(nil, paletteName, storageSubjob);
                         cpalLogJobSuccess(jn, storageSubjob, sjAbbr, paletteName);
                     else
@@ -1652,6 +1675,7 @@ ashita.events.register('command', 'command_cb', function (e)
                     end
                     local key = palette.BuildUniversalCrossbarStorageKey(paletteName);
                     if cross and cross.slotActions and cross.slotActions[key] then
+                        palette.SetCpalUniversalAnchorIfUnset(palette.GetActiveUniversalCrossbarPalette());
                         palette.SetActiveUniversalCrossbarPalette(paletteName);
                         cpalLogGlobalSuccess(paletteName);
                     else

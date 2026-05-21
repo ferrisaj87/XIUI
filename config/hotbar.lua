@@ -1,4 +1,4 @@
---[[
+﻿--[[
 * XIUI Config Menu - Hotbar (keyboard bars) settings
 * Controller crossbar UI lives in config/crossbar_settings.lua (sibling module).
 * Contains settings and color settings for Hotbar with per-bar customization.
@@ -48,6 +48,32 @@ local jobSpecificConfirmState = {
 -- Shared between hotbar and crossbar palettes
 -- ============================================
 
+-- Persists the last-selected crossbar create job/storageSubjob across popup opens.
+-- Resets to live job/sj only when the character's job or subjob changes.
+local xbCreatePersisted = {
+    jobId = nil,
+    storageSubjob = nil,
+    lastSeenJobId = nil,
+    lastSeenSubjobId = nil,
+};
+
+local function GetOrResetXbCreateDefaults()
+    local liveJob = data.jobId or 1;
+    local liveSj  = data.subjobId or 0;
+    if xbCreatePersisted.lastSeenJobId ~= liveJob or xbCreatePersisted.lastSeenSubjobId ~= liveSj then
+        xbCreatePersisted.jobId          = liveJob;
+        xbCreatePersisted.storageSubjob  = liveSj;
+        xbCreatePersisted.lastSeenJobId  = liveJob;
+        xbCreatePersisted.lastSeenSubjobId = liveSj;
+    end
+    return xbCreatePersisted.jobId, xbCreatePersisted.storageSubjob;
+end
+
+-- One-shot open flags (see palettemanager.lua for rationale)
+local xbHotbarCreatePopupPending = false;
+local palettePopupPendingId      = nil;
+local jobSpecificPopupPending    = false;
+
 -- Single modal state for all palette operations
 local paletteModal = {
     isOpen = false,
@@ -56,6 +82,9 @@ local paletteModal = {
     paletteName = nil,    -- For rename: current name
     inputBuffer = { '' },
     errorMessage = nil,
+    -- Job crossbar create (non-modal popup): storage tier 0 = Shared [J], else Subjob [SJ] id
+    crossbarCreateJobId = nil,
+    crossbarCreateStorageSubjob = nil,
 };
 
 -- Helper: Open palette create modal
@@ -66,6 +95,14 @@ local function OpenPaletteCreateModal(paletteType)
     paletteModal.paletteName = nil;
     paletteModal.inputBuffer[1] = '';
     paletteModal.errorMessage = nil;
+    if paletteType == 'crossbar' then
+        local j, s = GetOrResetXbCreateDefaults();
+        paletteModal.crossbarCreateJobId = j;
+        paletteModal.crossbarCreateStorageSubjob = s;
+    else
+        paletteModal.crossbarCreateJobId = nil;
+        paletteModal.crossbarCreateStorageSubjob = nil;
+    end
 end
 
 -- Helper: Open palette rename modal
@@ -86,15 +123,21 @@ local function ClosePaletteModal()
     paletteModal.paletteName = nil;
     paletteModal.inputBuffer[1] = '';
     paletteModal.errorMessage = nil;
+    paletteModal.crossbarCreateJobId = nil;
+    paletteModal.crossbarCreateStorageSubjob = nil;
+    xbHotbarCreatePopupPending = false;
+    palettePopupPendingId      = nil;
 end
 
 -- Helper function to draw the job-specific confirmation popup
 local function DrawJobSpecificConfirmPopup()
-    if jobSpecificConfirmState.showPopup then
+    if jobSpecificConfirmState.showPopup and not jobSpecificPopupPending then
         imgui.OpenPopup('Confirm Action Storage Change##jobSpecificConfirm');
+        jobSpecificConfirmState.showPopup = false;
+        jobSpecificPopupPending = true;
     end
 
-    if imgui.BeginPopupModal('Confirm Action Storage Change##jobSpecificConfirm', nil, ImGuiWindowFlags_AlwaysAutoResize) then
+    if imgui.BeginPopup('Confirm Action Storage Change##jobSpecificConfirm', ImGuiWindowFlags_AlwaysAutoResize) then
         local targetName;
         if jobSpecificConfirmState.isCrossbar then
             targetName = jobSpecificConfirmState.targetBarIndex and ('Crossbar ' .. jobSpecificConfirmState.targetBarIndex) or 'Crossbar';
@@ -158,12 +201,147 @@ local function DrawJobSpecificConfirmPopup()
         end
 
         imgui.EndPopup();
+    else
+        -- Dismissed by clicking outside
+        jobSpecificPopupPending = false;
+        jobSpecificConfirmState.showPopup = false;
     end
 end
 
 -- Unified palette modal - handles create/rename for both hotbar and crossbar
 local function DrawPaletteModal()
     if not paletteModal.isOpen then
+        xbHotbarCreatePopupPending = false;
+        palettePopupPendingId      = nil;
+        return;
+    end
+
+    -- Job crossbar create: non-modal popup (same idea as Palette Manager Copy To â€” no fullscreen dim).
+    if paletteModal.mode == 'create' and paletteModal.paletteType == 'crossbar' then
+        if paletteModal.crossbarCreateJobId == nil then
+            paletteModal.crossbarCreateJobId = data.jobId or 1;
+        end
+        if paletteModal.crossbarCreateStorageSubjob == nil then
+            paletteModal.crossbarCreateStorageSubjob = data.subjobId or 0;
+        end
+        local cj = paletteModal.crossbarCreateJobId;
+        if cj < 1 then cj = 1; end
+        if cj > 22 then cj = 22; end
+        paletteModal.crossbarCreateJobId = cj;
+
+        if not xbHotbarCreatePopupPending then
+            imgui.SetNextWindowSize({ 560, 0 }, ImGuiCond_Always);
+            imgui.OpenPopup('Crossbar Create Palette##paletteModalXbJobNm');
+            xbHotbarCreatePopupPending = true;
+        end
+        if imgui.BeginPopup('Crossbar Create Palette##paletteModalXbJobNm', ImGuiWindowFlags_AlwaysAutoResize) then
+            imgui.TextWrapped('Create a new palette for Job [J] / Subjob [SJ] crossbar storage.');
+            imgui.Spacing();
+
+            local storSj = paletteModal.crossbarCreateStorageSubjob or 0;
+            if storSj ~= 0 then
+                local usingFallback = palette.IsUsingFallback(cj, storSj, 'crossbar');
+                if usingFallback then
+                    local jobName = jobs[cj] or ('Job ' .. cj);
+                    local subjobName = jobs[storSj] or ('Job ' .. storSj);
+                    imgui.TextColored({ 1.0, 0.7, 0.3, 1.0 }, 'Warning: Creating this palette will stop');
+                    imgui.TextColored({ 1.0, 0.7, 0.3, 1.0 }, 'using shared palettes for ' .. jobName .. '/' .. subjobName .. '.');
+                    imgui.Spacing();
+                end
+            end
+
+            imgui.Text('Job:');
+            imgui.SameLine();
+            imgui.PushItemWidth(120);
+            if imgui.BeginCombo('##xbCreateJobCfg', jobs[cj] or ('Job ' .. cj)) then
+                for jobId = 1, 22 do
+                    local isSelected = (jobId == cj);
+                    if imgui.Selectable((jobs[jobId] or ('Job ' .. jobId)) .. '##xbCj' .. jobId, isSelected) then
+                        paletteModal.crossbarCreateJobId = jobId;
+                    end
+                    if isSelected then
+                        imgui.SetItemDefaultFocus();
+                    end
+                end
+                imgui.EndCombo();
+            end
+            imgui.PopItemWidth();
+
+            imgui.SameLine();
+            imgui.Text('Subjob storage:');
+            imgui.SameLine();
+            imgui.PushItemWidth(120);
+            local subLabel = storSj == 0 and 'Shared' or (jobs[storSj] or ('Job ' .. storSj));
+            if imgui.BeginCombo('##xbCreateSubCfg', subLabel) then
+                local sharedSel = (storSj == 0);
+                if imgui.Selectable('Shared##xbCs0', sharedSel) then
+                    paletteModal.crossbarCreateStorageSubjob = 0;
+                end
+                if sharedSel then
+                    imgui.SetItemDefaultFocus();
+                end
+                for subjobId = 1, 22 do
+                    local isSelected = (subjobId == storSj);
+                    if imgui.Selectable((jobs[subjobId] or ('Job ' .. subjobId)) .. '##xbCs' .. subjobId, isSelected) then
+                        paletteModal.crossbarCreateStorageSubjob = subjobId;
+                    end
+                    if isSelected then
+                        imgui.SetItemDefaultFocus();
+                    end
+                end
+                imgui.EndCombo();
+            end
+            imgui.PopItemWidth();
+
+            imgui.Spacing();
+            imgui.Text('Palette name:');
+            imgui.PushItemWidth(220);
+            local enterPressed = imgui.InputText('##paletteModalXbCreateInput', paletteModal.inputBuffer, 32, ImGuiInputTextFlags_EnterReturnsTrue);
+            imgui.PopItemWidth();
+
+            if paletteModal.errorMessage then
+                imgui.Spacing();
+                imgui.TextColored({ 1.0, 0.4, 0.4, 1.0 }, paletteModal.errorMessage);
+            end
+
+            imgui.Spacing();
+            local newName = paletteModal.inputBuffer[1];
+            local canCreate = newName and newName ~= '';
+            if not canCreate then
+                imgui.BeginDisabled();
+            end
+            if imgui.Button('Create##paletteModalXbCreateOk', { 88, 0 }) or (enterPressed and canCreate) then
+                if canCreate then
+                    storSj = paletteModal.crossbarCreateStorageSubjob or 0;
+                    local createJob = paletteModal.crossbarCreateJobId;
+                    local success, err = palette.CreateCrossbarPalette(newName, createJob, storSj);
+                    if success then
+                        xbCreatePersisted.jobId         = createJob;
+                        xbCreatePersisted.storageSubjob = storSj;
+                        ClosePaletteModal();
+                        imgui.CloseCurrentPopup();
+                    else
+                        paletteModal.errorMessage = err or 'Failed to create palette';
+                    end
+                else
+                    paletteModal.errorMessage = 'Name cannot be empty';
+                end
+            end
+            if not canCreate then
+                imgui.EndDisabled();
+            end
+
+            imgui.SameLine();
+            if imgui.Button('Cancel##paletteModalXbCreateCancel', { 88, 0 }) then
+                ClosePaletteModal();
+                imgui.CloseCurrentPopup();
+            end
+
+            imgui.EndPopup();
+        else
+            xbHotbarCreatePopupPending = false;
+            ClosePaletteModal();
+        end
         return;
     end
 
@@ -178,13 +356,17 @@ local function DrawPaletteModal()
         and (typeLabel .. 'Create Palette##paletteModal')
         or (typeLabel .. 'Rename Palette##paletteModal');
 
-    imgui.OpenPopup(popupId);
+    if palettePopupPendingId ~= popupId then
+        imgui.SetNextWindowSize({ 320, 0 }, ImGuiCond_Always);
+        imgui.OpenPopup(popupId);
+        palettePopupPendingId = popupId;
+    end
 
-    if imgui.BeginPopupModal(popupId, nil, ImGuiWindowFlags_AlwaysAutoResize) then
+    if imgui.BeginPopup(popupId, ImGuiWindowFlags_AlwaysAutoResize) then
         -- Warning when creating will break away from shared palettes
         local jobId = data.jobId or 1;
         local subjobId = data.subjobId or 0;
-        if paletteModal.mode == 'create' and subjobId ~= 0 and paletteModal.paletteType ~= 'crossbar_universal' then
+        if paletteModal.mode == 'create' and subjobId ~= 0 and paletteModal.paletteType == 'hotbar' then
             local usingFallback = palette.IsUsingFallback(jobId, subjobId, paletteModal.paletteType);
             if usingFallback then
                 local jobName = jobs[jobId] or ('Job ' .. jobId);
@@ -240,20 +422,8 @@ local function DrawPaletteModal()
                     -- Create palette
                     if paletteModal.paletteType == 'crossbar_universal' then
                         success, err = palette.CreateUniversalCrossbarPalette(newName);
-                        if success then
-                            palette.SetActiveUniversalCrossbarPalette(newName);
-                        end
-                    elseif paletteModal.paletteType == 'crossbar' then
-                        success, err = palette.CreateCrossbarPalette(newName, jobId, subjobId);
-                        if success then
-                            local st = subjobId == 0 and 0 or subjobId;
-                            palette.SetActivePaletteForCombo('L2', newName, st);
-                        end
-                    else
+                    elseif paletteModal.paletteType == 'hotbar' then
                         success, err = palette.CreatePalette(1, newName, jobId, subjobId);
-                        if success then
-                            palette.SetActivePalette(1, newName);
-                        end
                     end
                 else
                     -- Rename palette
@@ -291,6 +461,9 @@ local function DrawPaletteModal()
         end
 
         imgui.EndPopup();
+    else
+        -- Dismissed by clicking outside
+        ClosePaletteModal();
     end
 end
 
@@ -401,7 +574,7 @@ local function DrawGlobalPalettesSection()
     local cyclePalettes = palette.GetHotbarPaletteNamesInRbCycle(1, jobId, subjobId);
     local currentPalette = palette.GetActivePalette(1);  -- Same for all bars
 
-    -- Index/total for "Active" (RB-cycle) palettes only — inactive palettes are omitted from numbering
+    -- Index/total for "Active" (RB-cycle) palettes only â€” inactive palettes are omitted from numbering
     local paletteCount = #cyclePalettes;
     local cycleIndexByName = {};
     for i, name in ipairs(cyclePalettes) do
@@ -461,7 +634,7 @@ local function DrawGlobalPalettesSection()
         for i, paletteName in ipairs(availablePalettes) do
             local isSelected = (paletteName == currentPalette);
             local cycIdx = cycleIndexByName[paletteName];
-            local displayName = (cycIdx and (cycIdx .. '. ') or '– ') .. paletteName;
+            local displayName = (cycIdx and (cycIdx .. '. ') or 'â€“ ') .. paletteName;
             if imgui.Selectable(displayName .. '##globalPal', isSelected) then
                 palette.SetActivePalette(1, paletteName);  -- Sets global palette
             end
@@ -505,7 +678,7 @@ local function DrawGlobalPalettesSection()
         imgui.PopStyleColor(2);
     end
 
-    -- Arrow key reordering (full palette list order — not cycle-only)
+    -- Arrow key reordering (full palette list order â€” not cycle-only)
     if currentPalette and totalPaletteCount > 1 then
         imgui.SameLine();
         imgui.TextColored({0.5, 0.5, 0.5, 1.0}, '|');
@@ -1630,11 +1803,11 @@ local function DrawBarVisualSettings(configKey, barLabel)
             end
             imgui.ShowHelp('Show a small dot indicator next to the bar number when pet palettes are active.');
             local popupId = 'petallow_hb_' .. configKey;
-            if imgui.SmallButton('Pets…##' .. popupId) then
+            if imgui.SmallButton('Petsâ€¦##' .. popupId) then
                 imgui.OpenPopup(popupId);
             end
             imgui.ShowHelp('Optional: limit which pet types use a separate layout (Avatars, Elementals, Beasts, Wyvern, Puppet). Others use your normal job bar.');
-            if imgui.BeginPopup(popupId) then
+            if imgui.BeginPopup(popupId, ImGuiWindowFlags_AlwaysAutoResize) then
                 petAllowlist.DrawEditorInPopup(barSettings, data.jobId or 1, SaveSettingsOnly, function()
                     data.InvalidateStorageKeyCache();
                 end);
@@ -1858,9 +2031,9 @@ function M.DrawSettings(state)
         end
         DeferredUpdateVisuals();
     end);
-    imgui.ShowHelp('When enabled, prevents dragging, dropping, and swapping slots on keyboard hotbars (bars 1–6). Crossbar uses Lock Crossbar under the Crossbar category.');
+    imgui.ShowHelp('When enabled, prevents dragging, dropping, and swapping slots on keyboard hotbars (bars 1â€“6). Crossbar uses Lock Crossbar under the Crossbar category.');
     components.DrawCheckbox('Hide When Menu Open', 'hotbarHideOnMenuFocus');
-    imgui.ShowHelp('Hide keyboard hotbars (bars 1–6) when a game menu is open (equipment, map, etc.). Crossbar has its own Hide When Menu Open next to Lock Crossbar.');
+    imgui.ShowHelp('Hide keyboard hotbars (bars 1â€“6) when a game menu is open (equipment, map, etc.). Crossbar has its own Hide When Menu Open next to Lock Crossbar.');
 
     M.DrawSharedDisableXiMacrosControls('hb');
     M.DrawSharedSkillchainHighlightControls('hb');
@@ -1982,7 +2155,7 @@ function M.DrawSettings(state)
             end
         end
     else
-        imgui.TextColored({0.55, 0.52, 0.48, 1.0}, 'Keyboard hotbars are turned off (Hotbar → Enabled). Turn Hotbar on to configure bars 1–6, or use the Crossbar category for controller layout.');
+        imgui.TextColored({0.55, 0.52, 0.48, 1.0}, 'Keyboard hotbars are turned off (Hotbar â†’ Enabled). Turn Hotbar on to configure bars 1â€“6, or use the Crossbar category for controller layout.');
     end
 
     M.DrawLogPaletteNameCheckbox('##hbLogPal');
@@ -2213,7 +2386,7 @@ function M.DrawColorSettings(state)
     local selectedBarTab = state and state.selectedHotbarTab or 1;
 
     if gConfig.hotbarEnabled == false then
-        imgui.TextColored({0.55, 0.52, 0.48, 1.0}, 'Keyboard hotbars are turned off. Crossbar colors are under the Crossbar category → Color settings.');
+        imgui.TextColored({0.55, 0.52, 0.48, 1.0}, 'Keyboard hotbars are turned off. Crossbar colors are under the Crossbar category â†’ Color settings.');
         return { selectedHotbarTab = selectedBarTab };
     end
 
@@ -2272,3 +2445,4 @@ M.DrawJobSpecificConfirmPopup = DrawJobSpecificConfirmPopup;
 M.DrawPaletteModal = DrawPaletteModal;
 
 return M;
+

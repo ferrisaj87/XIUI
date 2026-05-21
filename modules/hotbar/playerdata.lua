@@ -140,45 +140,66 @@ function M.GetPlayerSpells()
     local resMgr = AshitaCore:GetResourceManager();
     local horizonSpells = require('modules.hotbar.database.horizonspells');
 
-    -- Build a name→type lookup from the static DB
+    -- Build id → horizonspells entry and name → type lookups in one pass.
+    -- Using the horizonspells `levels` table for job/level data avoids the
+    -- unreliable LevelRequired indexing in Ashita's resource manager (the
+    -- offset between Ashita's C++ array and Lua indexing is inconsistent).
+    -- This is the same data source used by GetAllSpellsForCurrentJob (Show All
+    -- mode), which is known to work correctly.
+    -- When the same spell name exists as both a castable spell and a SummonerPact
+    -- blood pact, prefer the non-blood-pact type so spells like "Blizzard II"
+    -- sort into the correct section rather than the Rage section.
+    local horizonById = {};
     local spellTypeByName = {};
     for _, s in pairs(horizonSpells) do
-        if s.en and s.type then spellTypeByName[s.en] = s.type; end
+        -- Exclude unlearnable entries (NPC/monster-only variants like Sleepga id=363).
+        -- They share names with the learnable versions and would otherwise cause duplicates.
+        if s.id and not s.unlearnable then horizonById[s.id] = s; end
+        if s.en and s.type and not s.unlearnable then
+            local existing = spellTypeByName[s.en];
+            if not existing or (s.type ~= 'SummonerPact' and existing == 'SummonerPact') then
+                spellTypeByName[s.en] = s.type;
+            end
+        end
     end
 
     local spells = {};
     local addedSpells = {};
 
-    for spellId = 1, 1024 do
-        if spellId >= 896 then break; end
-
+    for spellId = 1, 895 do
         if player:HasSpell(spellId) then
             local spell = resMgr:GetSpellById(spellId);
             if spell and spell.Name and spell.Name[1] and spell.Name[1] ~= '' then
                 local spellName = spell.Name[1];
 
-                if not IsGarbageSpellName(spellName) then
-                    local mainReqLevel = spell.LevelRequired[mainJobId + 1] or 0;
-                    local subReqLevel = subJobId > 0 and (spell.LevelRequired[subJobId + 1] or 0) or 0;
+                if not IsGarbageSpellName(spellName) and not addedSpells[spellName] then
+                    -- Use horizonspells levels table for job filtering — same indexing
+                    -- ([mainJobId] directly, e.g. [4]=BLM) as the working Show All path.
+                    local hSpell = horizonById[spellId];
+                    local hLevels = hSpell and hSpell.levels;
+                    local mainReqLevel = (hLevels and hLevels[mainJobId]) or 0;
+                    local subReqLevel = (subJobId > 0 and hLevels and hLevels[subJobId]) or 0;
 
                     local validMainReq = mainReqLevel > 0 and mainReqLevel < 255;
                     local validSubReq = subReqLevel > 0 and subReqLevel < 255;
 
-                    local canCastMain = validMainReq and mainReqLevel <= mainJobLevel;
-                    local canCastSub = validSubReq and subReqLevel <= subJobLevel;
-
-                    if (canCastMain or canCastSub) and not addedSpells[spellId] then
-                        local displayLevel = canCastMain and mainReqLevel or subReqLevel;
-                        local source = canCastMain and 'main' or 'sub';
+                    -- Spell must belong to the player's current job or subjob.
+                    -- We don't require canCast (level >= req) because HorizonXI may
+                    -- grant spells at different thresholds than the static DB records;
+                    -- HasSpell() already proves the player can cast it.
+                    local isForCurrentJob = validMainReq or validSubReq;
+                    if isForCurrentJob then
+                        local displayLevel = validMainReq and mainReqLevel or subReqLevel;
+                        local source = validMainReq and 'main' or 'sub';
 
                         table.insert(spells, {
                             id = spellId,
                             name = spellName,
                             level = displayLevel,
                             source = source,
-                            type = spellTypeByName[spellName] or 'Unknown',
+                            type = (hSpell and hSpell.type) or spellTypeByName[spellName] or 'Unknown',
                         });
-                        addedSpells[spellId] = true;
+                        addedSpells[spellName] = true;
                     end
                 end
             end
@@ -743,6 +764,7 @@ function M.GetAllSpellsForCurrentJob(filterMagicType)
     for _, spell in pairs(horizonSpells) do
         if spell.en and spell.en ~= '' and spell.id and not IsGarbageSpellName(spell.en) then
             if spell.id >= 896 then goto continue; end
+            if spell.unlearnable then goto continue; end
             if omitSet[spell.en] then goto continue; end
 
             if filterByType and spell.type ~= effectiveType then goto continue; end

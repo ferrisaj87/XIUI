@@ -1133,14 +1133,25 @@ local function DrawPetTargetSettingsContent()
             SaveSettingsOnly();
         end);
         imgui.ShowHelp(
-            'Bottom: Pet Target sits below the pet bar (offset Y pushes it down). '
-                .. 'Top: Pet Target sits above the pet bar; offset Y adjusts the gap.');
+            'Bottom: Pet Target window top snaps below the pet bar bottom (Y offset pushes it down). '
+                .. 'Top: Pet Target window top is placed above the pet bar top (Y adjusts the gap). '
+                .. 'Pet Bar resize anchor only affects which pet bar edge stays fixed when bar height changes; snapping uses the pet bar edges described above.');
 
         components.DrawSlider('Snap Offset X##petTargetSnap', 'petTargetSnapOffsetX', -200, 200);
         components.DrawSlider('Snap Offset Y##petTargetSnap', 'petTargetSnapOffsetY', -200, 200);
         imgui.ShowHelp(
             'Horizontal offset from pet bar left. '
-                .. 'Vertical: for Bottom snap, from pet bar bottom (+Y down). For Top snap, from computed position above pet bar (negative Y moves target higher).');
+                .. 'Vertical: for Bottom snap, from pet bar bottom (+Y down). For Top snap, from the adjusted bar top (negative Y moves the target higher); positive values are ignored on Top snap because they come from Bottom mode.');
+
+        if (gConfig.petTargetSnapAnchor or 'bottom') == 'top' then
+            if gConfig.petTargetSnapTopGap == nil then
+                gConfig.petTargetSnapTopGap = 5;
+            end
+            components.DrawSlider('Top snap gap##petTargetSnap', 'petTargetSnapTopGap', 0, 32);
+            imgui.ShowHelp(
+                'Space between the bottom of the Pet Target window and the top of the pet bar (top anchor only). '
+                    .. 'Use together with Snap Offset Y for finer placement.');
+        end
     end
 
     if components.CollapsingSection('Display Options##petTarget', false) then

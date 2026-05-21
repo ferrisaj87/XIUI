@@ -13,6 +13,7 @@ local macrosLib = require('libs.ffxi.macros');
 local palette = require('modules.hotbar.palette');
 local petpalette = require('modules.hotbar.petpalette');
 local data = require('modules.hotbar.data');
+local gamestate = require('core.gamestate');
 
 -- Define XINPUT structures for FFI access (only used for XInput devices)
 ffi.cdef[[
@@ -172,6 +173,9 @@ local state = {
     -- Shoulder button tracking for palette cycling (RB + Dpad)
     rightShoulderHeld = false,
     leftShoulderHeld = false,
+
+    -- R1 double-tap tracking for cpal anchor return
+    r1LastEdgeTime = 0,
 
     -- Callback for slot activation
     onSlotActivate = nil,
@@ -523,6 +527,19 @@ function Controller.HandleXInputState(e)
         return;
     end
 
+    -- While a game menu is open (inventory, safe, storage, wardrobe, etc.) the game uses
+    -- trigger+D-pad for navigation.  Clear any active combo so no macro fires when the
+    -- menu closes, and pass the frame through untouched.
+    if gamestate.IsMenuOpen() then
+        if state.activeCombo ~= COMBO_MODES.NONE or state.leftTriggerHeld or state.rightTriggerHeld then
+            state.leftTriggerHeld   = false;
+            state.rightTriggerHeld  = false;
+            state.activeCombo       = COMBO_MODES.NONE;
+            state.comboFirstTrigger = nil;
+        end
+        return;
+    end
+
     -- Wrap FFI operations in pcall for safety
     local ok, xinputState = pcall(function()
         return ffi.cast('XINPUT_STATE*', e.state);
@@ -598,6 +615,23 @@ function Controller.HandleXInputState(e)
         end
     end
 
+    -- R1 double-tap: return to cpal anchor palette (only when no L1 held, to avoid L1+R1 overlap)
+    do
+        local r1Edge = bit.band(newPresses, xboxDevice.ButtonMasks.RIGHT_SHOULDER) ~= 0;
+        if r1Edge and not lbHeld then
+            local now = os.clock();
+            local scope = palette.GetCrossbarPaletteScope();
+            local anchor = palette.GetCpalAnchor(scope);
+            if anchor and (now - state.r1LastEdgeTime) < 0.4 then
+                palette.RestoreCpalAnchor(scope);
+                state.r1LastEdgeTime = 0;
+                newPresses = bit.band(newPresses, bit.bnot(xboxDevice.ButtonMasks.RIGHT_SHOULDER));
+            else
+                state.r1LastEdgeTime = now;
+            end
+        end
+    end
+
     -- Check for palette cycling: configurable shoulder button + Dpad Up/Down
     local globalSettings = gConfig and gConfig.hotbarGlobal;
     local crossbarSettings = gConfig and gConfig.hotbarCrossbar;
@@ -639,6 +673,10 @@ function Controller.HandleXInputState(e)
 
                 -- Cycle crossbar palette (global for all combo modes)
                 palette.CyclePaletteForCombo(nil, direction, jobId, subjobId);
+
+                -- Cycling manually = user is done with the cpal anchor; clear it so R1 indicator hides
+                palette.ClearCpalAnchor(palette.GetCrossbarPaletteScope());
+                state.r1LastEdgeTime = 0;
 
                 if logPaletteName then
                     print('[XIUI] Palettes cycled: ' .. (direction == 1 and 'next' or 'prev'));
@@ -728,6 +766,9 @@ function Controller.HandleXInputButton(e)
     if not Controller.UsesXInput() then
         return false;
     end
+
+    -- Let the game handle button input while a menu window is open.
+    if gamestate.IsMenuOpen() then return false; end
 
     -- Track shoulder button state from xinput_button events (more reliable than polling)
     -- XInput button IDs: LEFT_SHOULDER = 8, RIGHT_SHOULDER = 9
@@ -873,10 +914,14 @@ function Controller.HandleDInputButton(e)
         return true;  -- Block button during detection
     end
 
+
     -- Only process if using DirectInput device
     if not Controller.UsesDirectInput() then
         return false;
     end
+
+    -- Let the game handle button input while a menu window is open.
+    if gamestate.IsMenuOpen() then return false; end
 
     local device = state.device;
     local buttonId = e.button;
@@ -1135,6 +1180,17 @@ function Controller.HandleDInputState(e)
 
     -- Only process if using DirectInput device
     if not Controller.UsesDirectInput() then
+        return;
+    end
+
+    -- While a game menu is open clear trigger/combo state and pass input through.
+    if gamestate.IsMenuOpen() then
+        if state.activeCombo ~= COMBO_MODES.NONE or state.leftTriggerHeld or state.rightTriggerHeld then
+            state.leftTriggerHeld   = false;
+            state.rightTriggerHeld  = false;
+            state.activeCombo       = COMBO_MODES.NONE;
+            state.comboFirstTrigger = nil;
+        end
         return;
     end
 

@@ -1,4 +1,4 @@
---[[
+﻿--[[
 * XIUI Config Menu - Main Window
 * Entry point for the config menu, handles window rendering and dispatches to module files
 ]]--
@@ -625,7 +625,7 @@ local selectedPetTypeTab = 1;  -- 1 = Avatar, 2 = Charm, 3 = Jug, 4 = Automaton,
 local selectedPetTypeColorTab = 1;  -- Pet type color sub-tab
 local selectedPetBarColorTab = 1;  -- 1 = Pet Bar, 2 = Pet Target (for color settings)
 local selectedHotbarTab = 1;  -- 1 = Bar 1, 2 = Bar 2, etc. (for hotbar settings)
-local selectedCrossbarTab = 1;  -- 1=Global, 2=L2, … (for Crossbar category panel)
+local selectedCrossbarTab = 1;  -- 1=Global, 2=L2, â€¦ (for Crossbar category panel)
 
 -- Category definitions
 local categories = {
@@ -896,7 +896,7 @@ local function DrawProfilePopups()
     end
 
     -- New Profile Popup
-    if (imgui.BeginPopupModal("New Profile", true, ImGuiWindowFlags_AlwaysAutoResize)) then
+    if (imgui.BeginPopup("New Profile")) then
         isModalOpen = true;
         imgui.Text("Create New Profile:");
         imgui.InputText("##NewProfileName", newProfileName, 32);
@@ -919,7 +919,7 @@ local function DrawProfilePopups()
     end
 
     -- Rename Popup
-    if (imgui.BeginPopupModal("Rename Profile", true, ImGuiWindowFlags_AlwaysAutoResize)) then
+    if (imgui.BeginPopup("Rename Profile")) then
         isModalOpen = true;
         imgui.Text("Rename '" .. GetCurrentProfileName() .. "' to:");
         imgui.InputText("##RenameInput", renameProfileName, 32);
@@ -941,7 +941,7 @@ local function DrawProfilePopups()
     end
 
     -- Delete Confirmation Popup
-    if (imgui.BeginPopupModal("Delete Profile", true, ImGuiWindowFlags_AlwaysAutoResize)) then
+    if (imgui.BeginPopup("Delete Profile")) then
         isModalOpen = true;
         imgui.Text("Are you sure you want to delete profile:");
         imgui.TextColored({1.0, 0.3, 0.3, 1.0}, profileToDelete);
@@ -961,7 +961,7 @@ local function DrawProfilePopups()
     end
 
     -- Copy Profile: optional macro library (full clone vs layout-only for another character)
-    if (imgui.BeginPopupModal("Copy Profile", true, ImGuiWindowFlags_AlwaysAutoResize)) then
+    if (imgui.BeginPopup("Copy Profile")) then
         isModalOpen = true;
         local src = (GetCurrentProfileName and GetCurrentProfileName()) or '';
         imgui.Text("Create a new profile from:");
@@ -969,14 +969,14 @@ local function DrawProfilePopups()
         imgui.Spacing();
         imgui.TextWrapped(
             'Copy is a full snapshot of the selected profile on disk, except you can start without a macro library. '
-            .. 'Buckets that were never used (e.g. Items / Equipment) are not in the file — that is why a clone can show Global/job rows but no separate items bucket until you add some.'
+            .. 'Buckets that were never used (e.g. Items / Equipment) are not in the file â€” that is why a clone can show Global/job rows but no separate items bucket until you add some.'
         );
         imgui.Spacing();
         imgui.Checkbox("Include full macro library##copyInclMacros", copyProfileIncludeMacros);
         if (imgui.ShowHelp) then
             imgui.SameLine();
             imgui.ShowHelp(
-                "When checked: all macro palette buckets in this profile (same as a full file copy). When unchecked: empty macro list and custom categories reset; keyboard/crossbar slots that used palette macros are cleared. Spells, abilities, and items on bars are kept. Use Profile → Export/Import JSON to move chosen macros between profiles."
+                "When checked: all macro palette buckets in this profile (same as a full file copy). When unchecked: empty macro list and custom categories reset; keyboard/crossbar slots that used palette macros are cleared. Spells, abilities, and items on bars are kept. Use Profile â†’ Export/Import JSON to move chosen macros between profiles."
             );
         end
         imgui.Spacing();
@@ -1197,7 +1197,7 @@ config.DrawWindow = function(us)
             showRestoreDefaultsConfirm = false;
         end
 
-        if (imgui.BeginPopupModal("Confirm Reset Settings", true, ImGuiWindowFlags_AlwaysAutoResize)) then
+        if (imgui.BeginPopup("Confirm Reset Settings")) then
             anyModalOpen = true;
             imgui.Text("Are you sure you want to reset all settings to defaults?");
             imgui.Text("This will reset all your customizations including:");
@@ -1364,7 +1364,7 @@ config.DrawWindow = function(us)
     end
 
     -- Capture config window geometry while open for smart reposition on next open.
-    -- Two local assignments per frame — negligible cost, but ensures we always have
+    -- Two local assignments per frame â€” negligible cost, but ensures we always have
     -- current values even on addon unload or profile change without an extra frame.
     lastConfigPosX, lastConfigPosY = imgui.GetWindowPos();
     lastConfigSizeW, lastConfigSizeH = imgui.GetWindowSize();
@@ -1422,7 +1422,7 @@ function config.OpenCrossbarManagePalettes()
     return true;
 end
 
--- Toggle: close config if already on Crossbar → Manage Palettes; otherwise open there (/xiui cpalette with no subcommand)
+-- Toggle: close config if already on Crossbar â†’ Manage Palettes; otherwise open there (/xiui cpalette with no subcommand)
 function config.ToggleCrossbarManagePalettes()
     local idx = GetCrossbarCategoryIndex();
     if not idx then
@@ -1446,3 +1446,4 @@ function config.ResetConfigWindowPosition()
 end
 
 return config;
+

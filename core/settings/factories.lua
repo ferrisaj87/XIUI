@@ -596,6 +596,12 @@ function M.createCrossbarDefaults()
         enableDoubleTap = false,            -- Enable L2x2 and R2x2 double-tap modes
         doubleTapWindow = 0.3,              -- Time window for double-tap detection (seconds)
 
+        -- Double-tap preview windows (always-visible overlays showing L2x2 / R2x2 bars)
+        showDoubleTapPreview    = false,     -- Show floating preview windows for double-tap bars
+        doubleTapPreviewScale   = 0.60,     -- Preview scale relative to main crossbar (0.3–1.0)
+        doubleTapPreviewOpacity = 1.0,      -- Preview opacity multiplier (0.2–1.0; dims with trigger)
+        doubleTapPreviewLocked  = false,    -- Lock preview positions independently of the main crossbar
+
         -- Analog trigger thresholds (0-255 normalized range)
         -- Used by Xbox (XInput) and PlayStation (DirectInput with signed->unsigned conversion)
         triggerPressThreshold = 30,         -- Trigger value to register as pressed

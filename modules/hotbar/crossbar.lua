@@ -16,6 +16,7 @@ local FontManager = fonts.FontManager;
 local dragdrop = require('libs.dragdrop');
 
 local data = require('modules.hotbar.data');
+local gamestate = require('core.gamestate');
 local macropalette = require('modules.hotbar.macropalette');
 local playerdata = require('modules.hotbar.playerdata');
 local actions = require('modules.hotbar.actions');
@@ -1288,6 +1289,52 @@ local function DrawTriggerIcons(activeCombo, l2GroupX, r2GroupX, groupY, groupWi
                 {0, 0}, {1, 1},
                 tintColor
             );
+
+            -- Draw R1 return icon above R2 when a cpal anchor is active for the current scope
+            local scope = palette.GetCrossbarPaletteScope();
+            local anchor = palette.GetCpalAnchor(scope);
+            if anchor then
+                local r1Texture = textures:GetControllerIcon('R1');
+                if r1Texture and r1Texture.image then
+                    local r1Ptr = tonumber(ffi.cast("uint32_t", r1Texture.image));
+                    if r1Ptr then
+                        -- Base (un-scaled) icon anchor position
+                        local r1Width = baseIconWidth;
+                        local r1Height = baseIconHeight;
+                        local r1IconX = r2GroupX + (groupWidth / 2) - (r1Width / 2);
+                        local r1IconY = r2IconY - r1Height - 4;
+
+                        -- Size pulse: icon grows 30% at peak (~2.5 Hz, smooth in/out)
+                        local pulse = math.abs(math.sin(os.clock() * 2.5));
+                        local sizeScale = 1.0 + 0.30 * pulse;
+                        local sw = r1Width * sizeScale;
+                        local sh = r1Height * sizeScale;
+                        -- Keep centered on the original icon centre point
+                        local sx = r1IconX + r1Width * 0.5 - sw * 0.5;
+                        local sy = r1IconY + r1Height * 0.5 - sh * 0.5;
+
+                        -- Subtle dark rounded pill BG spanning icon + "x2" label
+                        -- 0xAABBGGRR format: 0x99000000 = ~60% opaque black
+                        local textGap, textEstW, pad = 3, 14, 4;
+                        drawList:AddRectFilled(
+                            {r1IconX - pad,                           r1IconY - pad},
+                            {r1IconX + r1Width + textGap + textEstW + pad, r1IconY + r1Height + pad},
+                            0x99000000, 5
+                        );
+
+                        -- R1 icon, full white tint, size-pulsing from centre
+                        drawList:AddImage(r1Ptr, {sx, sy}, {sx + sw, sy + sh}, {0, 0}, {1, 1}, 0xFFFFFFFF);
+
+                        -- "x2" gold text, fixed to the right of the original icon bounds
+                        -- Gold: R=FF,G=C8,B=32,A=FF → 0xFF32C8FF
+                        drawList:AddText(
+                            {r1IconX + r1Width + textGap, r1IconY + r1Height * 0.5 - 6},
+                            0xFF32C8FF,
+                            'x2'
+                        );
+                    end
+                end
+            end
         end
     end
 end
@@ -1591,6 +1638,182 @@ local function DrawBarSet(leftMode, rightMode, leftGroupX, leftGroupY, rightGrou
     DrawSide('R2', rightMode, rightGroupX, rightGroupY, slotSize, settings, rightActive, pressedSlot, rightShowPressed, animOpacity, drawList, yOffset, targetServerId, skillchainEnabled, activeCombo);
 end
 
+-- ============================================
+-- Double-Tap Preview Windows
+-- ============================================
+
+-- Return a shallow copy of settings with all layout-affecting fields scaled.
+local function MakePreviewSettings(settings, scale)
+    local s = {};
+    for k, v in pairs(settings) do s[k] = v; end
+    s.slotSize       = math.max(8,  math.floor((settings.slotSize       or 40) * scale));
+    s.slotGapV       = math.max(1,  math.floor((settings.slotGapV       or 2)  * scale));
+    s.slotGapH       = math.max(1,  math.floor((settings.slotGapH       or 2)  * scale));
+    s.diamondSpacing = math.max(2,  math.floor((settings.diamondSpacing  or 16) * scale));
+    s.groupSpacing   = math.max(4,  math.floor((settings.groupSpacing    or 24) * scale));
+    s.buttonIconSize = math.max(4,  math.floor((settings.buttonIconSize  or 24) * scale));
+    s.buttonIconGapH = math.max(1,  math.floor((settings.buttonIconGapH  or 2)  * scale));
+    s.buttonIconGapV = math.max(1,  math.floor((settings.buttonIconGapV  or 2)  * scale));
+    s.triggerIconScale = (settings.triggerIconScale or 1.0) * scale;
+    return s;
+end
+
+-- Draw one side of a double-tap preview using ImGui-only rendering (no D3D primitives, non-interactive).
+-- winX/winY   : top-left of the preview ImGui window (slot grid origin).
+-- side        : always 'L2' for single-group preview windows (slots start at window left).
+-- mode        : crossbar storage mode string ('L2x2', 'R2x2', 'L2', 'R2', …) whose data to render.
+-- baseOp      : base opacity for the slot backgrounds (NOT dimmed — keeps slot frames visible).
+-- dimFactor   : 0–1 multiplier applied only to icon/text rendering (1.0 = active, dimFact = inactive).
+--               Mirrors the D3D crossbar: slot.png alpha stays constant; icon RGB/alpha dims.
+local function DrawPreviewSide(winX, winY, windowKey, side, mode, ps, baseOp, dimFactor, drawList, activeCombo)
+    local slotSize    = ps.slotSize or 40;
+    local contentOp   = baseOp * dimFactor;   -- opacity for icons, cooldowns, corner text
+
+    -- Pre-compute slot background colour once for all 8 slots.
+    -- slotrenderer's built-in bg path requires a D3D slotPrim; we have none, so draw manually.
+    -- IMPORTANT: use baseOp (not contentOp) so the slot frames remain visible when inactive,
+    -- matching the D3D crossbar where slot.png alpha is constant while icon brightness dims.
+    local bgArgb  = ps.slotBackgroundColor or 0x55000000;  -- ARGB format (Ashita convention)
+    local bgA_raw = bit.rshift(bit.band(bgArgb, 0xFF000000), 24) / 255;
+    -- Guarantee the slot BG is visible in the preview (D3D slot.png is ~opaque; boost if setting is low).
+    local bgA     = math.max(bgA_raw, 0.55) * baseOp;
+    local bgR     = bit.rshift(bit.band(bgArgb, 0x00FF0000), 16) / 255;
+    local bgG     = bit.rshift(bit.band(bgArgb, 0x0000FF00),  8) / 255;
+    local bgB     = bit.band(bgArgb, 0x000000FF) / 255;
+    local cornerR = math.max(4, math.min(10, math.floor(slotSize * 0.125 + 0.5)));
+    local bgU32   = imgui.GetColorU32({ bgR, bgG, bgB, bgA });
+
+    for slotIndex = 1, SLOTS_PER_SIDE do
+        local slotX, slotY = GetSlotPositionInWindow(side, slotIndex, winX, winY, ps);
+
+        -- 1. Slot background (flat rounded rect — always at baseOp so frames stay visible).
+        if drawList then
+            drawList:AddRectFilled({ slotX, slotY }, { slotX + slotSize, slotY + slotSize }, bgU32, cornerR);
+        end
+
+        -- 2. Icon + cooldown overlay + corner text via ImGui (forceImGuiIcon bypasses D3D icon path).
+        --    animOpacity = contentOp so icons/text dim with dimFactor, matching D3D dimming behaviour.
+        local slotData = data.GetCrossbarSlotData(mode, slotIndex);
+        local icon     = GetCachedCrossbarIcon(mode, slotIndex, slotData);
+        slotrenderer.DrawSlot({}, {
+            x    = slotX,
+            y    = slotY,
+            size = slotSize,
+            windowName = windowKey,
+            bind = slotData,
+            icon = icon,
+            slotBgColor  = 0x00000000,          -- fully transparent — bg already drawn above
+            slotOpacity  = 1.0,
+            dimFactor    = 1.0,
+            animOpacity  = contentOp,
+            isPressed    = false,
+            iconPressScale = 1.0,
+            showMpCost       = ps.showMpCost ~= false,
+            mpCostFontSize   = ps.mpCostFontSize or 10,
+            mpCostFontColor  = ps.mpCostFontColor or 0xFFD4FF97,
+            mpCostNoMpColor  = ps.mpCostNoMpColor or 0xFFFF4444,
+            mpCostOffsetX    = ps.mpCostOffsetX or 0,
+            mpCostOffsetY    = ps.mpCostOffsetY or 0,
+            showQuantity       = ps.showQuantity ~= false,
+            quantityFontSize   = ps.quantityFontSize or 10,
+            quantityFontColor  = ps.quantityFontColor or 0xFFFFFFFF,
+            quantityOffsetX    = ps.quantityOffsetX or 0,
+            quantityOffsetY    = ps.quantityOffsetY or 0,
+            showLabel              = false,
+            recastTimerFontSize    = ps.recastTimerFontSize or 11,
+            recastTimerFontColor   = ps.recastTimerFontColor or 0xFFFFFFFF,
+            flashCooldownUnder5    = ps.flashCooldownUnder5 or false,
+            useHHMMCooldownFormat  = ps.useHHMMCooldownFormat or false,
+            buttonId               = string.format('##dtprev_%s_%s_%d', windowKey, mode, slotIndex),
+            suppressActionOnClick  = true,
+            forceImGuiIcon         = true,
+            drawCornerTextForeground = true,
+        });
+    end
+
+    -- 3. Centre button-label icons (dpad/face glyphs) — use contentOp so they dim with icons.
+    -- side is always 'L2' for single-group windows, so gx = winX (no offset).
+    if drawList and ps.showButtonIcons and contentOp > 0.05 then
+        DrawDiamondCenterIconsImGui('dpad', winX, winY, ps, true, drawList, contentOp, activeCombo);
+        DrawDiamondCenterIconsImGui('face', winX, winY, ps, true, drawList, contentOp, activeCombo);
+    end
+end
+
+-- Draw one double-tap preview window (L2x2 or R2x2).
+-- windowKey   : unique ImGui window name / position-save key
+-- mode        : crossbar storage mode string for the 8 slots to display (e.g. 'L2x2', 'R2x2', 'L2', 'R2')
+-- ps          : scaled settings table (from MakePreviewSettings)
+-- baseOp      : base opacity (user slider × visibilityOpacity); applied to slot backgrounds always.
+-- dimFactor   : 0–1 content dim (1.0 = active/undimmed, inactiveSideWhileTriggerDim = inactive).
+-- activeCombo : current controller combo (COMBO_MODES.*) for centre-icon dimming
+-- settings    : raw crossbar settings (for doubleTapPreviewLocked)
+local function DrawDoubleTapPreviewWindow(windowKey, mode, ps, baseOp, dimFactor, activeCombo, settings)
+    local slotSize = ps.slotSize or 40;
+    local gw, gh   = CalculateGroupDimensions(slotSize, ps.slotGapV or 2, ps.slotGapH or 2, ps.diamondSpacing or 16);
+    -- Single group (8 slots only — L2x2 preview shows left side, R2x2 shows right side).
+    local totalW   = gw;
+    local totalH   = gh;
+
+    -- Restore saved position (ImGuiCond_Always so the window doesn't drift on its own).
+    local savedPos = gConfig.windowPositions and gConfig.windowPositions[windowKey];
+    if savedPos then
+        imgui.SetNextWindowPos({savedPos.x, savedPos.y}, ImGuiCond_Always);
+    else
+        imgui.SetNextWindowPos({200, 200}, ImGuiCond_FirstUseEver);
+    end
+    imgui.SetNextWindowSize({totalW, totalH}, ImGuiCond_Always);
+
+    -- Custom flags: preview windows intentionally omit NoBringToFrontOnFocus so ImGui keeps
+    -- them in front of the main crossbar window (which always has that flag set).
+    -- NoResize (not AlwaysAutoResize) so the explicit SetNextWindowSize is always honoured.
+    local flags = bit.bor(
+        ImGuiWindowFlags_NoDecoration,
+        ImGuiWindowFlags_NoResize,
+        ImGuiWindowFlags_NoFocusOnAppearing,
+        ImGuiWindowFlags_NoNav,
+        ImGuiWindowFlags_NoBackground,
+        ImGuiWindowFlags_NoDocking,
+        ImGuiWindowFlags_NoMove       -- position managed by the move anchor below
+    );
+
+    -- Zero window padding so the draw list clip rect matches the window bounds exactly.
+    -- Without this the default 8 px padding clips slots at the left/right edges.
+    imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
+    local didBegin = imgui.Begin(windowKey, true, flags);
+    imgui.PopStyleVar();
+
+    if didBegin then
+        local wX, wY = imgui.GetWindowPos();
+
+        -- Persist position whenever the window renders (anchor drag updates via DrawMoveAnchor below).
+        if not gConfig.windowPositions then gConfig.windowPositions = {}; end
+        if savedPos == nil then
+            gConfig.windowPositions[windowKey] = {x = wX, y = wY};
+        end
+
+        local dl = imgui.GetWindowDrawList();
+        -- Always 'L2' side so slots start at window-left with no offset (single-group window).
+        DrawPreviewSide(wX, wY, windowKey, 'L2', mode, ps, baseOp, dimFactor, dl, activeCombo);
+    end
+    imgui.End();
+
+    -- Move anchor centred above the preview — uses its own lock, independent of the main crossbar.
+    local previewLocked = settings and settings.doubleTapPreviewLocked;
+    if not previewLocked then
+        local pos = gConfig.windowPositions and gConfig.windowPositions[windowKey];
+        local anchorX = pos and pos.x or 200;
+        local anchorY = pos and pos.y or 200;
+        local newX, newY = drawing.DrawMoveAnchor(windowKey, anchorX, anchorY, {
+            anchorSide  = 'top',
+            windowWidth = totalW,
+        });
+        if newX ~= nil then
+            if not gConfig.windowPositions then gConfig.windowPositions = {}; end
+            gConfig.windowPositions[windowKey] = {x = newX, y = newY};
+        end
+    end
+end
+
 -- Main draw function
 function M.DrawWindow(settings, moduleSettings)
     if not state.initialized then return; end
@@ -1630,6 +1853,13 @@ function M.DrawWindow(settings, moduleSettings)
             return;
         end
     end
+
+    -- Dim the crossbar while a game menu is open so the player can see that
+    -- controller input is paused (inventory, safe, storage, etc.).
+    if gamestate.IsMenuOpen() then
+        visibilityOpacity = visibilityOpacity * 0.35;
+    end
+    local menuDimFactor = visibilityOpacity;
 
     -- Determine which bar set to display based on active combo
     local targetLeftMode, targetRightMode, isExpanded, expandedSide = GetDisplayModes(activeCombo, settings);
@@ -1899,16 +2129,16 @@ function M.DrawWindow(settings, moduleSettings)
                 end
             elseif hideRightForSharedCenter then
                 DrawSide('L2', state.currentLeftMode, leftGroupX, leftGroupY, slotSize, settings,
-                    leftActive, pressedSlot, leftShowPressed, 1.0, winDrawList, 0, targetServerId, skillchainEnabled, activeCombo);
+                    leftActive, pressedSlot, leftShowPressed, menuDimFactor, winDrawList, 0, targetServerId, skillchainEnabled, activeCombo);
             else
-                -- Normal mode: draw both sides at full opacity
+                -- Normal mode: draw both sides (menuDimFactor = 1.0 normally, <1 when menu open)
                 DrawBarSet(
                     state.currentLeftMode, state.currentRightMode,
                     leftGroupX, leftGroupY, rightGroupX, rightGroupY,
                     slotSize, settings,
                     leftActive, rightActive,
                     pressedSlot, leftShowPressed, rightShowPressed,
-                    1.0, winDrawList, 0, targetServerId, skillchainEnabled, activeCombo
+                    menuDimFactor, winDrawList, 0, targetServerId, skillchainEnabled, activeCombo
                 );
             end
         end
@@ -2008,6 +2238,49 @@ function M.DrawWindow(settings, moduleSettings)
     end
 
     state.wasSharedCenterChordLayout = hideRightForSharedCenter;
+
+    -- ── Double-tap preview windows ──────────────────────────────────────────
+    -- Drawn as separate ImGui windows after the main crossbar End() so they
+    -- are independent (own position, own draw list, no shared primitives).
+    if settings.enableDoubleTap and settings.showDoubleTapPreview then
+        local scale   = settings.doubleTapPreviewScale  or 0.60;
+        local baseOp  = (settings.doubleTapPreviewOpacity or 1.0) * visibilityOpacity;
+        local dimFact = settings.inactiveSideWhileTriggerDim;
+        if dimFact == nil then dimFact = 0.15; end
+        local ps      = MakePreviewSettings(settings, scale);
+
+        -- A preview is "live" only when its own double-tap combo is active.
+        local isL2xActive = (activeCombo == COMBO_MODES.L2_DOUBLE);
+        local isR2xActive = (activeCombo == COMBO_MODES.R2_DOUBLE);
+
+        -- Any trigger held at all (single, double-tap, or chord)?
+        local anyTriggerHeld = (activeCombo ~= COMBO_MODES.NONE);
+
+        -- dimFactor for content (icons/text/cooldowns): 1.0 at rest, dimFact whenever any
+        -- trigger is held. The previews are never "the active section" — the main crossbar is —
+        -- so both previews dim equally regardless of which double-tap is live.
+        -- Slot backgrounds always render at baseOp (not dimmed) so the slot frames stay visible.
+        local previewDim = anyTriggerHeld and dimFact or 1.0;
+        local l2xDim = previewDim;
+        local r2xDim = previewDim;
+
+        -- Swap: while L2_DOUBLE is active the main bar already shows L2x2, so the preview
+        -- switches to showing the base L2/R2 slots as a reference.
+
+        -- L2x2 preview: shows left-side L2x2 slots; swaps to base L2 while L2_DOUBLE is active.
+        DrawDoubleTapPreviewWindow(
+            'CrossbarPreviewL2x2',
+            isL2xActive and 'L2' or 'L2x2',
+            ps, baseOp, l2xDim, activeCombo, settings
+        );
+        -- R2x2 preview: shows right-side R2x2 slots; swaps to base R2 while R2_DOUBLE is active.
+        DrawDoubleTapPreviewWindow(
+            'CrossbarPreviewR2x2',
+            isR2xActive and 'R2' or 'R2x2',
+            ps, baseOp, r2xDim, activeCombo, settings
+        );
+    end
+    -- ────────────────────────────────────────────────────────────────────────
 end
 
 -- ============================================

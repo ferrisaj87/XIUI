@@ -818,6 +818,10 @@ function M.createUserSettingsDefaults()
         petTargetSnapAnchor = 'bottom',      -- bottom: pet target window below pet bar; top: above pet bar
         petTargetSnapOffsetX = 0,            -- Horizontal offset from petbar position
         petTargetSnapOffsetY = 16,           -- Vertical offset below petbar (accounts for background border)
+        -- Extra pixels between Pet Target bottom and pet bar top when snap anchor is Top (0 = use offset Y only)
+        petTargetSnapTopGap = 5,
+        -- Last measured PetBarTarget window height (top snap only); avoids first-frame placement jump after load
+        petTargetSnapCachedHeight = nil,
 
         -- Per-pet-type settings (Avatar, Charm, Jug, Automaton, Wyvern each have independent visual settings)
         petBarAvatar = factories.createPetBarTypeDefaults(),

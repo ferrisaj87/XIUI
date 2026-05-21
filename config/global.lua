@@ -1,4 +1,4 @@
---[[
+﻿--[[
 * XIUI Config Menu - Global Settings
 * Contains settings and color settings for Global configuration
 ]]--
@@ -58,7 +58,7 @@ function M.DrawSettings()
             showCenterUIConfirm = false;
         end
 
-        if (imgui.BeginPopupModal("Confirm Center UI", true, ImGuiWindowFlags_AlwaysAutoResize)) then
+        if (imgui.BeginPopup("Confirm Center UI")) then
             imgui.Text("Move all UI elements to the center of the screen?");
             imgui.Text("This only affects positions, not your other settings.");
             imgui.NewLine();
@@ -170,3 +170,4 @@ function M.DrawColorSettings()
 end
 
 return M;
+

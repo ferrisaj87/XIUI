@@ -1377,7 +1377,10 @@ function display.DrawWindow(settings)
         local petBarDragging = petBarCanMove and imgui.IsMouseDragging(0) and imgui.IsWindowHovered();
         if resizeAnchoredBottom then
             local curBottom = windowPosY + windowHeight;
-            if windowState.anchorBottom == nil then
+            if data.petBarSyncResizeAnchorNextFrame then
+                windowState.anchorBottom = curBottom;
+                data.petBarSyncResizeAnchorNextFrame = false;
+            elseif windowState.anchorBottom == nil then
                 windowState.anchorBottom = curBottom;
             elseif petBarDragging then
                 windowState.anchorBottom = curBottom;
@@ -1399,10 +1402,16 @@ function display.DrawWindow(settings)
             windowState.anchorBottom = nil;
         end
 
-        -- Store main window position for pet target window (top = stable anchor for snap Y offset)
-        data.lastMainWindowPosX = windowPosX;
-        data.lastMainWindowTop = windowPosY;
-        data.lastMainWindowBottom = windowPosY + windowHeight + 4;
+        -- Store main window position for pet target snap (integers reduce subpixel drift in saved snaps)
+        data.lastMainWindowPosX = math.floor(windowPosX + 0.5);
+        data.lastMainWindowTop = math.floor(windowPosY + 0.5);
+        -- Themed window borders extend above/below the ImGui outer rect (~NoBackground + windowBg).
+        -- Bottom snap uses +4 below; top snap must reference a line above ImGui top or the gap collapses visually.
+        local petBarTopSnapOutset = 8;
+        data.petBarSnapTopReferenceY = data.lastMainWindowTop - petBarTopSnapOutset;
+        -- +4: visual gap between ImGui pet bar rect and decorative border (pairs with default petTargetSnapOffsetY)
+        data.lastMainWindowBottom = math.floor(windowPosY + windowHeight + 0.5) + 4;
+        data.lastPetBarWindowHeight = math.floor(windowHeight + 0.5);
 
         -- Update background primitives
         data.UpdateBackground(windowPosX, windowPosY, windowWidth, windowHeight, settings);

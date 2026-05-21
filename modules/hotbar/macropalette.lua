@@ -1,4 +1,4 @@
---[[
+﻿--[[
 * XIUI Hotbar - Macro Palette Module
 * Provides a visual grid of user-created macros that can be dragged to hotbar slots
 ]]--
@@ -90,7 +90,7 @@ MP.editorIconPrefsHydrated = false;
 
 
 -- Palette / editor: GetBindIcon + ResolveMacroJaBadgeIcon do real work (macroparse, DB, texture lookup).
--- The macro grid calls them once per tile per frame — cache by stable keys; clear when palette type changes.
+-- The macro grid calls them once per tile per frame â€” cache by stable keys; clear when palette type changes.
 local PALETTE_ICON_NONE = {};
 local PALETTE_JA_NONE = {};
 
@@ -203,7 +203,7 @@ end
 -- If preferAction is true, prioritize action name over displayName (for previews)
 local function GetActionAbbreviation(macro, preferAction)
     local name;
-    -- Macros: never abbreviate from raw `action` (it may be the full multiline buffer — yields garbage like /"S<).
+    -- Macros: never abbreviate from raw `action` (it may be the full multiline buffer â€” yields garbage like /"S<).
     if macro and macro.actionType == 'macro' and macro.macroText and macro.macroText ~= '' then
         local mp = require('modules.hotbar.macroparse');
         local _, pName = mp.GetMacroPrimaryAndJaBadge(macro.macroText);
@@ -1032,7 +1032,7 @@ local function PaletteBuildIconMatchNeedles(actionName)
     if lastWord then
         local lwNorm = PaletteNormalizeIconMatchText(lastWord);
         -- Do not add a last-word needle when it is only a tail of the full normalized name
-        -- (e.g. "Attack" for "Sneak Attack" → sneakattack) — exact match would pick generic Attack.png
+        -- (e.g. "Attack" for "Sneak Attack" â†’ sneakattack) â€” exact match would pick generic Attack.png
         -- before fuzzy matching can prefer Sneak_Attack_*.
         if lwNorm ~= '' and lwNorm ~= fullNorm then
             local weakTail = (#lwNorm < 9 and #fullNorm > #lwNorm + 4 and fullNorm:sub(-#lwNorm) == lwNorm);
@@ -1433,8 +1433,8 @@ local function DrawSearchableCombo(label, items, currentValue, onSelect, showIco
                 local isSpellWithType = item.type and SPELL_TYPE_COLORS[item.type] ~= nil;
 
                 if isSpellWithType and not isSelected then
-                    -- ── Two-color spell rendering ──────────────────────────
-                    -- [level] → magic type color; name → status color.
+                    -- â”€â”€ Two-color spell rendering â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                    -- [level] â†’ magic type color; name â†’ status color.
                     -- Use one hit target (InvisibleButton): overlapping Selectable + Text ate clicks.
                     local levelColor = SPELL_TYPE_COLORS[item.type];
                     local nameColor = (item.status and STATUS_COLORS[item.status]) or COLORS.text;
@@ -1492,7 +1492,7 @@ local function DrawSearchableCombo(label, items, currentValue, onSelect, showIco
                         imgui.CloseCurrentPopup();
                     end
                 else
-                    -- ── Standard single-color rendering ────────────────────
+                    -- â”€â”€ Standard single-color rendering â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                     local textColor = nil;
                     if isSelected then
                         textColor = COLORS.gold;
@@ -1950,7 +1950,7 @@ local function RemoveMacroCustomCategory(remKey)
     end
 end
 
---- Numeric job id from a save key (Global → nil; composite SMN avatar keys → job id).
+--- Numeric job id from a save key (Global â†’ nil; composite SMN avatar keys â†’ job id).
 local function EditorSaveKeyToJobId(saveKey)
     if saveKey == GLOBAL_MACRO_KEY or saveKey == ITEMS_MACRO_KEY or saveKey == EQUIPMENT_MACRO_KEY or saveKey == XIUI_MACRO_KEY then
         return nil;
@@ -2075,7 +2075,7 @@ end
 
 -- Sync palette to current player job (call on job change)
 function M.SyncToCurrentJob()
-    -- Only sync when viewing a job bucket — preserve shared/custom macro categories across job changes
+    -- Only sync when viewing a job bucket â€” preserve shared/custom macro categories across job changes
     if not IsSharedJobAgnosticMacroSelection(MP.selectedPaletteType) then
         MP.selectedPaletteType = data.jobId or 1;
     end
@@ -2569,6 +2569,33 @@ function M.OpenEditorForSlotData(slotData)
     RefreshCachedLists();
 end
 
+-- Open the macro editor as a new macro pre-filled with a raw macro text command.
+-- The palette window is opened automatically; the user can choose where to save.
+function M.OpenNewMacroWithText(macroText, displayName)
+    M.OpenPalette();
+    ClearEditorPreviewIconCache();
+    MP.isCreatingNew              = true;
+    MP.editorDidInitialIconPick   = false;
+    MP.editorImplicitActionIconDone = false;
+    MP.editorIconManuallySet      = false;
+    MP.editorJaBadgeManuallySet   = false;
+    MP.editingMacro = {
+        actionType  = 'macro',
+        macroText   = macroText,
+        displayName = displayName or '',
+        action      = '',
+    };
+    if MP.editorFields and MP.FindIndex then
+        MP.editorFields.actionType[1]       = MP.FindIndex(MP.ACTION_TYPES or {}, 'macro');
+        MP.editorFields.action[1]           = '';
+        MP.editorFields.target[1]           = MP.FindIndex(MP.TARGET_OPTIONS or {}, 't');
+        MP.editorFields.displayName[1]      = displayName or '';
+        MP.editorFields.macroText[1]        = macroText;
+        MP.editorFields.recastSourceType[1] = MP.FindIndex(MP.RECAST_SOURCE_TYPES or {}, 'none');
+        MP.editorFields.recastSourceAction[1] = '';
+    end
+end
+
 -- ============================================
 -- Drag & Drop Functions (using dragdrop library)
 -- ============================================
@@ -2608,7 +2635,7 @@ function M.StartDragSlot(barIndex, slotIndex, slotData)
 end
 
 -- Clear drag state
--- 'shared' | 'profile' — which library new hotbar/crossbar binds refer to (for delete + cross-scope resolution)
+-- 'shared' | 'profile' â€” which library new hotbar/crossbar binds refer to (for delete + cross-scope resolution)
 function M.GetMacroSourceTagForDrops()
     if gConfig and (gConfig.macroStorageScope or 'profile') == 'shared' then
         return 'shared';
@@ -3318,7 +3345,7 @@ local function DrawPaletteBody()
             local scopeBtnSize = 22;
             imgui.TextColored(COLORS.gold, 'Drag macros to your hotbar slots');
             imgui.SameLine();
-            -- GetContentRegionAvail: use (w,h) or table [1]/[2]; do not use .x — sugar Vector can error (see palettemanager GetContentRegionAvailHeight).
+            -- GetContentRegionAvail: use (w,h) or table [1]/[2]; do not use .x â€” sugar Vector can error (see palettemanager GetContentRegionAvailHeight).
             local availW, availH = imgui.GetContentRegionAvail();
             if type(availW) == 'table' then
                 availW = availW[1] or 0;
@@ -3522,7 +3549,7 @@ local function DrawPaletteBody()
                 imgui.SetItemDefaultFocus();
             end
 
-            -- Items bucket (gear / consumables — not tied to a job)
+            -- Items bucket (gear / consumables â€” not tied to a job)
             local itemsSelected = isItems;
             local itemsMacroCount = getMacroCount(ITEMS_MACRO_KEY);
             local itemsLabel = 'Items';
@@ -3776,7 +3803,7 @@ local function DrawPaletteBody()
         imgui.PushStyleColor(ImGuiCol_PopupBg, COLORS.bgDark);
         imgui.PushStyleColor(ImGuiCol_Border, COLORS.border);
         imgui.PushStyleColor(ImGuiCol_Text, COLORS.text);
-        if imgui.BeginPopupModal('MacroCustomRename##xiui', nil, ImGuiWindowFlags_AlwaysAutoResize) then
+        if imgui.BeginPopup('MacroCustomRename##xiui') then
             local rk = MP.macroCustomRenameTargetKey;
             if rk and macroBuckets.isCustomCategoryKey(rk) then
                 imgui.TextColored(COLORS.textDim, 'Display name (macros and slot data keep the same type key).');
@@ -3808,7 +3835,7 @@ local function DrawPaletteBody()
         imgui.PushStyleColor(ImGuiCol_PopupBg, COLORS.bgDark);
         imgui.PushStyleColor(ImGuiCol_Border, COLORS.border);
         imgui.PushStyleColor(ImGuiCol_Text, COLORS.text);
-        if imgui.BeginPopupModal('MacroCustomCatDelete##xiui', nil, ImGuiWindowFlags_AlwaysAutoResize) then
+        if imgui.BeginPopup('MacroCustomCatDelete##xiui') then
             local dk = MP.macroCustomDeleteKey;
             if dk and macroBuckets.isCustomCategoryKey(dk) then
                 local n = tonumber(MP.macroCustomDeleteN) or 0;
@@ -3845,7 +3872,7 @@ local function DrawPaletteBody()
         imgui.PushStyleColor(ImGuiCol_PopupBg, COLORS.bgDark);
         imgui.PushStyleColor(ImGuiCol_Border, COLORS.border);
         imgui.PushStyleColor(ImGuiCol_Text, COLORS.text);
-        if imgui.BeginPopupModal('MacroMoveToPalette##xiui', nil, ImGuiWindowFlags_AlwaysAutoResize) then
+        if imgui.BeginPopup('MacroMoveToPalette##xiui') then
             local srcK = MP.macroMoveSourceKey;
             local mid = MP.macroMoveMacroId;
             if not srcK or not mid then
@@ -5083,7 +5110,7 @@ local function DrawIconPicker()
             imgui.PushStyleColor(ImGuiCol_ButtonHovered, COLORS.bgLight);
             imgui.PushStyleColor(ImGuiCol_Text, COLORS.text);
             
-            if imgui.BeginPopupModal('Create Custom Folder##newFolderPopup', nil, ImGuiWindowFlags_AlwaysAutoResize) then
+            if imgui.BeginPopup('Create Custom Folder##newFolderPopup') then
                 imgui.TextColored(COLORS.goldDim, 'Folder name:');
                 imgui.SetNextItemWidth(250);
                 imgui.InputText('##newFolderInput', newFolderName, 64);
@@ -5268,7 +5295,7 @@ local function DrawIconPicker()
             imgui.PushStyleColor(ImGuiCol_Button, COLORS.bgMedium);
             imgui.PushStyleColor(ImGuiCol_ButtonHovered, COLORS.bgLight);
             
-            if imgui.BeginPopupModal('Delete Folder##deleteFolderPopup', nil, ImGuiWindowFlags_AlwaysAutoResize) then
+            if imgui.BeginPopup('Delete Folder##deleteFolderPopup') then
                 local categoryLabel = CUSTOM_ICON_LABELS[deleteFolderTarget] or deleteFolderTarget or '';
                 local iconCount = customIconsByCategoryCache[deleteFolderTarget] and #customIconsByCategoryCache[deleteFolderTarget] or 0;
                 
@@ -5755,7 +5782,7 @@ function M.ApplyIconPickerContextFromEditor(forJaBadgeArg)
             end
         end
     elseif ct ~= 'spell' and ct ~= 'item' and pName then
-        -- Match AutoPick order: item id → spell id (for /ma) before inferring a custom PNG.
+        -- Match AutoPick order: item id â†’ spell id (for /ma) before inferring a custom PNG.
         local exactItemId = (MP.editingMacro.itemId and tonumber(MP.editingMacro.itemId)) or actiondb.GetItemId(pName);
         local maSpellId = (pType == 'ma' and pName) and actions.GetSpellIdByEnglishName(pName, 'ma') or nil;
         local tryInfer = (pType == 'pet' or pType == 'ja' or pType == 'ws')
@@ -6298,3 +6325,4 @@ end
 data.SetSlotDataChangedCallback(MarkHotbarDirty);
 
 return M;
+

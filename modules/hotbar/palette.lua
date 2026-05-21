@@ -58,6 +58,10 @@ local state = {
     -- /xiui cpal preview of another job's named palette (off-job). Cleared on cycle, commit, scope/job change.
     crossbarCliPreview = nil, -- { jobId, storageSubjob, paletteName }
 
+    -- /xiui cpal return-to-origin anchors (set on first cpal switch per scope, cleared on R1 double-tap return or job change)
+    cpalJobAnchor = nil,        -- { name, storageSubjob, jobId }
+    cpalUniversalAnchor = nil,  -- string palette name
+
     -- Callbacks for palette change events
     onPaletteChangedCallbacks = {},
 };
@@ -2110,6 +2114,70 @@ function M.GetCrossbarActiveStorageSubjob()
     return state.crossbarActiveStorageSubjob;
 end
 
+-- ── /xiui cpal return-to-origin anchor API ──────────────────────────────────
+
+-- Save the job-scope anchor only if one isn't already set.
+-- Call this BEFORE switching the active palette via a cpal command.
+function M.SetCpalJobAnchorIfUnset(currentName, currentStorageSubjob, currentJobId)
+    if state.cpalJobAnchor ~= nil then return; end
+    state.cpalJobAnchor = {
+        name           = currentName,
+        storageSubjob  = currentStorageSubjob or 0,
+        jobId          = currentJobId,
+    };
+end
+
+-- Save the universal/global-scope anchor only if one isn't already set.
+function M.SetCpalUniversalAnchorIfUnset(currentName)
+    if state.cpalUniversalAnchor ~= nil then return; end
+    state.cpalUniversalAnchor = currentName;
+end
+
+-- Return the anchor for the given scope ('job' or 'universal').
+-- For job scope, lazily validates the anchor against the current live job; clears and returns nil if stale.
+function M.GetCpalAnchor(scope)
+    if scope == 'universal' then
+        return state.cpalUniversalAnchor;
+    end
+    local a = state.cpalJobAnchor;
+    if not a then return nil; end
+    local ok, datamod = pcall(require, 'modules.hotbar.data');
+    if ok and datamod and datamod.jobId and a.jobId ~= datamod.jobId then
+        state.cpalJobAnchor = nil;
+        return nil;
+    end
+    return a;
+end
+
+-- Clear the anchor for the given scope without restoring.
+function M.ClearCpalAnchor(scope)
+    if scope == 'universal' then
+        state.cpalUniversalAnchor = nil;
+    else
+        state.cpalJobAnchor = nil;
+    end
+end
+
+-- Restore the anchor for the given scope: switches the active palette back to the saved value
+-- and then clears the anchor.
+function M.RestoreCpalAnchor(scope)
+    if scope == 'universal' then
+        local a = state.cpalUniversalAnchor;
+        if a then
+            state.cpalUniversalAnchor = nil;
+            M.SetActiveUniversalCrossbarPalette(a);
+        end
+    else
+        local a = state.cpalJobAnchor;
+        if a then
+            state.cpalJobAnchor = nil;
+            M.SetActivePaletteForCombo(nil, a.name, a.storageSubjob);
+        end
+    end
+end
+
+-- ────────────────────────────────────────────────────────────────────────────
+
 -- Storage tier for slot key resolution when [J] scope (not Global [G])
 function M.GetCrossbarActivePaletteStorageSubjobForResolution(jobId, liveSubjobId)
     local lj = liveSubjobId or 0;
@@ -2327,7 +2395,8 @@ local function FindCrossbarPaletteStorageKey(paletteName, jobId, subjobId)
     return nil;
 end
 
--- If a Job [J] / Subjob [SJ] storage tier has zero palettes, create one blank Default (or Palette N).
+-- If a Job [J] shared storage tier (tier 0) has zero palettes, create one blank Default (or Palette N).
+-- Subjob [SJ] tiers may be empty; gameplay falls back to shared job palettes.
 local function EnsureCrossbarStorageTierHasDefaultPalette(jobId, storageTier, skipSave)
     local jid = jobId or 1;
     local tier = storageTier or 0;
@@ -2430,12 +2499,16 @@ function M.DeleteCrossbarPalette(paletteName, jobId, subjobId)
         PrunePaletteExcludeSubtable(crossbarSettings.crossbarPaletteExcludeFromCycle, orderKey);
     end
 
-    EnsureCrossbarStorageTierHasDefaultPalette(jidOrder, tierForOrder);
+    -- Only auto-fill Job [J] shared tier; SJ tiers can remain empty.
+    if tierForOrder == 0 then
+        EnsureCrossbarStorageTierHasDefaultPalette(jidOrder, tierForOrder);
+    end
 
     if state.crossbarActivePalette == paletteName
         and (state.crossbarActiveStorageSubjob == nil or state.crossbarActiveStorageSubjob == tierForOrder) then
         local rest = M.GetCrossbarPaletteNamesForOrderTier(jidOrder, tierForOrder);
         local pickName = nil;
+        local pickTier = tierForOrder;
         if neighborName then
             for _, n in ipairs(rest) do
                 if n == neighborName then
@@ -2447,8 +2520,17 @@ function M.DeleteCrossbarPalette(paletteName, jobId, subjobId)
         if not pickName and #rest > 0 then
             pickName = rest[1];
         end
+        -- Last SJ palette removed: move active selection to Job [J] shared tier.
+        if not pickName and tierForOrder ~= 0 then
+            EnsureCrossbarStorageTierHasDefaultPalette(jidOrder, 0, true);
+            local jrest = M.GetCrossbarPaletteNamesForOrderTier(jidOrder, 0);
+            if #jrest > 0 then
+                pickName = jrest[1];
+                pickTier = 0;
+            end
+        end
         if pickName then
-            local changed = M.SetActivePaletteForCombo('L2', pickName, tierForOrder);
+            local changed = M.SetActivePaletteForCombo('L2', pickName, pickTier);
             if not changed then
                 FireCrossbarComboRefreshNoop(pickName);
             end
