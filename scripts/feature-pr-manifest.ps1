@@ -323,8 +323,16 @@ Why
                 'assets/hotbar/items/01105.png',
                 'assets/hotbar/items/03100.png',
                 'assets/hotbar/items/04270.png',
+                'assets/hotbar/items/04289.png',
+                'assets/hotbar/items/04354.png',
+                'assets/hotbar/items/04360.png',
+                'assets/hotbar/items/04361.png',
+                'assets/hotbar/items/04426.png',
                 'assets/hotbar/items/04576.png',
-                'assets/hotbar/items/17040.png'
+                'assets/hotbar/items/05124.png',
+                'assets/hotbar/items/16998.png',
+                'assets/hotbar/items/17040.png',
+                'assets/hotbar/items/20877.png'
             )
             Subject = 'Crossbar Edit Full Palette, macro Move palettes, deferred drop UX'
             Body    = @'
@@ -383,6 +391,114 @@ What changed
 
 Why
 - Resize behavior is one global HUD choice regardless of Pet Target snapping or disconnected target window. Top snap aligns vertically above the pet bar instead of drifting sideways from old preset offsets.
+'@
+        },
+        @{
+            Branch  = 'pr/19-crossbar-game-menu-block'
+            Files   = @(
+                'core/gamestate.lua',
+                'modules/hotbar/controller.lua',
+                'modules/hotbar/crossbar.lua'
+            )
+            Subject = 'Crossbar: block input and grey UI when FFXI game menus are open'
+            Body    = @'
+What changed
+- core/gamestate.lua: IsMenuOpen() scans memory for the active FFXI menu name; IGNORED_MENUS list passes combat-related menus so the crossbar stays live during battle while inventory/storage menus block it.
+- modules/hotbar/controller.lua: Skip all XInput and DInput crossbar processing when IsMenuOpen() returns true.
+- modules/hotbar/crossbar.lua: Apply inactiveSideWhileTriggerDim opacity to both sides of the crossbar UI when input is blocked by an open game menu, giving visual feedback that the bar is locked.
+
+Why
+- Prevents accidental crossbar slot execution while FFXI inventory or storage menus have focus; the crossbar dims to communicate the locked state without hiding it.
+'@
+        },
+        @{
+            Branch  = 'pr/20-cursor-visibility-popup-ux'
+            Files   = @(
+                'handlers/imgui_compat.lua',
+                'config.lua',
+                'config/global.lua'
+            )
+            Subject = 'Cursor visibility after alt+tab; profile and global popups non-blocking'
+            Body    = @'
+What changed
+- handlers/imgui_compat.lua: Restore the hardware mouse cursor when the FFXI window regains focus after alt+tab or a focus-loss event; previously the cursor could disappear until the user moved it.
+- config.lua: New Profile, Rename Profile, and Delete Profile modals converted from BeginPopupModal to BeginPopup (non-blocking); hardware cursor stays visible over FFXI while the popup is open.
+- config/global.lua: Same popup-modal-to-popup conversion for any global config dialogs.
+
+Why
+- Invisible cursor after alt+tab was a consistent pain point; non-blocking popups keep the cursor visible throughout the interaction.
+'@
+        },
+        @{
+            Branch  = 'pr/21-crossbar-cpal-r1-return'
+            Files   = @(
+                'XIUI.lua',
+                'modules/hotbar/palette.lua',
+                'modules/hotbar/controller.lua',
+                'modules/hotbar/crossbar.lua'
+            )
+            Subject = 'Crossbar: /xiui cpal anchor with pulsing R1 indicator and R1 double-tap return'
+            Body    = @'
+What changed
+- modules/hotbar/palette.lua: Cpal anchor API — SetCpalJobAnchorIfUnset / SetCpalUniversalAnchorIfUnset record the active palette before the first /xiui cpal switch; GetCpalAnchor / ClearCpalAnchor / RestoreCpalAnchor allow controller code to retrieve, clear, or jump back to the origin palette. Anchors are separate for job-tier and universal scope.
+- XIUI.lua: Set the anchor immediately before SetActivePaletteForCombo / SetActiveUniversalCrossbarPalette in the /xiui cpal handler so the origin is always saved on the first switch.
+- modules/hotbar/controller.lua: R1 double-tap (two presses within 400 ms, no L1 held) restores the cpal anchor; R1+DPAD palette cycling clears the anchor because cycling already serves a similar return function.
+- modules/hotbar/crossbar.lua: When a cpal anchor is live, draw a pulsing R1 icon above the R2 label with a subtle dark-pill background and a gold "x2" hint; icon scales up to ~130% at the pulse peak; disappears when the anchor is cleared.
+
+Why
+- /xiui cpal macros can switch the active crossbar palette programmatically; the R1 indicator tells the player an anchor is set, and double-tapping R1 returns to the original palette without another macro.
+'@
+        },
+        @{
+            Branch  = 'pr/22-crossbar-palette-list-ux'
+            Files   = @(
+                'config/palettemanager.lua',
+                'config/hotbar.lua'
+            )
+            Subject = 'Crossbar palette list: active icons, +M macro button, non-blocking new palette popup'
+            Body    = @'
+What changed
+- config/palettemanager.lua: Active/Inactive column replaced with centered checkmark/X image icons instead of text; +M button on each palette row pre-populates a new macro with the /xiui cpal switch command for that palette; New palette popup converted from a blocking modal to a BeginPopup so the hardware cursor stays visible.
+- config/hotbar.lua: Crossbar New palette popup non-blocking; persists last-selected job / storage-subjob tier across opens and resets only when the character job or subjob changes; auto-names new palettes based on tier selection.
+
+Why
+- Palette list is cleaner with icon status indicators; +M eliminates manual macro authoring for palette switches; non-blocking create popup keeps the cursor visible throughout.
+'@
+        },
+        @{
+            Branch  = 'pr/23-crossbar-doubletap-preview'
+            Files   = @(
+                'modules/hotbar/crossbar.lua',
+                'config/crossbar_settings.lua',
+                'core/settings/factories.lua',
+                'libs/drawing.lua'
+            )
+            Subject = 'Crossbar: floating double-tap preview windows for L2x2 and R2x2 bars'
+            Body    = @'
+What changed
+- modules/hotbar/crossbar.lua: Two independent floating ImGui windows (CrossbarPreviewL2x2, CrossbarPreviewR2x2) always display the 8-slot diamond for the corresponding double-tap bar including live cooldowns. Slot backgrounds render at base opacity; icon/text dims with inactiveSideWhileTriggerDim when any trigger is held (both previews dim equally — only the main crossbar is the active section). When a double-tap is live the preview swaps to show the base L2 or R2 bar as a reference. Windows omit NoBringToFrontOnFocus so they stay in front of the main crossbar; WindowPadding is zeroed to prevent clip-rect edge clipping; drag anchors sit above the window via anchorSide=top.
+- config/crossbar_settings.lua: Show Double-Tap Crossbars Preview checkbox, Preview Scale slider (0.30–1.0), Preview Opacity slider (0.20–1.0), and Lock Preview Positions toggle — all nested under Enable Double-Tap.
+- core/settings/factories.lua: showDoubleTapPreview=false, doubleTapPreviewScale=0.60, doubleTapPreviewOpacity=1.0, doubleTapPreviewLocked=false defaults.
+- libs/drawing.lua: DrawMoveAnchor gains anchorSide='top' option (with windowWidth for centering) so the drag handle can be placed above the target window rather than to its left.
+
+Why
+- Players can see their double-tap bar contents and cooldowns at a glance without activating the double-tap; the preview swaps to the base bar while the double-tap is live so both bars are always visible.
+'@
+        },
+        @{
+            Branch  = 'pr/24-macro-editor-spell-list-fixes'
+            Files   = @(
+                'modules/hotbar/macropalette.lua',
+                'modules/hotbar/playerdata.lua'
+            )
+            Subject = 'Macro editor: fix missing spells when Show All is off and duplicate spell entries'
+            Body    = @'
+What changed
+- modules/hotbar/playerdata.lua: Spell filtering now correctly reads unlearnable flags from horizonspells.lua so spells the character cannot learn are excluded from Show All lists; duplicate spell rows (e.g. Sleepga appearing for both Black Magic and Enfeebling Magic) removed by deduplicating on spell id before building the display list.
+- modules/hotbar/macropalette.lua: When Show All is unchecked, the spell list now consistently shows known/available spells matching the selected magic type without gaps caused by missing requirement checks.
+
+Why
+- Create Macro spell picker was missing spells the character knows when Show All was off, and showed duplicate rows for spells that appear under multiple magic-type categories in the source data.
 '@
         }
     )
