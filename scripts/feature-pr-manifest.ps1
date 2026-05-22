@@ -322,12 +322,14 @@ Why
                 'modules/hotbar/slotrenderer.lua',
                 'assets/hotbar/items/01105.png',
                 'assets/hotbar/items/03100.png',
+                'assets/hotbar/items/04098.png',
                 'assets/hotbar/items/04270.png',
                 'assets/hotbar/items/04289.png',
                 'assets/hotbar/items/04354.png',
                 'assets/hotbar/items/04360.png',
                 'assets/hotbar/items/04361.png',
                 'assets/hotbar/items/04426.png',
+                'assets/hotbar/items/04472.png',
                 'assets/hotbar/items/04576.png',
                 'assets/hotbar/items/05124.png',
                 'assets/hotbar/items/16998.png',
@@ -396,19 +398,23 @@ Why
         @{
             Branch  = 'pr/19-crossbar-game-menu-block'
             Files   = @(
+                'config/crossbar.lua',
                 'core/gamestate.lua',
+                'core/settings/factories.lua',
                 'modules/hotbar/controller.lua',
                 'modules/hotbar/crossbar.lua'
             )
-            Subject = 'Crossbar: block input and grey UI when FFXI game menus are open'
+            Subject = 'Crossbar: optional disable in game menus with visual dim feedback'
             Body    = @'
 What changed
 - core/gamestate.lua: IsMenuOpen() scans memory for the active FFXI menu name; IGNORED_MENUS list passes combat-related menus so the crossbar stays live during battle while inventory/storage menus block it.
-- modules/hotbar/controller.lua: Skip all XInput and DInput crossbar processing when IsMenuOpen() returns true.
-- modules/hotbar/crossbar.lua: Apply inactiveSideWhileTriggerDim opacity to both sides of the crossbar UI when input is blocked by an open game menu, giving visual feedback that the bar is locked.
+- config/crossbar.lua: Disable Crossbar While In Menu checkbox under Hide When Menu Open (default on). When unchecked, trigger input passes through so FFXI inventory Quick Jump (trigger + D-pad left/right) still works.
+- core/settings/factories.lua: crossbarDisableInMenu = true default.
+- modules/hotbar/controller.lua: Skip XInput/DInput crossbar processing when IsMenuOpen() and crossbarDisableInMenu is enabled.
+- modules/hotbar/crossbar.lua: Dim crossbar UI when menu is open and disable-in-menu is enabled, giving visual feedback that input is blocked.
 
 Why
-- Prevents accidental crossbar slot execution while FFXI inventory or storage menus have focus; the crossbar dims to communicate the locked state without hiding it.
+- Prevents accidental crossbar slot execution while FFXI inventory or storage menus have focus; optional setting lets players keep trigger navigation for Quick Jump when they prefer.
 '@
         },
         @{
@@ -499,6 +505,22 @@ What changed
 
 Why
 - Create Macro spell picker was missing spells the character knows when Show All was off, and showed duplicate rows for spells that appear under multiple magic-type categories in the source data.
+'@
+        },
+        @{
+            Branch  = 'pr/25-party-list-align-bottom-anchor'
+            Files   = @(
+                'handlers/helpers.lua',
+                'modules/partylist/display.lua'
+            )
+            Subject = 'Party list: fix align-bottom anchor drift on reload, drag, and profile switch'
+            Body    = @'
+What changed
+- handlers/helpers.lua: ApplyWindowPosition returns true on the frame it applies a saved position so callers can distinguish load/relog from user drag.
+- modules/partylist/display.lua: alignBottom keeps the bottom edge fixed when party size changes height; height-correction SetWindowPos syncs windowPositions immediately. On profile/character load, height correction runs when saved Y matches applied Y even if height differs (e.g. solo vs full party). User drag resets the bottom anchor and persists via SaveSettingsOnly instead of ashita_settings.save (which reloaded the profile and wiped in-memory positions).
+
+Why
+- Party and alliance lists were drifting on reload, character swap, and profile switch; dragged positions were not sticking and could bleed across profiles because character settings save triggered a profile reload before windowPositions were written.
 '@
         }
     )

@@ -1856,7 +1856,8 @@ function M.DrawWindow(settings, moduleSettings)
 
     -- Dim the crossbar while a game menu is open so the player can see that
     -- controller input is paused (inventory, safe, storage, etc.).
-    if gamestate.IsMenuOpen() then
+    -- Only applied when the Disable Crossbar While In Menu option is enabled.
+    if gamestate.IsMenuOpen() and settings.crossbarDisableInMenu ~= false then
         visibilityOpacity = visibilityOpacity * 0.35;
     end
     local menuDimFactor = visibilityOpacity;

@@ -472,6 +472,9 @@ function M.createCrossbarDefaults()
         -- Hide crossbar when game menu open (independent from Hotbar → Hide When Menu Open)
         crossbarHideOnMenuFocus = false,
 
+        -- Disable crossbar input while a game menu is open (keeps it visible but blocks trigger macros)
+        crossbarDisableInMenu = true,
+
         -- Config UI: which main section is active (1=Controller, 2=Manage palettes, 3=Global visuals)
         configUiTab = 1,
         -- 'universal' = editing [G] all-jobs sets; 'job' = editing palettes for configEditJobId

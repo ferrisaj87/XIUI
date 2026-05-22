@@ -44,6 +44,9 @@ function M.DrawSettings(state)
     components.DrawPartyCheckbox(cross, 'Hide When Menu Open', 'crossbarHideOnMenuFocus', DeferredUpdateVisuals);
     imgui.ShowHelp('Hide the crossbar when a game menu is open (equipment, map, etc.). Separate from Hotbar → Hide When Menu Open (keyboard strips).');
 
+    components.DrawPartyCheckbox(cross, 'Disable Crossbar While In Menu##xbDisableInMenu', 'crossbarDisableInMenu', DeferredUpdateVisuals);
+    imgui.ShowHelp('This options temporarily disables the crossbars while keeping them visible while the main menu is open. This setting allows users to continue to use the games "Quick Jump" option in inventories when holding down either trigger and using Left/Right on the DPad');
+
     hotbarConfig.DrawSharedDisableXiMacrosControls('xb');
     hotbarConfig.DrawSharedSkillchainHighlightControls('xb');
 

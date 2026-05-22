@@ -528,9 +528,10 @@ function Controller.HandleXInputState(e)
     end
 
     -- While a game menu is open (inventory, safe, storage, wardrobe, etc.) the game uses
-    -- trigger+D-pad for navigation.  Clear any active combo so no macro fires when the
-    -- menu closes, and pass the frame through untouched.
-    if gamestate.IsMenuOpen() then
+    -- trigger+D-pad for navigation.  When the disable-in-menu option is on, clear any
+    -- active combo so no macro fires when the menu closes, and pass the frame through untouched.
+    local cb = gConfig and gConfig.hotbarCrossbar;
+    if gamestate.IsMenuOpen() and (cb == nil or cb.crossbarDisableInMenu ~= false) then
         if state.activeCombo ~= COMBO_MODES.NONE or state.leftTriggerHeld or state.rightTriggerHeld then
             state.leftTriggerHeld   = false;
             state.rightTriggerHeld  = false;
