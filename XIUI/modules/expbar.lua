@@ -1,26 +1,12 @@
 require('common');
 require('handlers.helpers');
 local imgui = require('imgui');
-local gdi = require('submodules.gdifonts.include');
+local imtext = require('libs.imtext');
 local progressbar = require('libs.progressbar');
 local drawing = require('libs.drawing');
 local defaultPositions = require('libs.defaultpositions');
 
-local jobText;
-local expText;
-local percentText;
-local allFonts; -- Table for batch visibility operations
-
 -- Thank you @onimitch for the help with tons of the EXPbar module!
--- Cached colors to avoid expensive set_font_color calls every frame
-local lastJobTextColor;
-local lastExpTextColor;
-local lastPercentTextColor;
-
--- Position save/restore state
-local hasAppliedSavedPosition = false;
-local forcePositionReset = false;
-local lastSavedPosX, lastSavedPosY = nil, nil;
 
 local expbar = {
     limitPoints = {},
@@ -35,7 +21,7 @@ local function buildJobString(player, jobLevel, masteryEnabled, mlJobLevel)
     local subJobString = AshitaCore:GetResourceManager():GetString('jobs.names_abbr', player:GetSubJob());
 
     local jobLevelString = tostring(jobLevel);
-    if masteryEnabled then
+    if masteryEnabled and mlJobLevel > 0 then
         jobLevelString = 'ML' .. mlJobLevel;
     end
 
@@ -44,7 +30,7 @@ end
 
 local function buildExpString(separator, masteryEnabled, meritMode, jobLevel, jobPoints, meritPoints, limitPoints, capPoints, expPoints, mastery)
     if masteryEnabled then
-        return separator .. 'JP (' .. jobPoints[1] .. ' / ' .. jobPoints[2] .. ')' .. '  MP (' .. meritPoints[1] .. ' / ' .. meritPoints[2] .. ')' .. '  EXP (' .. mastery[1] .. ' / ' .. mastery[2] .. ')';
+        return separator .. 'JP (' .. jobPoints[1] .. ' / ' .. jobPoints[2] .. ')' .. '  MP (' .. meritPoints[1] .. ' / ' .. meritPoints[2] .. ')' .. '  EXEMP (' .. mastery[1] .. ' / ' .. mastery[2] .. ')';
     elseif meritMode then
         if jobLevel >= 99 then
             return separator .. 'JP (' .. jobPoints[1] .. '/' .. jobPoints[2] .. ') MP (' .. meritPoints[1] .. '/' .. meritPoints[2] .. ') LP (' .. limitPoints[1] .. '/' .. limitPoints[2] .. ')';
@@ -80,17 +66,15 @@ expbar.DrawWindow = function(settings)
     -- Obtain the player entity..
     local player = GetPlayerSafe();
 
-	if (player == nil) then
-		SetFontsVisible(allFonts, false);
-		return;
-	end
+    if (player == nil) then
+        return;
+    end
 
-	local mainJob = player:GetMainJob();
+    local mainJob = player:GetMainJob();
 
     if (player.isZoning or mainJob == 0) then
-		SetFontsVisible(allFonts, false);
         return;
-	end
+    end
 
     local jobLevel = player:GetMainJobLevel();
     local subJob = player:GetSubJob();
@@ -108,8 +92,9 @@ expbar.DrawWindow = function(settings)
     local capPointsProgress = expbar.capacityPoints[1] / expbar.capacityPoints[2];
     local jobPoints = expbar.jobPoints;
 
-    local mastered = player:GetJobPointsSpent(mainJob) == 2100;
-    local masteryEnabled = jobLevel >= 99 and mastered and player:HasKeyItem(expbar.mlBreakerItemId);
+    local mastered = player:GetJobPointsSpent(mainJob) >= 2100;
+    local autoMasteryEnabled = jobLevel >= 99 and mastered and player:HasKeyItem(expbar.mlBreakerItemId);
+    local masteryEnabled = jobLevel >= 99 and (autoMasteryEnabled or gConfig.expBarMasteryMode);
     local masteryProgress = 0;
     local mlJobLevel = 0;
     if masteryEnabled then
@@ -152,20 +137,20 @@ expbar.DrawWindow = function(settings)
     local actualTextWidth = 0;
     if inlineMode then
         if jobString then
-            jobText:set_text(jobString);
-            local jobWidth = jobText:get_text_size();
+            imtext.SetConfigFromSettings(settings.job_font_settings);
+            local jobWidth = imtext.Measure(jobString, settings.job_font_settings.font_height);
             actualTextWidth = actualTextWidth + jobWidth;
         end
 
         if expString then
-            expText:set_text(expString);
-            local expWidth = expText:get_text_size();
+            imtext.SetConfigFromSettings(settings.exp_font_settings);
+            local expWidth = imtext.Measure(expString, settings.exp_font_settings.font_height);
             actualTextWidth = actualTextWidth + expWidth + expBarTextMargin;
         end
 
         if percentString then
-            percentText:set_text(percentString);
-            local percentWidth = percentText:get_text_size();
+            imtext.SetConfigFromSettings(settings.percent_font_settings);
+            local percentWidth = imtext.Measure(percentString, settings.percent_font_settings.font_height);
             -- Add spacing between exp text and percent text
             actualTextWidth = actualTextWidth + percentWidth + expBarTextMargin;
         end
@@ -199,33 +184,35 @@ expbar.DrawWindow = function(settings)
         lastSavedPosX = gConfig.expBarWindowPosX;
         lastSavedPosY = gConfig.expBarWindowPosY;
     end
-	local windowFlags = GetBaseWindowFlags(gConfig.lockPositions);
+    local windowFlags = GetBaseWindowFlags(gConfig.lockPositions);
     ApplyWindowPosition('ExpBar');
     if (imgui.Begin('ExpBar', true, windowFlags)) then
         SaveWindowPosition('ExpBar');
+        local drawList = GetUIDrawList();
+        imtext.SetConfigFromSettings(settings.job_font_settings);
 
-		-- Draw the progress bar        
-		-- Get window origin for text positioning
-		local startX, startY = imgui.GetCursorScreenPos();
+        -- Draw the progress bar
+        -- Get window origin for text positioning
+        local startX, startY = imgui.GetCursorScreenPos();
 
-		-- In inline mode, add invisible spacing for text area first
-		if inlineMode then
-			imgui.Dummy({actualTextWidth, settings.barHeight});
-			imgui.SameLine(0, 0);
-		end
+        -- In inline mode, add invisible spacing for text area first
+        if inlineMode then
+            imgui.Dummy({actualTextWidth, settings.barHeight});
+            imgui.SameLine(0, 0);
+        end
 
-		-- Get bar position (offset by text area in inline mode)
-		local barStartX, barStartY = imgui.GetCursorScreenPos();
+        -- Get bar position (offset by text area in inline mode)
+        local barStartX, barStartY = imgui.GetCursorScreenPos();
 
-		local expGradient;
-		if meritMode then
-			expGradient = GetCustomGradient(gConfig.colorCustomization.expBar, 'meritBarGradient') or {'#3064c3', '#66a0e9'};
-		else
-			expGradient = GetCustomGradient(gConfig.colorCustomization.expBar, 'expBarGradient') or {'#c39040', '#e9c466'};
-		end
-		-- Let progressbar handle its own Dummy for sizing (includes border extent)
-		-- Use GetBackgroundDrawList to avoid clipping issues with large scales (window clipping)
-		progressbar.ProgressBar({{progressBarProgress, expGradient}}, {progressBarWidth, settings.barHeight}, {decorate = gConfig.showExpBarBookends, drawList = imgui.GetBackgroundDrawList()});
+        local expGradient;
+        if meritMode then
+            expGradient = GetCustomGradient(gConfig.colorCustomization.expBar, 'meritBarGradient') or {'#3064c3', '#66a0e9'};
+        else
+            expGradient = GetCustomGradient(gConfig.colorCustomization.expBar, 'expBarGradient') or {'#c39040', '#e9c466'};
+        end
+        -- Let progressbar handle its own Dummy for sizing (includes border extent)
+        -- Use GetBackgroundDrawList to avoid clipping issues with large scales (window clipping)
+        progressbar.ProgressBar({{progressBarProgress, expGradient}}, {progressBarWidth, settings.barHeight}, {decorate = gConfig.showExpBarBookends, drawList = imgui.GetBackgroundDrawList()});
 
         -- Calculate text padding
         local bookendWidth = gConfig.showExpBarBookends and (settings.barHeight / 2) or 0;
@@ -256,16 +243,9 @@ expbar.DrawWindow = function(settings)
         -- Pre-calculate percent text width for layout purposes (needed before expText positioning)
         local percentTextWidth = 0;
         if percentString then
-            percentText:set_text(percentString);
-            percentTextWidth = percentText:get_text_size();
+            imtext.SetConfigFromSettings(settings.percent_font_settings);
+            percentTextWidth = imtext.Measure(percentString, settings.percent_font_settings.font_height);
         end
-
-		-- Update our text objects
-
-		-- Dynamically set font heights based on settings (avoids expensive font recreation)
-		jobText:set_font_height(settings.job_font_settings.font_height);
-		expText:set_font_height(settings.exp_font_settings.font_height);
-		percentText:set_font_height(settings.percent_font_settings.font_height);
 
         -- Declare width variables in wider scope for use in percent text positioning
         local textWidth, textHeight = 0, 0;
@@ -280,22 +260,16 @@ expbar.DrawWindow = function(settings)
         local percentOffsetY = settings.percentTextOffsetY or 0;
 
         if jobString then
-            -- Job Text (string already built above)
-            jobText:set_text(jobString);
-            textWidth, textHeight = jobText:get_text_size();
+            -- Job Text (left-aligned)
+            imtext.SetConfigFromSettings(settings.job_font_settings);
+            textWidth, textHeight = imtext.Measure(jobString, settings.job_font_settings.font_height);
             local jobBaseX = leftTextX;
             local jobBaseY = inlineMode and textY + (settings.barHeight - textHeight) / 2 - 1 or textY;
-            jobText:set_position_x(jobBaseX + jobOffsetX);
-            jobText:set_position_y(jobBaseY + jobOffsetY);
-            -- Only call set_font_color if the color has changed (expensive operation for GDI fonts)
-            if (lastJobTextColor ~= gConfig.colorCustomization.expBar.jobTextColor) then
-                jobText:set_font_color(gConfig.colorCustomization.expBar.jobTextColor);
-                lastJobTextColor = gConfig.colorCustomization.expBar.jobTextColor;
-            end
+            imtext.Draw(drawList, jobString, jobBaseX + jobOffsetX, jobBaseY + jobOffsetY, gConfig.colorCustomization.expBar.jobTextColor, settings.job_font_settings.font_height);
 
-            -- Exp Text (string already built above with correct separator)
-            expText:set_text(expString);
-            expTextWidth, expTextHeight = expText:get_text_size();
+            -- Exp Text (right-aligned: position is right edge, draw at rightEdge - width)
+            imtext.SetConfigFromSettings(settings.exp_font_settings);
+            expTextWidth, expTextHeight = imtext.Measure(expString, settings.exp_font_settings.font_height);
 
             -- Position exp text after job text in inline mode, or at right edge in non-inline mode
             local expBaseX;
@@ -312,25 +286,14 @@ expbar.DrawWindow = function(settings)
                 end
             end
             local expBaseY = inlineMode and textY + (settings.barHeight - expTextHeight) / 2 - 1 or textY;
-            expText:set_position_x(expBaseX + expOffsetX);
-            expText:set_position_y(expBaseY + expOffsetY);
-            -- Only call set_font_color if the color has changed
-            if (lastExpTextColor ~= gConfig.colorCustomization.expBar.expTextColor) then
-                expText:set_font_color(gConfig.colorCustomization.expBar.expTextColor);
-                lastExpTextColor = gConfig.colorCustomization.expBar.expTextColor;
-            end
-
-            jobText:set_visible(true);
-            expText:set_visible(true);
-        else
-            jobText:set_visible(false);
-            expText:set_visible(false);
+            imtext.Draw(drawList, expString, expBaseX + expOffsetX - expTextWidth, expBaseY + expOffsetY, gConfig.colorCustomization.expBar.expTextColor, settings.exp_font_settings.font_height);
         end
 
         -- Percent Text
         if percentString then
+            imtext.SetConfigFromSettings(settings.percent_font_settings);
             -- percentString and percentTextWidth already calculated above for layout purposes
-            local _, percentTextHeight = percentText:get_text_size();
+            local _, percentTextHeight = imtext.Measure(percentString, settings.percent_font_settings.font_height);
 
             -- Position percent text
             local percentTextX, percentTextY;
@@ -357,43 +320,15 @@ expbar.DrawWindow = function(settings)
                 end
             end
 
-            percentText:set_position_x(percentTextX + percentOffsetX);
-            percentText:set_position_y(percentTextY + percentOffsetY);
-            -- Only call set_font_color if the color has changed
-            if (lastPercentTextColor ~= gConfig.colorCustomization.expBar.percentTextColor) then
-                percentText:set_font_color(gConfig.colorCustomization.expBar.percentTextColor);
-                lastPercentTextColor = gConfig.colorCustomization.expBar.percentTextColor;
-            end
-
-            percentText:set_visible(true);
-        else
-            percentText:set_visible(false);
-        end
-
-        -- Save position if moved (with change detection to avoid spam)
-        local winPosX, winPosY = imgui.GetWindowPos();
-        if not gConfig.lockPositions then
-            if lastSavedPosX == nil or
-               math.abs(winPosX - lastSavedPosX) > 1 or
-               math.abs(winPosY - lastSavedPosY) > 1 then
-                gConfig.expBarWindowPosX = winPosX;
-                gConfig.expBarWindowPosY = winPosY;
-                lastSavedPosX = winPosX;
-                lastSavedPosY = winPosY;
-            end
+            -- Right-aligned: position is right edge, draw at rightEdge - width
+            imtext.Draw(drawList, percentString, percentTextX + percentOffsetX - percentTextWidth, percentTextY + percentOffsetY, gConfig.colorCustomization.expBar.percentTextColor, settings.percent_font_settings.font_height);
         end
     end
-	imgui.End();
+    imgui.End();
 end
 
 
 expbar.Initialize = function(settings)
-	-- Use FontManager for cleaner font creation
-    jobText = FontManager.create(settings.job_font_settings);
-	expText = FontManager.create(settings.exp_font_settings);
-	percentText = FontManager.create(settings.percent_font_settings);
-	allFonts = {jobText, expText, percentText};
-
     local player = GetPlayerSafe();
     if player ~= nil then
         expbar.limitPoints = { player:GetLimitPoints(), 10000 };
@@ -407,22 +342,10 @@ expbar.Initialize = function(settings)
 end
 
 expbar.UpdateVisuals = function(settings)
-	-- Use FontManager for cleaner font recreation
-	jobText = FontManager.recreate(jobText, settings.job_font_settings);
-	expText = FontManager.recreate(expText, settings.exp_font_settings);
-	percentText = FontManager.recreate(percentText, settings.percent_font_settings);
-	allFonts = {jobText, expText, percentText};
-
-	-- Reset cached colors when fonts are recreated
-	lastJobTextColor = nil;
-	lastExpTextColor = nil;
-	lastPercentTextColor = nil;
+    imtext.Reset();
 end
 
 expbar.SetHidden = function(hidden)
-	if (hidden == true) then
-		SetFontsVisible(allFonts, false);
-	end
 end
 
 expbar.HandlePacket = function(e)
@@ -475,16 +398,11 @@ expbar.HandlePacket = function(e)
 end
 
 expbar.Cleanup = function()
-	-- Use FontManager for cleaner font destruction
-	jobText = FontManager.destroy(jobText);
-	expText = FontManager.destroy(expText);
-	percentText = FontManager.destroy(percentText);
-	allFonts = nil;
 end
 
 expbar.ResetPositions = function()
-	forcePositionReset = true;
-	hasAppliedSavedPosition = false;
+    forcePositionReset = true;
+    hasAppliedSavedPosition = false;
 end
 
 return expbar;

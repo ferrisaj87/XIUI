@@ -27,7 +27,6 @@ local fastcastLib = require('libs.fastcast');
 local formatLib = require('libs.format');
 local colorLib = require('libs.color');
 local statusIconsLib = require('libs.statusicons');
-local windowBackgroundLib = require('libs.windowbackground');
 
 -- Handler imports (still in handlers/)
 local statusHandler = require('handlers.statushandler');
@@ -49,8 +48,10 @@ function ApplyWindowPosition(windowName)
             -- print('[XIUI] Applying position for ' .. windowName .. ': ' .. pos.x .. ',' .. pos.y);
             imgui.SetNextWindowPos({ pos.x, pos.y }, ImGuiCond_Always);
             gConfig.appliedPositions[windowName] = true;
+            return true;
         end
     end
+    return false;
 end
 
 -- Save Window Position Helper
@@ -140,10 +141,6 @@ GetIsTargetLockedOn = targetLib.GetIsTargetLockedOn;
 
 -- Font Utilities (from fonts.lua)
 GetFontWeightFlags = fontsLib.GetFontWeightFlags;
-FontManager = fontsLib.FontManager;
-ColorCachedFont = fontsLib.ColorCachedFont;
-SetFontsVisible = fontsLib.SetFontsVisible;
-UpdateAllFontOutlineWidths = fontsLib.UpdateAllOutlineWidths;
 
 -- Drawing Utilities (from drawing.lua)
 draw_rect = drawingLib.draw_rect;
@@ -218,13 +215,6 @@ function DrawStatusIcons(statusIds, iconSize, maxColumns, maxRows, drawBg, xOffs
     return statusIconsLib.DrawStatusIcons(statusIds, iconSize, maxColumns, maxRows, drawBg, xOffset, buffTimes, settings, statusHandler, buffTable);
 end
 
-ClearDebuffFontCache = statusIconsLib.ClearDebuffFontCache;
-
--- Legacy debuffTable global (for backwards compatibility)
-debuffTable = statusIconsLib.GetDebuffTable();
-
--- Window Background Utilities (from windowbackground.lua)
-WindowBackground = windowBackgroundLib;
 
 -- ========================================
 -- Window Utilities

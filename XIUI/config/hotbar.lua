@@ -1528,8 +1528,11 @@ local function DrawVisualSettingsContent(settings, configKey)
         components.DrawPartySliderInt(settings, 'Slot X Padding##' .. configKey, 'slotXPadding', 0, 32, '%d', nil, 8);
         imgui.ShowHelp('Horizontal gap between slots.');
 
-        components.DrawPartySliderInt(settings, 'Slot Y Padding##' .. configKey, 'slotYPadding', 0, 32, '%d', nil, 6);
-        imgui.ShowHelp('Vertical gap between rows.');
+        -- Slot Y Padding slider removed: each hotbar is now positioned
+        -- independently, so bar-to-bar spacing is handled by drag-positioning.
+        -- The setting still exists on the data side and controls the row gap
+        -- inside multi-row bars; we keep the saved value but hide the slider
+        -- to avoid misleading users.
 
         -- Show Hotbar Number with inline offsets
         components.DrawPartyCheckbox(settings, 'Show Hotbar Number##' .. configKey, 'showHotbarNumber');
@@ -1568,6 +1571,10 @@ local function DrawVisualSettingsContent(settings, configKey)
             components.DrawInlineOffsets(settings, configKey .. 'qty', 'quantityOffsetX', 'quantityOffsetY', 35);
         end
         imgui.ShowHelp('Display item quantity on item slots. Choose anchor position and fine-tune with X/Y offsets.');
+
+        -- Show full-stack count above the item quantity (only counts complete stacks)
+        components.DrawPartyCheckbox(settings, 'Show Stack Quantity##' .. configKey, 'showStackQuantity');
+        imgui.ShowHelp('Show full-stack count next to the item quantity. Only complete stacks are counted (e.g. 25 of stack-12 items shows "(2)"). Shares position/font with Show Item Quantity.');
 
         -- Show Action Labels with offsets
         components.DrawPartyCheckbox(settings, 'Show Action Labels##' .. configKey, 'showActionLabels');
@@ -2250,6 +2257,10 @@ local function DrawCrossbarSettings(selectedCrossbarTab)
                     components.DrawInlineOffsets(crossbarSettings, 'crossbarqty', 'quantityOffsetX', 'quantityOffsetY', 35);
                 end
                 imgui.ShowHelp('Display item quantity on item slots. X/Y offsets adjust position.');
+
+                -- Show full-stack count above the item quantity (only counts complete stacks)
+                components.DrawPartyCheckbox(crossbarSettings, 'Show Stack Quantity##crossbar', 'showStackQuantity');
+                imgui.ShowHelp('Show full-stack count next to the item quantity. Only complete stacks are counted (e.g. 25 of stack-12 items shows "(2)"). Shares position/font with Show Item Quantity.');
 
                 -- Show Combo Text with X/Y offsets
                 components.DrawPartyCheckbox(crossbarSettings, 'Show Combo Text##crossbar', 'showComboText');

@@ -131,6 +131,20 @@ local function ClearAllIconCaches()
     if slotrenderer and slotrenderer.ClearSlotRenderingCache then
         slotrenderer.ClearSlotRenderingCache();
     end
+    -- Edits that change a macro's action leave the old actionType:action entry
+    -- orphaned in mpCostCache / availabilityCache. Functionally fine (the new key
+    -- naturally misses), but bounds memory across many edits.
+    if slotrenderer and slotrenderer.ClearMPCostCache then
+        slotrenderer.ClearMPCostCache();
+    end
+    if slotrenderer and slotrenderer.ClearAvailabilityCache then
+        slotrenderer.ClearAvailabilityCache();
+    end
+    -- Clear the icon-resolution negative cache so newly-added custom icons
+    -- on edited macros are picked up next frame.
+    if actions and actions.ClearNoIconCache then
+        actions.ClearNoIconCache();
+    end
 end
 
 -- Helper to clear icon cache for a single hotbar slot (targeted - fast)
@@ -148,10 +162,6 @@ local function ClearSlotIconCache(barIndex, slotIndex)
     if display and display.ClearIconCacheForSlot then
         display.ClearIconCacheForSlot(barIndex, slotIndex);
     end
-    -- Clear slotrenderer cache for this slot
-    if slotrenderer and slotrenderer.InvalidateSlotByKey then
-        slotrenderer.InvalidateSlotByKey(barIndex .. ':' .. slotIndex);
-    end
 end
 
 -- Helper to clear icon cache for a single crossbar slot (targeted - fast)
@@ -168,10 +178,6 @@ local function ClearCrossbarSlotIconCache(comboMode, slotIndex)
     -- Clear crossbar icon cache for this slot
     if crossbar and crossbar.ClearIconCacheForSlot then
         crossbar.ClearIconCacheForSlot(comboMode, slotIndex);
-    end
-    -- Clear slotrenderer cache for this slot
-    if slotrenderer and slotrenderer.InvalidateSlotByKey then
-        slotrenderer.InvalidateSlotByKey(comboMode .. ':' .. slotIndex);
     end
 end
 
@@ -1242,6 +1248,9 @@ end
 
 -- Start dragging from a hotbar slot
 function M.StartDragSlot(barIndex, slotIndex, slotData)
+    -- Empty/orphaned slot - nothing to drag
+    if not slotData then return; end
+
     -- Get icon for this slot
     local icon = actions.GetBindIcon(slotData);
 
@@ -1304,25 +1313,14 @@ function M.HandleDropOnSlot(payload, targetBarIndex, targetSlotIndex)
     local jobSlotActions = ensureSlotActionsStructure(gConfig[configKey], storageKey);
 
     if payload.type == 'macro' then
-        -- Dragging from palette to slot
+        -- Dragging from palette to slot - store only the macro reference.
+        -- macroDB is the single source of truth for action/macroText/displayName/etc.
         local macroData = payload.data;
         if macroData then
-            -- Get the current macro palette key to store with the reference
-            local macroPaletteKey = GetEffectivePaletteType();
-            jobSlotActions[targetSlotIndex] = {
-                actionType = macroData.actionType,
-                action = macroData.action,
-                target = macroData.target,
-                displayName = macroData.displayName,
-                equipSlot = macroData.equipSlot,
-                macroText = macroData.macroText,
-                itemId = macroData.itemId,  -- Store item ID for fast icon lookup
-                customIconType = macroData.customIconType,  -- Custom icon override
-                customIconId = macroData.customIconId,
-                customIconPath = macroData.customIconPath,  -- Custom icon path for 'custom' type
-                macroRef = macroData.id,  -- Store reference to source macro for live updates
-                macroPaletteKey = macroPaletteKey,  -- Store which palette the macro came from
-            };
+            jobSlotActions[targetSlotIndex] = data.BuildSlotDataForWrite({
+                macroRef = macroData.id,
+                macroPaletteKey = macroData.macroPaletteKey or GetEffectivePaletteType(),
+            });
             MarkHotbarDirty();
         end
 
@@ -1332,44 +1330,13 @@ function M.HandleDropOnSlot(payload, targetBarIndex, targetSlotIndex)
         local sourceSlotIndex = payload.slotIndex;
         local sourceConfigKey = 'hotbarBar' .. sourceBarIndex;
 
-        -- Use the source data from payload (already contains the action info)
-        local sourceBindData = payload.data;
-        local sourceData = nil;
-        if sourceBindData then
-            sourceData = {
-                actionType = sourceBindData.actionType,
-                action = sourceBindData.action,
-                target = sourceBindData.target,
-                displayName = sourceBindData.displayName or sourceBindData.action,
-                equipSlot = sourceBindData.equipSlot,
-                macroText = sourceBindData.macroText,
-                itemId = sourceBindData.itemId,  -- Preserve item ID for icon lookup
-                customIconType = sourceBindData.customIconType,  -- Preserve custom icon
-                customIconId = sourceBindData.customIconId,
-                customIconPath = sourceBindData.customIconPath,  -- Preserve custom icon path
-                macroRef = sourceBindData.macroRef,  -- Preserve macro reference
-                macroPaletteKey = sourceBindData.macroPaletteKey,  -- Preserve palette key
-            };
-        end
+        local sourceData = data.BuildSlotDataForWrite(payload.data);
 
         -- Get target slot data
         local targetBind = data.GetKeybindForSlot(targetBarIndex, targetSlotIndex);
-        local targetData = nil;
+        local targetData;
         if targetBind then
-            targetData = {
-                actionType = targetBind.actionType,
-                action = targetBind.action,
-                target = targetBind.target,
-                displayName = targetBind.displayName or targetBind.action,
-                equipSlot = targetBind.equipSlot,
-                macroText = targetBind.macroText,
-                itemId = targetBind.itemId,  -- Preserve item ID for icon lookup
-                customIconType = targetBind.customIconType,  -- Preserve custom icon
-                customIconId = targetBind.customIconId,
-                customIconPath = targetBind.customIconPath,  -- Preserve custom icon path
-                macroRef = targetBind.macroRef,  -- Preserve macro reference
-                macroPaletteKey = targetBind.macroPaletteKey,  -- Preserve palette key
-            };
+            targetData = data.BuildSlotDataForWrite(targetBind);
         else
             -- Target slot is empty - mark as cleared
             targetData = { cleared = true };
@@ -1391,22 +1358,8 @@ function M.HandleDropOnSlot(payload, targetBarIndex, targetSlotIndex)
 
     elseif payload.type == 'crossbar_slot' then
         -- Dragging from crossbar to hotbar (one-way copy, doesn't clear source)
-        local sourceBindData = payload.data;
-        if sourceBindData then
-            jobSlotActions[targetSlotIndex] = {
-                actionType = sourceBindData.actionType,
-                action = sourceBindData.action,
-                target = sourceBindData.target,
-                displayName = sourceBindData.displayName or sourceBindData.action,
-                equipSlot = sourceBindData.equipSlot,
-                macroText = sourceBindData.macroText,
-                itemId = sourceBindData.itemId,
-                customIconType = sourceBindData.customIconType,
-                customIconId = sourceBindData.customIconId,
-                customIconPath = sourceBindData.customIconPath,  -- Preserve custom icon path
-                macroRef = sourceBindData.macroRef,  -- Preserve macro reference
-                macroPaletteKey = sourceBindData.macroPaletteKey,  -- Preserve palette key
-            };
+        if payload.data then
+            jobSlotActions[targetSlotIndex] = data.BuildSlotDataForWrite(payload.data);
             MarkHotbarDirty();
         end
     end

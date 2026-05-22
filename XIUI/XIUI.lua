@@ -24,7 +24,7 @@
 
 addon.name      = 'XIUI';
 addon.author    = 'Team XIUI';
-addon.version   = '1.7.5';
+addon.version   = '1.8.0';
 addon.desc      = 'Multiple UI elements with manager';
 addon.link      = 'https://github.com/tirem/XIUI'
 
@@ -48,8 +48,6 @@ DEBUG_RAW_INPUT = false;
 require('common');
 local chat = require('chat');
 local settings = require('settings');
-local gdi = require('submodules.gdifonts.include');
-
 -- Core modules
 local settingsDefaults = require('core.settings.init');
 local settingsMigration = require('core.settings.migration');
@@ -78,9 +76,11 @@ local castCost = uiMods.castcost;
 local notifications = uiMods.notifications;
 local treasurePool = uiMods.treasurepool;
 local hotbar = uiMods.hotbar;
+local readyCheck = uiMods.readycheck;
 local macropalette = require('modules.hotbar.macropalette');
 local palette = require('modules.hotbar.palette');
 local skillchainModule = require('modules.hotbar.skillchain');
+local slotrenderer = require('modules.hotbar.slotrenderer');
 local configMenu = require('config');
 local debuffHandler = require('handlers.debuffhandler');
 local petBuffHandler = require('handlers.petbuffhandler');
@@ -90,6 +90,8 @@ local statusHandler = require('handlers.statushandler');
 local progressbar = require('libs.progressbar');
 local diagnostics = require('libs.diagnostics');
 local TextureManager = require('libs.texturemanager');
+local imtext = require('libs.imtext');
+local components = require('config.components');
 
 -- Global switch to hard-disable functionality that is limited on HX servers
 HzLimitedMode = true;
@@ -282,6 +284,12 @@ uiModules.Register('hotbar', {
     configKey = 'showhotbar',
     hideOnEventKey = 'hotbarHideDuringEvents',
     hideOnMenuFocusKey = 'hotbarHideOnMenuFocus',
+    hasSetHidden = true,
+});
+uiModules.Register('readyCheck', {
+    module = readyCheck,
+    settingsKey = nil,
+    configKey = 'showReadyCheck',
     hasSetHidden = true,
 });
 
@@ -480,6 +488,55 @@ else
 end
 
 gConfig.appliedPositions = {};
+
+-- Forward-declare GetDefaultWindowPositions so it can be used at load time
+local function GetDefaultWindowPositions()
+    local defPos = require('libs.defaultpositions');
+    local px, py = defPos.GetPlayerBarPosition();
+    local tx, ty = defPos.GetTargetBarPosition();
+    local pl1x, pl1y = defPos.GetPartyListPosition();
+    local pl2x, pl2y = defPos.GetPartyList2Position();
+    local pl3x, pl3y = defPos.GetPartyList3Position();
+    local cx, cy = defPos.GetCastBarPosition();
+    local nx, ny = defPos.GetNotificationsPosition();
+    local tpx, tpy = defPos.GetTreasurePoolPosition();
+    local petx, pety = defPos.GetPetBarPosition();
+    local ex, ey = defPos.GetExpBarPosition();
+    local gx, gy = defPos.GetGilTrackerPosition();
+    local ix, iy = defPos.GetInventoryPosition();
+    local elx, ely = defPos.GetEnemyListPosition();
+    local ccx, ccy = defPos.GetCastCostPosition();
+
+    local staggerY = 35;
+    return {
+        PlayerBar = { x = px, y = py },
+        TargetBar = { x = tx, y = ty },
+        PartyList = { x = pl1x, y = pl1y },
+        PartyList2 = { x = pl2x, y = pl2y },
+        PartyList3 = { x = pl3x, y = pl3y },
+        CastBar = { x = cx, y = cy },
+        Notifications_Group1 = { x = nx, y = ny },
+        Notifications_Group2 = { x = nx, y = ny + 180 },
+        TreasurePool = { x = tpx, y = tpy },
+        PetBar = { x = petx, y = pety },
+        ExpBar = { x = ex, y = ey },
+        GilTracker = { x = gx, y = gy },
+        EnemyList = { x = elx, y = ely },
+        CastCost = { x = ccx, y = ccy },
+        InventoryTracker = { x = ix, y = iy },
+        SatchelTracker = { x = ix, y = iy + staggerY },
+        SafeTracker = { x = ix, y = iy + staggerY * 2 },
+        StorageTracker = { x = ix, y = iy + staggerY * 3 },
+        LockerTracker = { x = ix, y = iy + staggerY * 4 },
+        WardrobeTracker = { x = ix, y = iy + staggerY * 5 },
+    };
+end
+
+-- Inject default positions if profile has none (brand new profile)
+if (not gConfig.windowPositions or next(gConfig.windowPositions) == nil) then
+    gConfig.windowPositions = GetDefaultWindowPositions();
+end
+
 gConfigVersion = 0;
 settingsMigration.RunStructureMigrations(gConfig, defaultUserSettings);
 
@@ -520,38 +577,6 @@ end
 function GetLayoutTemplate(partyIndex)
     local party = GetPartySettings(partyIndex);
     return party.layout == 1 and gConfig.layoutCompact or gConfig.layoutHorizontal;
-end
-
-local function GetDefaultWindowPositions()
-    local defPos = require('libs.defaultpositions');
-    local px, py = defPos.GetPlayerBarPosition();
-    local tx, ty = defPos.GetTargetBarPosition();
-    local pl1x, pl1y = defPos.GetPartyListPosition();
-    local pl2x, pl2y = defPos.GetPartyList2Position();
-    local pl3x, pl3y = defPos.GetPartyList3Position();
-    local cx, cy = defPos.GetCastBarPosition();
-    local nx, ny = defPos.GetNotificationsPosition();
-    local tpx, tpy = defPos.GetTreasurePoolPosition();
-    local petx, pety = defPos.GetPetBarPosition();
-    local ex, ey = defPos.GetExpBarPosition();
-    local gx, gy = defPos.GetGilTrackerPosition();
-    local ix, iy = defPos.GetInventoryPosition();
-
-    return {
-        PlayerBar = { x = px, y = py },
-        TargetBar = { x = tx, y = ty },
-        PartyList = { x = pl1x, y = pl1y },
-        PartyList2 = { x = pl2x, y = pl2y },
-        PartyList3 = { x = pl3x, y = pl3y },
-        CastBar = { x = cx, y = cy },
-        Notifications_Group1 = { x = nx, y = ny },
-        Notifications_Group2 = { x = nx, y = ny + 180 },
-        TreasurePool = { x = tpx, y = tpy },
-        PetBar = { x = petx, y = pety },
-        ExpBar = { x = ex, y = ey },
-        GilTracker = { x = gx, y = gy },
-        InventoryTracker = { x = ix, y = iy },
-    };
 end
 
 function CreateProfile(name)
@@ -654,12 +679,9 @@ function ResetSettings()
     gConfig.windowPositions = GetDefaultWindowPositions();
     gConfig.appliedPositions = {};
     profileManager.SaveProfileSettings(config.currentProfile, gConfig);
-    UpdateSettings();
-    bInternalSave = true;
-    settings.save();
-    if bIsAshita43 then bPendingInternalSaveClear = true; else bInternalSave = false; end
 
-    -- Reset all module positions to defaults
+    -- Reset all module positions to defaults BEFORE deferring visuals so the
+    -- next-frame UpdateVisualsAll picks up the corrected positions.
     uiMods.playerbar.ResetPositions();
     uiMods.targetbar.ResetPositions();
     uiMods.castbar.ResetPositions();
@@ -673,26 +695,31 @@ function ResetSettings()
     uiMods.notifications.ResetPositions();
     uiMods.treasurepool.ResetPositions();
     hotbar.ResetPositions();
+
+    -- Persist + defer the heavy visual update cascade. ResetSettings is called
+    -- from an imgui button callback inside d3d_present; running UpdateVisualsAll
+    -- inline orphans textures via the gConfig replacement above and triggers
+    -- mid-frame Lua GC that can call d3d8.gc_safe_release on textures still
+    -- queued for draw this frame (hard CTD on Ashita 4.3). The deferred block
+    -- at the top of the next d3d_present runs the same cascade outside the
+    -- active draw list. See ai/lessons.md.
+    SaveSettingsOnly();
+    DeferredUpdateVisuals();
 end
 
-function CenterAllPositions()
-    local defPos = require('libs.defaultpositions');
-    local sw, sh = defPos.GetScreenSize();
-    local cx = sw / 2;
-    local cy = sh / 2;
-
+function RecoverAllPositions()
     if not gConfig.windowPositions then gConfig.windowPositions = {}; end
 
-    -- Center every known window position
+    -- Move every known window position to top-left corner
     for windowName, _ in pairs(gConfig.windowPositions) do
-        gConfig.windowPositions[windowName] = { x = cx, y = cy };
+        gConfig.windowPositions[windowName] = { x = 20, y = 20 };
     end
 
     -- Force re-apply on next frame
     gConfig.appliedPositions = {};
 
-    -- Reset the config window position too
-    configMenu.ResetConfigWindowPosition();
+    -- Clear persisted alignment state so alignBottom doesn't override the restored positions
+    gConfig.partyListState = {};
 
     -- Save
     profileManager.SaveProfileSettings(config.currentProfile, gConfig);
@@ -935,6 +962,12 @@ ashita.events.register('d3d_present', 'present_cb', function ()
     if not bInitialized then return; end
 
     local ok, err = pcall(function()
+        -- Drop references to textures evicted/cleared during the PREVIOUS
+        -- frame so Lua GC is free to run d3d8.gc_safe_release on them.
+        -- Must run before anything else this frame queues new draws or
+        -- triggers another cache clear.
+        TextureManager.FlushPendingReleases();
+
         -- Clear internal save flag (deferred for Ashita 4.3+ async callbacks)
         if bPendingInternalSaveClear then
             bInternalSave = false;
@@ -953,11 +986,16 @@ ashita.events.register('d3d_present', 'present_cb', function ()
             end
         end
 
-        -- Process pending visual updates outside the render loop
+        -- Process pending visual updates outside the render loop.
+        -- Mirrors UpdateSettings() so SaveSettingsOnly+DeferredUpdateVisuals
+        -- can fully replace inline UpdateSettings() in config callbacks.
         if pendingVisualUpdate then
             pendingVisualUpdate = false;
             statusHandler.clear_cache();
             UpdateUserSettings();
+            CheckVisibility();
+            InvalidateInterpolationColorCache();
+            InvalidateColorCaches();
             uiModules.UpdateVisualsAll(gAdjustedSettings);
         end
 
@@ -980,6 +1018,9 @@ ashita.events.register('d3d_present', 'present_cb', function ()
             end
 
             configMenu.DrawWindow();
+
+            -- Render deferred hotbar tooltip after all modules (correct z-order)
+            slotrenderer.FlushTooltip();
         else
             uiModules.HideAll();
         end
@@ -1010,6 +1051,12 @@ ashita.events.register('load', 'load_cb', function ()
     profileManager.SyncProfilesWithDisk();
     gConfig.appliedPositions = {};
     UpdateUserSettings();
+
+    -- Populate the ImGui font atlas now, before the first d3d_present, so
+    -- no font change in the config menu has to mutate the atlas mid-frame.
+    -- See libs/imtext.lua PrewarmFonts comment for the underlying constraint.
+    imtext.PrewarmFonts(components.available_fonts);
+
     uiModules.InitializeAll(gAdjustedSettings);
 
     -- Load mob data for current zone
@@ -1039,7 +1086,6 @@ ashita.events.register('unload', 'unload_cb', function ()
     statusHandler.clear_cache();
     progressbar.Cleanup();
     TextureManager.clear();
-    if ClearDebuffFontCache then ClearDebuffFontCache(); end
 
     uiModules.CleanupAll();
 
@@ -1047,7 +1093,7 @@ ashita.events.register('unload', 'unload_cb', function ()
         mobInfo.data.Cleanup();
     end
 
-    gdi:destroy_interface();
+
 end);
 
 ashita.events.register('command', 'command_cb', function (e)
@@ -1401,8 +1447,8 @@ ashita.events.register('command', 'command_cb', function (e)
         if (command_args[2] == 'profile') then
             -- /xiui profile reset positions
             if (command_args[3] == 'reset' and command_args[4] == 'positions') then
-                CenterAllPositions();
-                print(chat.header(addon.name):append(chat.message('All UI positions reset to center.')));
+                RecoverAllPositions();
+                print(chat.header(addon.name):append(chat.message('All UI positions recovered to top-left.')));
                 return;
             end
 
@@ -1547,6 +1593,18 @@ ashita.events.register('command', 'command_cb', function (e)
             print(chat.header(addon.name):append(chat.message('Settings saved.')));
             return;
         end
+    end
+
+    -- Forward /readycheck commands to the ReadyCheck module
+    if readyCheck.HandleCommand(e) then
+        e.blocked = true;
+        return;
+    end
+end);
+
+ashita.events.register('text_in', 'readycheck_text_in_cb', function (e)
+    if bInitialized then
+        readyCheck.HandleTextIn(e);
     end
 end);
 

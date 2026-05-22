@@ -404,7 +404,7 @@ end
 function components.DrawNestedSliderFloat(label, parentTable, key, min, max, format, helpText)
     if not parentTable then return; end
     local value = { parentTable[key] or min };
-    if imgui.SliderFloat(label, value, min, max, format or '%.1f') then
+    if imgui.SliderFloat(label, value, min, max, format or '%.1f', ImGuiSliderFlags_AlwaysClamp) then
         parentTable[key] = value[1];
     end
     if (imgui.IsItemDeactivatedAfterEdit()) then SaveSettingsOnly(); end
@@ -468,13 +468,13 @@ function components.DrawSlider(label, configKey, min, max, format, callback)
     -- Use SliderFloat if format is specified, otherwise check if value is integer
     if format ~= nil then
         -- Format specified, use float slider
-        changed = imgui.SliderFloat(label, value, min, max, format);
+        changed = imgui.SliderFloat(label, value, min, max, format, ImGuiSliderFlags_AlwaysClamp);
     elseif type(gConfig[configKey]) == 'number' and math.floor(gConfig[configKey]) == gConfig[configKey] then
         -- No format and value is integer, use int slider
-        changed = imgui.SliderInt(label, value, min, max);
+        changed = imgui.SliderInt(label, value, min, max, '%d', ImGuiSliderFlags_AlwaysClamp);
     else
         -- No format but value is float, use float slider with default format
-        changed = imgui.SliderFloat(label, value, min, max, '%.2f');
+        changed = imgui.SliderFloat(label, value, min, max, '%.2f', ImGuiSliderFlags_AlwaysClamp);
     end
 
     if changed then
@@ -488,32 +488,36 @@ function components.DrawSlider(label, configKey, min, max, format, callback)
     end
 end
 
--- Flexible integer slider for any table + key (with width constraint and auto-save)
+-- Flexible integer slider for any table + key (with width constraint and auto-save).
+-- Slider pattern: live preview via UpdateUserSettings on every tick (cheap,
+-- in-memory only), disk write only on release. SaveSettingsOnly per tick
+-- caused visible lag on drag because every tick wrote the entire profile.
 function components.SliderInt(label, parentTable, key, min, max, default)
     local currentValue = parentTable[key];
     if currentValue == nil then currentValue = default or min; end
     local value = { currentValue };
 
     imgui.SetNextItemWidth(CONTENT_MAX_WIDTH);
-    if imgui.SliderInt(label, value, min, max) then
+    if imgui.SliderInt(label, value, min, max, '%d', ImGuiSliderFlags_AlwaysClamp) then
         parentTable[key] = value[1];
-        SaveSettingsOnly();
+        UpdateUserSettings();
     end
     if imgui.IsItemDeactivatedAfterEdit() then
         SaveSettingsToDisk();
     end
 end
 
--- Flexible float slider for any table + key (with width constraint and auto-save)
+-- Flexible float slider for any table + key (with width constraint and auto-save).
+-- See SliderInt for slider-pattern rationale.
 function components.SliderFloat(label, parentTable, key, min, max, format, default)
     local currentValue = parentTable[key];
     if currentValue == nil then currentValue = default or min; end
     local value = { currentValue };
 
     imgui.SetNextItemWidth(CONTENT_MAX_WIDTH);
-    if imgui.SliderFloat(label, value, min, max, format or '%.2f') then
+    if imgui.SliderFloat(label, value, min, max, format or '%.2f', ImGuiSliderFlags_AlwaysClamp) then
         parentTable[key] = value[1];
-        SaveSettingsOnly();
+        UpdateUserSettings();
     end
     if imgui.IsItemDeactivatedAfterEdit() then
         SaveSettingsToDisk();
@@ -581,13 +585,13 @@ function components.DrawPartyLayoutSlider(label, configKey, min, max, format, ca
     -- Use SliderFloat if format is specified, otherwise check if value is integer
     if format ~= nil then
         -- Format specified, use float slider
-        changed = imgui.SliderFloat(uniqueLabel, value, min, max, format);
+        changed = imgui.SliderFloat(uniqueLabel, value, min, max, format, ImGuiSliderFlags_AlwaysClamp);
     elseif type(currentLayout[configKey]) == 'number' and math.floor(currentLayout[configKey]) == currentLayout[configKey] then
         -- No format and value is integer, use int slider
-        changed = imgui.SliderInt(uniqueLabel, value, min, max);
+        changed = imgui.SliderInt(uniqueLabel, value, min, max, '%d', ImGuiSliderFlags_AlwaysClamp);
     else
         -- No format but value is float, use float slider with default format
-        changed = imgui.SliderFloat(uniqueLabel, value, min, max, '%.2f');
+        changed = imgui.SliderFloat(uniqueLabel, value, min, max, '%.2f', ImGuiSliderFlags_AlwaysClamp);
     end
 
     if changed then
@@ -653,11 +657,11 @@ function components.DrawPartySlider(partyTable, label, configKey, min, max, form
     imgui.SetNextItemWidth(CONTENT_MAX_WIDTH);
 
     if format ~= nil then
-        changed = imgui.SliderFloat(uniqueLabel, value, min, max, format);
+        changed = imgui.SliderFloat(uniqueLabel, value, min, max, format, ImGuiSliderFlags_AlwaysClamp);
     elseif type(currentValue) == 'number' and math.floor(currentValue) == currentValue then
-        changed = imgui.SliderInt(uniqueLabel, value, min, max);
+        changed = imgui.SliderInt(uniqueLabel, value, min, max, '%d', ImGuiSliderFlags_AlwaysClamp);
     else
-        changed = imgui.SliderFloat(uniqueLabel, value, min, max, '%.2f');
+        changed = imgui.SliderFloat(uniqueLabel, value, min, max, '%.2f', ImGuiSliderFlags_AlwaysClamp);
     end
 
     if changed then
@@ -683,7 +687,7 @@ function components.DrawPartySliderInt(partyTable, label, configKey, min, max, f
     local uniqueLabel = label .. '##party_' .. configKey;
 
     imgui.SetNextItemWidth(CONTENT_MAX_WIDTH);
-    local changed = imgui.SliderInt(uniqueLabel, value, min, max, format);
+    local changed = imgui.SliderInt(uniqueLabel, value, min, max, format, ImGuiSliderFlags_AlwaysClamp);
 
     if changed then
         partyTable[configKey] = value[1];

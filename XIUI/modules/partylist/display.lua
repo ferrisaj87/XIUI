@@ -12,10 +12,11 @@ local buffTable = require('libs.bufftable');
 local statusIcons = require('libs.statusicons');
 local progressbar = require('libs.progressbar');
 local windowBg = require('libs.windowbackground');
-local encoding = require('submodules.gdifonts.encoding');
+local encoding = require('libs.encoding');
 local ashita_settings = require('settings');
 local castcostShared = require('modules.castcost.shared');
 local defaultPositions = require('libs.defaultpositions');
+local imtext = require('libs.imtext');
 
 local data = require('modules.partylist.data');
 
@@ -27,21 +28,21 @@ local forcePositionReset = { false, false, false };
 local lastSavedPosX = { nil, nil, nil };
 local lastSavedPosY = { nil, nil, nil };
 
--- Helper: Set font text only if changed (avoids texture regeneration)
-local function setCachedText(memIdx, fontKey, font, text)
-    if not data.memberTextCache[memIdx] then
-        data.memberTextCache[memIdx] = {};
-    end
-    if data.memberTextCache[memIdx][fontKey] ~= text then
-        font:set_text(text);
-        data.memberTextCache[memIdx][fontKey] = text;
-    end
+function display.ResetFont()
+    imtext.Reset();
 end
 
 -- ============================================
 -- DrawMember - Render a single party member
 -- ============================================
 function display.DrawMember(memIdx, settings, isLastVisibleMember)
+    local textDrawList = GetUIDrawList();
+    -- Bar borders draw outside the requested barHeight; shift text below to clear them.
+    local barBorderExtent;
+    do
+        local t = gConfig.barBorderThickness or 1;
+        barBorderExtent = (t > 0) and (t / 2 + 0.5) or 0;
+    end
     local memInfo = data.GetMemberInformation(memIdx);
     if (memInfo == nil) then
         memInfo = {
@@ -100,26 +101,14 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
     local hpStartX, hpStartY = imgui.GetCursorScreenPos();
 
     local fontSizes = data.getFontSizes(partyIndex);
-
-    -- Set font heights
-    data.memberText[memIdx].hp:set_font_height(fontSizes.hp);
-    data.memberText[memIdx].mp:set_font_height(fontSizes.mp);
-    data.memberText[memIdx].name:set_font_height(fontSizes.name);
-    data.memberText[memIdx].tp:set_font_height(fontSizes.tp);
-    data.memberText[memIdx].distance:set_font_height(fontSizes.distance);
-    data.memberText[memIdx].zone:set_font_height(fontSizes.zone);
-
-    -- Get reference heights
-    local refHeights = data.partyRefHeights[partyIndex];
-    local hpRefHeight = refHeights.hpRefHeight;
-    local mpRefHeight = refHeights.mpRefHeight;
-    local tpRefHeight = refHeights.tpRefHeight;
-    local nameRefHeight = refHeights.nameRefHeight;
+    local hpRefHeight = fontSizes.hp;
+    local mpRefHeight = fontSizes.mp;
+    local tpRefHeight = fontSizes.tp;
+    local nameRefHeight = fontSizes.name;
 
     -- Calculate text sizes (use cached text to avoid texture regeneration)
     local nameText = tostring(memInfo.name);
-    setCachedText(memIdx, 'name', data.memberText[memIdx].name, nameText);
-    local nameWidth, nameHeight = data.memberText[memIdx].name:get_text_size();
+    local nameWidth, nameHeight = imtext.Measure(nameText, fontSizes.name);
 
     -- Format HP text based on display mode
     local hpDisplayText;
@@ -138,8 +127,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
     else
         hpDisplayText = tostring(memInfo.hp);
     end
-    setCachedText(memIdx, 'hp', data.memberText[memIdx].hp, hpDisplayText);
-    local hpTextWidth, hpHeight = data.memberText[memIdx].hp:get_text_size();
+    local hpTextWidth, hpHeight = imtext.Measure(hpDisplayText, fontSizes.hp);
 
     -- Format MP text based on display mode
     local mpDisplayText;
@@ -158,21 +146,18 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
     else
         mpDisplayText = tostring(memInfo.mp);
     end
-    setCachedText(memIdx, 'mp', data.memberText[memIdx].mp, mpDisplayText);
-    local mpTextWidth, mpHeight = data.memberText[memIdx].mp:get_text_size();
+    local mpColor = cache.colors.mpTextColor;
+    local mpTextWidth, mpHeight = imtext.Measure(mpDisplayText, fontSizes.mp);
 
     local tpText = tostring(memInfo.tp);
-    setCachedText(memIdx, 'tp', data.memberText[memIdx].tp, tpText);
-    local tpTextWidth, tpHeight = data.memberText[memIdx].tp:get_text_size();
+    local tpColor = (memInfo.tp >= 1000) and cache.colors.tpFullTextColor or cache.colors.tpEmptyTextColor;
+    local tpTextWidth, tpHeight = imtext.Measure(tpText, fontSizes.tp);
 
     -- Calculate max TP text width for Layout 1 (cached per party to avoid per-frame texture regen)
     local maxTpTextWidth = tpTextWidth;
     if layout == 1 then
         if not data.maxTpTextWidthCache[partyIndex] then
-            -- Calculate once: temporarily set to "3000", get width, restore
-            data.memberText[memIdx].tp:set_text("3000");
-            data.maxTpTextWidthCache[partyIndex], _ = data.memberText[memIdx].tp:get_text_size();
-            data.memberText[memIdx].tp:set_text(tpText);
+            data.maxTpTextWidthCache[partyIndex], _ = imtext.Measure("3000", fontSizes.tp);
         end
         maxTpTextWidth = data.maxTpTextWidthCache[partyIndex];
     end
@@ -207,7 +192,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
 
     -- Draw selection box
     if memInfo.targeted then
-        local drawList = imgui.GetBackgroundDrawList();
+        local drawList = textDrawList;
 
         local selectionWidth = allBarsLengths + settings.cursorPaddingX1 + settings.cursorPaddingX2;
         local selectionScaleY = cache.selectionBoxScaleY or 1;
@@ -318,9 +303,8 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
         if (jobIcon ~= nil) then
             namePosX = namePosX + jobIconSize + settings.nameTextOffsetX;
             distanceBaseX = distanceBaseX + jobIconSize; -- Only add job icon width, not name offset
-            -- Use background draw list to render outside window clipping
             local jobIconPtr = tonumber(ffi.cast("uint32_t", jobIcon));
-            local draw_list = imgui.GetBackgroundDrawList();
+            local draw_list = textDrawList;
             draw_list:AddImage(
                 jobIconPtr,
                 {hpStartX, offsetStartY},
@@ -331,12 +315,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
         end
     end
 
-    -- Update HP text color
-    if not data.memberTextColorCache[memIdx] then data.memberTextColorCache[memIdx] = {}; end
-    if (data.memberTextColorCache[memIdx].hp ~= cache.colors.hpTextColor) then
-        data.memberText[memIdx].hp:set_font_color(cache.colors.hpTextColor);
-        data.memberTextColorCache[memIdx].hp = cache.colors.hpTextColor;
-    end
+    local hpColor = cache.colors.hpTextColor;
 
     -- HP Interpolation logic
     local currentTime = os.clock();
@@ -501,30 +480,28 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
     -- Draw HP bar
     if (memInfo.inzone) then
         progressbar.ProgressBar(hpPercentData, {hpBarWidth, hpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
-        data.memberText[memIdx].zone:set_visible(false);
     elseif (memInfo.zone == '' or memInfo.zone == nil) then
         local zoneBarWidth = allBarsLengths;
         local zoneBarHeight;
         if layout == 1 then
-            zoneBarHeight = hpBarHeight + 1 + mpBarHeight;
+            zoneBarHeight = hpBarHeight + 1 + mpBarHeight + barBorderExtent;
         else
-            zoneBarHeight = hpBarHeight;
+            zoneBarHeight = hpBarHeight + barBorderExtent;
         end
         imgui.Dummy({zoneBarWidth, zoneBarHeight});
-        data.memberText[memIdx].zone:set_visible(false);
     else
         local zoneBarWidth = allBarsLengths;
         local zoneBarHeight;
         if layout == 1 then
-            zoneBarHeight = hpBarHeight + 1 + mpBarHeight;
+            zoneBarHeight = hpBarHeight + 1 + mpBarHeight + barBorderExtent;
         else
-            zoneBarHeight = hpBarHeight;
+            zoneBarHeight = hpBarHeight + barBorderExtent;
         end
 
         local zoneBarStartX, zoneBarStartY = imgui.GetCursorScreenPos();
         imgui.Dummy({zoneBarWidth, zoneBarHeight});
 
-        local drawList = imgui.GetWindowDrawList();
+        local drawList = textDrawList;
         drawList:AddRect(
             {zoneBarStartX, zoneBarStartY},
             {zoneBarStartX + zoneBarWidth, zoneBarStartY + zoneBarHeight},
@@ -533,22 +510,25 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
         );
 
         local zoneName = encoding:ShiftJIS_To_UTF8(AshitaCore:GetResourceManager():GetString("zones.names", memInfo.zone), true);
-        setCachedText(memIdx, 'zone', data.memberText[memIdx].zone, zoneName);
-        local zoneTextWidth, zoneTextHeight = data.memberText[memIdx].zone:get_text_size();
-        data.memberText[memIdx].zone:set_position_x(zoneBarStartX + (zoneBarWidth - zoneTextWidth) / 2);
-        data.memberText[memIdx].zone:set_position_y(zoneBarStartY + (zoneBarHeight - zoneTextHeight) / 2);
-        data.memberText[memIdx].zone:set_visible(true);
+        local zoneTextWidth, zoneTextHeight = imtext.Measure(zoneName, fontSizes.zone);
+        local zoneTextX = zoneBarStartX + (zoneBarWidth - zoneTextWidth) / 2;
+        local zoneTextY = zoneBarStartY + (zoneBarHeight - zoneTextHeight) / 2;
+        imtext.Draw(textDrawList, zoneName, zoneTextX, zoneTextY, cache.colors.nameTextColor, fontSizes.zone);
     end
 
     -- Position HP text
     local hpBaselineOffset = hpRefHeight - hpHeight;
     local nameBaselineOffset = nameRefHeight - nameHeight;
+    local hpTextX, hpTextY;
     if layout == 1 then
-        data.memberText[memIdx].hp:set_position_x(hpStartX + hpBarWidth + 4 + textOffsets.hpX);
-        data.memberText[memIdx].hp:set_position_y(hpStartY - nameRefHeight - settings.nameTextOffsetY + hpBaselineOffset + textOffsets.hpY);
+        hpTextX = hpStartX + hpBarWidth + 4 + textOffsets.hpX;
+        hpTextY = hpStartY - nameRefHeight - settings.nameTextOffsetY + hpBaselineOffset + textOffsets.hpY;
     else
-        data.memberText[memIdx].hp:set_position_x(hpStartX + hpBarWidth + settings.hpTextOffsetX + textOffsets.hpX);
-        data.memberText[memIdx].hp:set_position_y(hpStartY + hpBarHeight + settings.hpTextOffsetY + hpBaselineOffset + textOffsets.hpY);
+        hpTextX = hpStartX + hpBarWidth - hpTextWidth + settings.hpTextOffsetX + textOffsets.hpX;
+        hpTextY = hpStartY + hpBarHeight + barBorderExtent + settings.hpTextOffsetY + hpBaselineOffset + textOffsets.hpY;
+    end
+    if memInfo.inzone then
+        imtext.Draw(textDrawList, hpDisplayText, hpTextX, hpTextY, hpColor, fontSizes.hp);
     end
 
     -- Draw leader icon
@@ -564,13 +544,9 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
     end
 
     -- Position name text
-    local desiredNameColor = cache.colors.nameTextColor;
-    if (data.memberTextColorCache[memIdx].name ~= desiredNameColor) then
-        data.memberText[memIdx].name:set_font_color(desiredNameColor);
-        data.memberTextColorCache[memIdx].name = desiredNameColor;
-    end
-    data.memberText[memIdx].name:set_position_x(namePosX + textOffsets.nameX);
-    data.memberText[memIdx].name:set_position_y(hpStartY - nameRefHeight - settings.nameTextOffsetY + nameBaselineOffset + textOffsets.nameY);
+    local nameColor = cache.colors.nameTextColor;
+    local nameTextX = namePosX + textOffsets.nameX;
+    local nameTextY = hpStartY - nameRefHeight - settings.nameTextOffsetY + nameBaselineOffset + textOffsets.nameY;
 
     -- Handle cast bars - determine if casting and calculate progress
     local castData = nil;
@@ -619,17 +595,12 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
 
             -- Handle 'name' style cast bar rendering
             if isCasting and castBarStyle == 'name' then
-                setCachedText(memIdx, 'name', data.memberText[memIdx].name, castData.spellName);
-                -- Set name text to cast text color
                 local castTextColor = cache.colors.castTextColor or 0xFFFFCC44;
-                if (data.memberTextColorCache[memIdx].name ~= castTextColor) then
-                    data.memberText[memIdx].name:set_font_color(castTextColor);
-                    data.memberTextColorCache[memIdx].name = castTextColor;
-                end
-                local spellNameWidth, _ = data.memberText[memIdx].name:get_text_size();
+                imtext.Draw(textDrawList, castData.spellName, nameTextX, nameTextY, castTextColor, fontSizes.name);
+                local spellNameWidth, _ = imtext.Measure(castData.spellName, fontSizes.name);
 
                 local castBarWidth = hpBarWidth * 0.6 * cache.castBarScaleX;
-                local castBarHeight = math.max(6, nameRefHeight * 0.8 * cache.castBarScaleY);
+                local castBarHeight = math.max(2, nameRefHeight * 0.8 * cache.castBarScaleY);
                 local castBarOffsetX = cache.castBarOffsetX or 0;
                 local castBarOffsetY = cache.castBarOffsetY or 0;
                 local castBarX;
@@ -639,10 +610,11 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
                     castBarX = namePosX + castBarOffsetX;
                     castBarOffsetY = castBarOffsetY - 10;
                 else
-                    -- Anchor cast bar to end of the spell name
-                    castBarX = namePosX + spellNameWidth + 4 + castBarOffsetX;
+                    -- Anchor cast bar to end of the spell name (where it's actually
+                    -- rendered: namePosX + textOffsets.nameX, not namePosX alone).
+                    castBarX = nameTextX + spellNameWidth + 4 + castBarOffsetX;
                 end
-                local castBarY = hpStartY - nameRefHeight - settings.nameTextOffsetY + (nameRefHeight - castBarHeight) / 2 + castBarOffsetY;
+                local castBarY = hpStartY - nameRefHeight - settings.nameTextOffsetY + textOffsets.nameY + (nameRefHeight - castBarHeight) / 2 + castBarOffsetY;
                 local castGradient = GetCustomGradient(cache.colors, 'castBarGradient') or {'#ffaa00', '#ffcc44'};
                 progressbar.ProgressBar(
                     {{castProgress, castGradient}},
@@ -660,11 +632,14 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
     -- Distance text
     local showDistance = false;
     local highlightDistance = false;
+    local distanceText = nil;
+    local distTextX = 0;
+    local distTextY = 0;
     -- Only hide name/distance when casting with 'name' style (which replaces name with spell)
     -- When using 'mp' or 'tp' bar styles, name and distance should remain visible
     local hidingNameForCast = isCasting and castBarStyle == 'name';
     if (not hidingNameForCast) then
-        setCachedText(memIdx, 'name', data.memberText[memIdx].name, nameText);
+        imtext.Draw(textDrawList, nameText, nameTextX, nameTextY, nameColor, fontSizes.name);
     end
     if (not hidingNameForCast and cache.showDistance and memInfo.inzone) then
         local distance = nil;
@@ -677,13 +652,11 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
             end
         end
         if (distance ~= nil and distance > 0 and distance <= 50) then
-            local distanceText = ('%.1f'):fmt(distance);
-            setCachedText(memIdx, 'distance', data.memberText[memIdx].distance, distanceText);
+            distanceText = ('%.1f'):fmt(distance);
             -- Position distance relative to HP bar right edge (stable anchor)
-            -- Distance uses right alignment - position is the fixed right edge anchor
             local distancePosX = hpStartX + hpBarWidth;
-            data.memberText[memIdx].distance:set_position_x(distancePosX + textOffsets.distanceX);
-            data.memberText[memIdx].distance:set_position_y(hpStartY - nameRefHeight + nameBaselineOffset + textOffsets.distanceY);
+            distTextX = distancePosX + textOffsets.distanceX;
+            distTextY = hpStartY - nameRefHeight + nameBaselineOffset + textOffsets.distanceY;
             showDistance = true;
             if (cache.distanceHighlight > 0 and distance <= cache.distanceHighlight) then
                 highlightDistance = true;
@@ -691,13 +664,9 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
         end
     end
 
-    data.memberText[memIdx].distance:set_visible(showDistance);
     if showDistance then
         local desiredDistanceColor = highlightDistance and 0xFF00FFFF or cache.colors.nameTextColor;
-        if (data.memberTextColorCache[memIdx].distance ~= desiredDistanceColor) then
-            data.memberText[memIdx].distance:set_font_color(desiredDistanceColor);
-            data.memberTextColorCache[memIdx].distance = desiredDistanceColor;
-        end
+        imtext.Draw(textDrawList, distanceText, distTextX, distTextY, desiredDistanceColor, fontSizes.distance);
     end
 
     -- Job text (Layout 1 only)
@@ -719,21 +688,14 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
             end
         end
         if jobStr ~= '' then
-            setCachedText(memIdx, 'job', data.memberText[memIdx].job, jobStr);
-            data.memberText[memIdx].job:set_font_height(fontSizes.job);
-            local jobTextWidth, jobTextHeight = data.memberText[memIdx].job:get_text_size();
+            local jobTextWidth, jobTextHeight = imtext.Measure(jobStr, fontSizes.job);
             local jobPosX = hpStartX + allBarsLengths - jobTextWidth;
-            data.memberText[memIdx].job:set_position_x(jobPosX + textOffsets.jobX);
-            data.memberText[memIdx].job:set_position_y(hpStartY - nameRefHeight - settings.nameTextOffsetY + nameBaselineOffset + textOffsets.jobY);
-            local desiredJobColor = cache.colors.nameTextColor;
-            if (data.memberTextColorCache[memIdx].job ~= desiredJobColor) then
-                data.memberText[memIdx].job:set_font_color(desiredJobColor);
-                data.memberTextColorCache[memIdx].job = desiredJobColor;
-            end
+            local jobTextX = jobPosX + textOffsets.jobX;
+            local jobTextY = hpStartY - nameRefHeight - settings.nameTextOffsetY + nameBaselineOffset + textOffsets.jobY;
+            imtext.Draw(textDrawList, jobStr, jobTextX, jobTextY, cache.colors.nameTextColor, fontSizes.job);
             showJobText = true;
         end
     end
-    data.memberText[memIdx].job:set_visible(showJobText);
 
     -- MP/TP bars
     -- Calculate where MP bar would be positioned (after HP bar) for consistent status icon placement
@@ -755,57 +717,55 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
             imgui.Dummy({0, 1});
             local rowStartX, rowStartY = imgui.GetCursorScreenPos();
 
-            -- TP text (or spell name if casting with 'tp' style)
-            if showingCastInTpSlot then
-                -- Show spell name instead of TP when casting with 'tp' style
-                setCachedText(memIdx, 'tp', data.memberText[memIdx].tp, castData.spellName);
-                local castTextColor = cache.colors.castTextColor or 0xFFFFCC44;
-                if (data.memberTextColorCache[memIdx].tp ~= castTextColor) then
-                    data.memberText[memIdx].tp:set_font_color(castTextColor);
-                    data.memberTextColorCache[memIdx].tp = castTextColor;
-                end
-            else
-                -- Normal TP text color with optional flashing
-                local desiredTpColor;
-                if memInfo.tp >= 1000 and cache.flashTP then
-                    local flashTime = os.clock();
-                    local timePerPulse = 1;
-                    local phase = flashTime % timePerPulse;
-                    local pulseAlpha = (2 / timePerPulse) * phase;
-                    if pulseAlpha > 1 then pulseAlpha = 2 - pulseAlpha; end
-                    local baseColor = cache.colors.tpFullTextColor or 0xFFFFFFFF;
-                    local flashColor = cache.colors.tpFlashColor or 0xFF3ECE00;
-                    local baseA = bit.band(bit.rshift(baseColor, 24), 0xFF);
-                    local baseR = bit.band(bit.rshift(baseColor, 16), 0xFF);
-                    local baseG = bit.band(bit.rshift(baseColor, 8), 0xFF);
-                    local baseB = bit.band(baseColor, 0xFF);
-                    local flashA = bit.band(bit.rshift(flashColor, 24), 0xFF);
-                    local flashR = bit.band(bit.rshift(flashColor, 16), 0xFF);
-                    local flashG = bit.band(bit.rshift(flashColor, 8), 0xFF);
-                    local flashB = bit.band(flashColor, 0xFF);
-                    local interpA = math.floor(baseA + (flashA - baseA) * pulseAlpha);
-                    local interpR = math.floor(baseR + (flashR - baseR) * pulseAlpha);
-                    local interpG = math.floor(baseG + (flashG - baseG) * pulseAlpha);
-                    local interpB = math.floor(baseB + (flashB - baseB) * pulseAlpha);
-                    desiredTpColor = bit.bor(bit.lshift(interpA, 24), bit.lshift(interpR, 16), bit.lshift(interpG, 8), interpB);
-                    if (data.memberTextColorCache[memIdx].tp ~= desiredTpColor) then
-                        data.memberText[memIdx].tp:set_font_color(desiredTpColor);
-                        data.memberTextColorCache[memIdx].tp = desiredTpColor;
-                    end
+            -- TP text (or spell name if casting with 'tp' style). Hidden when
+            -- showTP is off and we're not displaying a cast in the TP slot;
+            -- in that case the MP bar shifts left to reclaim the space.
+            local renderTpSlot = (showTP or showingCastInTpSlot);
+            if renderTpSlot then
+                if showingCastInTpSlot then
+                    -- Show spell name instead of TP when casting with 'tp' style
+                    local castTextColor = cache.colors.castTextColor or 0xFFFFCC44;
+                    tpText = castData.spellName;
+                    tpColor = castTextColor;
                 else
-                    desiredTpColor = (memInfo.tp >= 1000) and cache.colors.tpFullTextColor or cache.colors.tpEmptyTextColor;
-                    if (data.memberTextColorCache[memIdx].tp ~= desiredTpColor) then
-                        data.memberText[memIdx].tp:set_font_color(desiredTpColor);
-                        data.memberTextColorCache[memIdx].tp = desiredTpColor;
+                    -- Normal TP text color with optional flashing
+                    local desiredTpColor;
+                    if memInfo.tp >= 1000 and cache.flashTP then
+                        local flashTime = os.clock();
+                        local timePerPulse = 1;
+                        local phase = flashTime % timePerPulse;
+                        local pulseAlpha = (2 / timePerPulse) * phase;
+                        if pulseAlpha > 1 then pulseAlpha = 2 - pulseAlpha; end
+                        local baseColor = cache.colors.tpFullTextColor or 0xFFFFFFFF;
+                        local flashColor = cache.colors.tpFlashColor or 0xFF3ECE00;
+                        local baseA = bit.band(bit.rshift(baseColor, 24), 0xFF);
+                        local baseR = bit.band(bit.rshift(baseColor, 16), 0xFF);
+                        local baseG = bit.band(bit.rshift(baseColor, 8), 0xFF);
+                        local baseB = bit.band(baseColor, 0xFF);
+                        local flashA = bit.band(bit.rshift(flashColor, 24), 0xFF);
+                        local flashR = bit.band(bit.rshift(flashColor, 16), 0xFF);
+                        local flashG = bit.band(bit.rshift(flashColor, 8), 0xFF);
+                        local flashB = bit.band(flashColor, 0xFF);
+                        local interpA = math.floor(baseA + (flashA - baseA) * pulseAlpha);
+                        local interpR = math.floor(baseR + (flashR - baseR) * pulseAlpha);
+                        local interpG = math.floor(baseG + (flashG - baseG) * pulseAlpha);
+                        local interpB = math.floor(baseB + (flashB - baseB) * pulseAlpha);
+                        desiredTpColor = bit.bor(bit.lshift(interpA, 24), bit.lshift(interpR, 16), bit.lshift(interpG, 8), interpB);
+                        tpColor = desiredTpColor;
+                    else
+                        desiredTpColor = (memInfo.tp >= 1000) and cache.colors.tpFullTextColor or cache.colors.tpEmptyTextColor;
+                        tpColor = desiredTpColor;
                     end
                 end
+
+                local tpBaselineOffset = tpRefHeight - tpHeight;
+                local tpTextX = rowStartX + 4 + textOffsets.tpX;
+                local tpTextY = rowStartY + tpBaselineOffset + textOffsets.tpY;
+                imtext.Draw(textDrawList, tpText, tpTextX, tpTextY, tpColor, fontSizes.tp);
             end
 
-            local tpBaselineOffset = tpRefHeight - tpHeight;
-            data.memberText[memIdx].tp:set_position_x(rowStartX + 4 + textOffsets.tpX);
-            data.memberText[memIdx].tp:set_position_y(rowStartY + tpBaselineOffset + textOffsets.tpY);
-
-            local mpBarStartX = rowStartX + 4 + maxTpTextWidth + 4;
+            local effectiveTpTextWidth = renderTpSlot and maxTpTextWidth or 0;
+            local mpBarStartX = rowStartX + 4 + effectiveTpTextWidth + 4;
             mpStartX = mpBarStartX;
             mpStartY = rowStartY;
             imgui.SetCursorScreenPos({mpStartX, mpStartY});
@@ -816,12 +776,8 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
                     local castGradient = GetCustomGradient(cache.colors, 'castBarGradient') or {'#ffaa00', '#ffcc44'};
                     progressbar.ProgressBar({{castProgress, castGradient}}, {mpBarWidth, mpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
                     -- Set MP text to spell name with cast text color
-                    setCachedText(memIdx, 'mp', data.memberText[memIdx].mp, castData.spellName);
-                    local castTextColor = cache.colors.castTextColor or 0xFFFFCC44;
-                    if (data.memberTextColorCache[memIdx].mp ~= castTextColor) then
-                        data.memberText[memIdx].mp:set_font_color(castTextColor);
-                        data.memberTextColorCache[memIdx].mp = castTextColor;
-                    end
+                    mpDisplayText = castData.spellName;
+                    mpColor = cache.colors.castTextColor or 0xFFFFCC44;
                 else
                     local mpGradient = GetCustomGradient(cache.colors, 'mpGradient') or {'#9abb5a', '#bfe07d'};
 
@@ -876,15 +832,15 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
                     end
 
                     progressbar.ProgressBar(mpPercentData, {mpBarWidth, mpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
-                    if (data.memberTextColorCache[memIdx].mp ~= cache.colors.mpTextColor) then
-                        data.memberText[memIdx].mp:set_font_color(cache.colors.mpTextColor);
-                        data.memberTextColorCache[memIdx].mp = cache.colors.mpTextColor;
-                    end
+                    mpColor = cache.colors.mpTextColor;
                 end
 
                 local mpBaselineOffset = mpRefHeight - mpHeight;
-                data.memberText[memIdx].mp:set_position_x(mpStartX + mpBarWidth + 4 + textOffsets.mpX);
-                data.memberText[memIdx].mp:set_position_y(mpStartY + (mpBarHeight - mpRefHeight) / 2 + mpBaselineOffset + textOffsets.mpY);
+                local mpTextX = mpStartX + mpBarWidth + 4 + textOffsets.mpX;
+                local mpTextY = mpStartY + (mpBarHeight - mpRefHeight) / 2 + mpBaselineOffset + textOffsets.mpY;
+                if memInfo.inzone then
+                    imtext.Draw(textDrawList, mpDisplayText, mpTextX, mpTextY, mpColor, fontSizes.mp);
+                end
             end
         else
             -- Layout 0: Horizontal layout
@@ -899,12 +855,8 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
                     local castGradient = GetCustomGradient(cache.colors, 'castBarGradient') or {'#ffaa00', '#ffcc44'};
                     progressbar.ProgressBar({{castProgress, castGradient}}, {mpBarWidth, mpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
                     -- Set MP text to spell name with cast text color
-                    setCachedText(memIdx, 'mp', data.memberText[memIdx].mp, castData.spellName);
-                    local castTextColor = cache.colors.castTextColor or 0xFFFFCC44;
-                    if (data.memberTextColorCache[memIdx].mp ~= castTextColor) then
-                        data.memberText[memIdx].mp:set_font_color(castTextColor);
-                        data.memberTextColorCache[memIdx].mp = castTextColor;
-                    end
+                    mpDisplayText = castData.spellName;
+                    mpColor = cache.colors.castTextColor or 0xFFFFCC44;
                 else
                     local mpGradient = GetCustomGradient(cache.colors, 'mpGradient') or {'#9abb5a', '#bfe07d'};
 
@@ -959,17 +911,17 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
                     end
 
                     progressbar.ProgressBar(mpPercentData, {mpBarWidth, mpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
-                    if (data.memberTextColorCache[memIdx].mp ~= cache.colors.mpTextColor) then
-                        data.memberText[memIdx].mp:set_font_color(cache.colors.mpTextColor);
-                        data.memberTextColorCache[memIdx].mp = cache.colors.mpTextColor;
-                    end
+                    mpColor = cache.colors.mpTextColor;
                 end
 
                 -- Recalculate mp text width in case it changed to spell name
-                local currentMpTextWidth, _ = data.memberText[memIdx].mp:get_text_size();
+                local currentMpTextWidth = showingCastInMpSlot and imtext.Measure(mpDisplayText, fontSizes.mp) or mpTextWidth;
                 local mpBaselineOffset = mpRefHeight - mpHeight;
-                data.memberText[memIdx].mp:set_position_x(mpStartX + mpBarWidth - currentMpTextWidth + textOffsets.mpX);
-                data.memberText[memIdx].mp:set_position_y(mpStartY + mpBarHeight + settings.mpTextOffsetY + mpBaselineOffset + textOffsets.mpY);
+                local mpTextX = mpStartX + mpBarWidth - currentMpTextWidth + textOffsets.mpX;
+                local mpTextY = mpStartY + mpBarHeight + barBorderExtent + settings.mpTextOffsetY + mpBaselineOffset + textOffsets.mpY;
+                if memInfo.inzone then
+                    imtext.Draw(textDrawList, mpDisplayText, mpTextX, mpTextY, mpColor, fontSizes.mp);
+                end
             end
 
             -- TP bar (or cast bar if castBarStyle == 'tp')
@@ -983,12 +935,9 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
                     local castGradient = GetCustomGradient(cache.colors, 'castBarGradient') or {'#ffaa00', '#ffcc44'};
                     progressbar.ProgressBar({{castProgress, castGradient}}, {tpBarWidth, tpBarHeight}, {decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
                     -- Set TP text to spell name with cast text color
-                    setCachedText(memIdx, 'tp', data.memberText[memIdx].tp, castData.spellName);
                     local castTextColor = cache.colors.castTextColor or 0xFFFFCC44;
-                    if (data.memberTextColorCache[memIdx].tp ~= castTextColor) then
-                        data.memberText[memIdx].tp:set_font_color(castTextColor);
-                        data.memberTextColorCache[memIdx].tp = castTextColor;
-                    end
+                    tpText = castData.spellName;
+                    tpColor = castTextColor;
                 else
                     -- Render normal TP bar
                     local tpGradient = GetCustomGradient(cache.colors, 'tpGradient') or {'#3898ce', '#78c4ee'};
@@ -1012,18 +961,17 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
                     progressbar.ProgressBar({{mainPercent, tpGradient}}, {tpBarWidth, tpBarHeight}, {overlayBar=tpOverlay, decorate = cache.showBookends, backgroundGradientOverride = data.getBarBackgroundOverride(partyIndex), borderColorOverride = data.getBarBorderOverride(partyIndex)});
 
                     local desiredTpColor = (memInfo.tp >= 1000) and cache.colors.tpFullTextColor or cache.colors.tpEmptyTextColor;
-                    if (data.memberTextColorCache[memIdx].tp ~= desiredTpColor) then
-                        data.memberText[memIdx].tp:set_font_color(desiredTpColor);
-                        data.memberTextColorCache[memIdx].tp = desiredTpColor;
-                    end
-                    setCachedText(memIdx, 'tp', data.memberText[memIdx].tp, tpText);
+                    tpColor = desiredTpColor;
                 end
 
                 -- Recalculate tp text width in case it changed to spell name
-                local currentTpTextWidth, _ = data.memberText[memIdx].tp:get_text_size();
+                local currentTpTextWidth = showingCastInTpSlot and imtext.Measure(tpText, fontSizes.tp) or tpTextWidth;
                 local tpBaselineOffset = tpRefHeight - tpHeight;
-                data.memberText[memIdx].tp:set_position_x(tpStartX + tpBarWidth - currentTpTextWidth + textOffsets.tpX);
-                data.memberText[memIdx].tp:set_position_y(tpStartY + tpBarHeight + settings.tpTextOffsetY + tpBaselineOffset + textOffsets.tpY);
+                local tpTextX = tpStartX + tpBarWidth - currentTpTextWidth + textOffsets.tpX;
+                local tpTextY = tpStartY + tpBarHeight + barBorderExtent + settings.tpTextOffsetY + tpBaselineOffset + textOffsets.tpY;
+                if memInfo.inzone then
+                    imtext.Draw(textDrawList, tpText, tpTextX, tpTextY, tpColor, fontSizes.tp);
+                end
             end
         end
 
@@ -1109,12 +1057,12 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
                 local statusOffsetY = cache.statusOffsetY or 0;
                 if cache.statusSide == 0 then
                     if data.buffWindowX[memIdx] ~= nil then
-                        imgui.SetNextWindowPos({hpStartX - data.buffWindowX[memIdx] - settings.buffOffset + statusOffsetX, data.memberText[memIdx].name.settings.position_y - settings.iconSize/2 + statusOffsetY});
+                        imgui.SetNextWindowPos({hpStartX - data.buffWindowX[memIdx] - settings.buffOffset + statusOffsetX, nameTextY - settings.iconSize/2 + statusOffsetY});
                     end
                 else
                     if data.fullMenuWidth[partyIndex] ~= nil then
                         local thisPosX, _ = imgui.GetWindowPos();
-                        imgui.SetNextWindowPos({ thisPosX + data.fullMenuWidth[partyIndex] + statusOffsetX, data.memberText[memIdx].name.settings.position_y - settings.iconSize/2 + statusOffsetY });
+                        imgui.SetNextWindowPos({ thisPosX + data.fullMenuWidth[partyIndex] + statusOffsetX, nameTextY - settings.iconSize/2 + statusOffsetY });
                     end
                 end
                 if (imgui.Begin('PlayerBuffs'..memIdx, true, bit.bor(ImGuiWindowFlags_NoDecoration, ImGuiWindowFlags_AlwaysAutoResize, ImGuiWindowFlags_NoFocusOnAppearing, ImGuiWindowFlags_NoNav, ImGuiWindowFlags_NoBackground, ImGuiWindowFlags_NoSavedSettings, ImGuiWindowFlags_NoDocking))) then
@@ -1134,10 +1082,7 @@ function display.DrawMember(memIdx, settings, isLastVisibleMember)
         draw_circle({hpStartX + settings.dotRadius/2, hpStartY + barHeight}, settings.dotRadius, {.5, .5, 1, 1}, settings.dotRadius * 3, true, nil, GetUIDrawList());
     end
 
-    -- Set text visibility
-    data.memberText[memIdx].hp:set_visible(memInfo.inzone);
-    data.memberText[memIdx].mp:set_visible(memInfo.inzone and showMpBar);
-    data.memberText[memIdx].tp:set_visible(memInfo.inzone and showTP);
+
 
     -- Reserve space for layout
     if layout == 1 and memInfo.inzone then
@@ -1209,8 +1154,6 @@ function display.DrawPartyWindow(settings, party, partyIndex)
         return;
     end
 
-    local backgroundPrim = data.partyWindowPrim[partyIndex].background;
-
     local titleUV;
     if (partyIndex == 1) then
         titleUV = partyMemberCount == 1 and data.titleUVs.solo or data.titleUVs.party;
@@ -1238,13 +1181,34 @@ function display.DrawPartyWindow(settings, party, partyIndex)
     imgui.PushStyleVar(ImGuiStyleVar_FramePadding, {0,0});
     imgui.PushStyleVar(ImGuiStyleVar_ItemSpacing, { settings.barSpacing * scale.x, 0 });
     
-    ApplyWindowPosition(windowName);
+    local positionJustApplied = ApplyWindowPosition(windowName);
     
     if (imgui.Begin(windowName, true, windowFlags)) then
         SaveWindowPosition(windowName);
         imguiPosX, imguiPosY = imgui.GetWindowPos();
 
-        local nameRefHeight = data.partyRefHeights[partyIndex].nameRefHeight;
+        -- Draw background + borders FIRST so they sit beneath member content on the draw list.
+        -- Window size depends on content rendered later, so we use the previous frame's cached
+        -- size from data.fullMenuWidth/Height. The cache is updated at the end of this function.
+        local cachedW = data.fullMenuWidth[partyIndex];
+        local cachedH = data.fullMenuHeight[partyIndex];
+        if cachedW and cachedH and cachedW > 0 and cachedH > 0 then
+            windowBg.Draw(GetUIDrawList(), imguiPosX, imguiPosY, cachedW, cachedH, {
+                theme = cache.backgroundName,
+                padding = settings.bgPadding,
+                paddingY = settings.bgPaddingY,
+                bgScale = cache.bgScale,
+                borderScale = cache.borderScale,
+                bgOpacity = cache.backgroundOpacity,
+                bgColor = cache.colors.bgColor,
+                borderSize = settings.borderSize,
+                bgOffset = settings.bgOffset,
+                borderOpacity = cache.borderOpacity,
+                borderColor = cache.colors.borderColor,
+            });
+        end
+
+        local nameRefHeight = cache.fontSizes.name;
         local offsetSize = nameRefHeight > iconSize and nameRefHeight or iconSize;
         imgui.Dummy({0, settings.nameTextOffsetY + offsetSize});
 
@@ -1256,17 +1220,18 @@ function display.DrawPartyWindow(settings, party, partyIndex)
         local lastVisibleMemberIdx = firstPlayerIndex;
         for i = firstPlayerIndex, lastPlayerIndex do
             local relIndex = i - firstPlayerIndex
-            if ((partyIndex == 1 and shouldExpandHeight) or relIndex < partyMemberCount or relIndex < settings.minRows) then
+            if ((partyIndex == 1 and shouldExpandHeight) or relIndex < partyMemberCount or relIndex < cache.minRows) then
                 lastVisibleMemberIdx = i;
             end
         end
 
+        imtext.SetConfigFromSettings(settings.name_font_settings);
+
         for i = firstPlayerIndex, lastPlayerIndex do
             local relIndex = i - firstPlayerIndex
-            if ((partyIndex == 1 and shouldExpandHeight) or relIndex < partyMemberCount or relIndex < settings.minRows) then
+            if ((partyIndex == 1 and shouldExpandHeight) or relIndex < partyMemberCount or relIndex < cache.minRows) then
                 display.DrawMember(i, settings, i == lastVisibleMemberIdx);
             else
-                data.UpdateTextVisibilityByMember(i, false);
             end
         end
     end
@@ -1302,22 +1267,6 @@ function display.DrawPartyWindow(settings, party, partyIndex)
     -- Calculate background dimensions (needed for title positioning)
     local bgWidth = data.fullMenuWidth[partyIndex] + (settings.bgPadding * 2);
 
-    -- Update background and borders using windowbackground library
-    local bgOptions = {
-        theme = cache.backgroundName,
-        padding = settings.bgPadding,
-        paddingY = settings.bgPaddingY,
-        bgScale = cache.bgScale,
-        borderScale = cache.borderScale,
-        bgOpacity = cache.backgroundOpacity,
-        bgColor = cache.colors.bgColor,
-        borderSize = settings.borderSize,
-        bgOffset = settings.bgOffset,
-        borderOpacity = cache.borderOpacity,
-        borderColor = cache.colors.borderColor,
-    };
-    windowBg.update(backgroundPrim, imguiPosX, imguiPosY, data.fullMenuWidth[partyIndex], data.fullMenuHeight[partyIndex], bgOptions);
-
     -- Draw title (skip foreground rendering when modal is open to respect dim overlay)
     if (cache.showTitle and data.partyTitlesTexture ~= nil and not _XIUI_MODAL_OPEN) then
         local titleImage = tonumber(ffi.cast("uint32_t", data.partyTitlesTexture.image));
@@ -1335,28 +1284,6 @@ function display.DrawPartyWindow(settings, party, partyIndex)
             {titleUV[1], titleUV[2]}, {titleUV[3], titleUV[4]},
             IM_COL32_WHITE
         );
-    end
-
-    -- Save position if moved (with change detection to avoid spam) - all party windows
-    local winPosX, winPosY = imgui.GetWindowPos();
-    if not gConfig.lockPositions then
-        if lastSavedPosX[partyIndex] == nil or
-           math.abs(winPosX - lastSavedPosX[partyIndex]) > 1 or
-           math.abs(winPosY - lastSavedPosY[partyIndex]) > 1 then
-            if partyIndex == 1 then
-                gConfig.partyListWindowPosX = winPosX;
-                gConfig.partyListWindowPosY = winPosY;
-            elseif partyIndex == 2 then
-                gConfig.partyList2WindowPosX = winPosX;
-                gConfig.partyList2WindowPosY = winPosY;
-            else
-                gConfig.partyList3WindowPosX = winPosX;
-                gConfig.partyList3WindowPosY = winPosY;
-            end
-            lastSavedPosX[partyIndex] = winPosX;
-            lastSavedPosY[partyIndex] = winPosY;
-            -- Position will be persisted on addon unload
-        end
     end
 
     imgui.End();
@@ -1377,25 +1304,37 @@ function display.DrawPartyWindow(settings, party, partyIndex)
 
         local partyListState = gConfig.partyListState[partyIndex];
 
-        if (partyListState ~= nil) then
-            if (menuHeight ~= partyListState.height) then
-                local newPosY = partyListState.y + partyListState.height - menuHeight;
-                imguiPosY = newPosY;
-                imgui.SetWindowPos(windowName, { imguiPosX, imguiPosY });
-            end
-        end
+        -- Detect external position change (forced reset, user drag, etc.)
+        -- Note: We don't use positionJustApplied here because partyListState is persisted
+        -- in the profile and should be preserved on normal login (when positions are applied
+        -- from saved data). RecoverAllPositions explicitly clears partyListState for resets.
+        local positionChanged = partyListState ~= nil and partyListState.y ~= nil and partyListState.y ~= imguiPosY;
 
-        if (partyListState == nil or
-                imguiPosX ~= partyListState.x or imguiPosY ~= partyListState.y or
-                menuWidth ~= partyListState.width or menuHeight ~= partyListState.height) then
-            gConfig.partyListState[partyIndex] = {
-                x = imguiPosX,
-                y = imguiPosY,
-                width = menuWidth,
-                height = menuHeight,
-            };
-            data.lastSettingsSaveTime = os.clock();
-            data.pendingSettingsSave = true;
+        if positionChanged then
+            -- Position was externally moved; clear tracking so height adjustment
+            -- doesn't fire until state is re-established on the next frame
+            gConfig.partyListState[partyIndex] = nil;
+        else
+            if (partyListState ~= nil) then
+                if (menuHeight ~= partyListState.height) then
+                    local newPosY = partyListState.y + partyListState.height - menuHeight;
+                    imguiPosY = newPosY;
+                    imgui.SetWindowPos(windowName, { imguiPosX, imguiPosY });
+                end
+            end
+
+            if (partyListState == nil or
+                    imguiPosX ~= partyListState.x or imguiPosY ~= partyListState.y or
+                    menuWidth ~= partyListState.width or menuHeight ~= partyListState.height) then
+                gConfig.partyListState[partyIndex] = {
+                    x = imguiPosX,
+                    y = imguiPosY,
+                    width = menuWidth,
+                    height = menuHeight,
+                };
+                data.lastSettingsSaveTime = os.clock();
+                data.pendingSettingsSave = true;
+            end
         end
     end
 end
@@ -1485,9 +1424,20 @@ function display.DrawWindow(settings)
 end
 
 display.ResetPositions = function()
+    local positionGetters = {
+        defaultPositions.GetPartyListPosition,
+        defaultPositions.GetPartyList2Position,
+        defaultPositions.GetPartyList3Position,
+    };
+    local windowNames = { 'PartyList', 'PartyList2', 'PartyList3' };
     for i = 1, 3 do
-        forcePositionReset[i] = true;
-        hasAppliedSavedPosition[i] = false;
+        local defX, defY = positionGetters[i]();
+        if gConfig.windowPositions then
+            gConfig.windowPositions[windowNames[i]] = { x = defX, y = defY };
+        end
+        if gConfig.appliedPositions then
+            gConfig.appliedPositions[windowNames[i]] = nil;
+        end
     end
 end
 
