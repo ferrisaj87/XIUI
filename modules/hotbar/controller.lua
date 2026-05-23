@@ -586,20 +586,31 @@ function Controller.HandleXInputState(e)
     -- Update combo state based on trigger changes
     UpdateComboState(leftHeld, rightHeld);
 
-    -- Track shoulder button state for palette cycling
-    local rbHeld = bit.band(currentButtons, xboxDevice.ButtonMasks.RIGHT_SHOULDER) ~= 0;
-    local lbHeld = bit.band(currentButtons, xboxDevice.ButtonMasks.LEFT_SHOULDER) ~= 0;
+    -- Track shoulder button state for palette cycling. The poll is allowed to SET the
+    -- latched state to true (catches the case where xinput_button events miss the press)
+    -- but is NOT allowed to clear it — that's the xinput_button release event's job. This
+    -- asymmetry matters when FFXI's native gamepad bindings consume a shoulder bit from
+    -- xinput_state before Ashita reads it: the bit shows up as cleared in the poll, but
+    -- the user is still physically holding the button. Without this, R1 cycle worked but
+    -- L1 cycle would silently fail on setups where L1 is bound to a FFXI-native action
+    -- (e.g. Previous Target) that masks the bit out before the poll sees it.
+    local rbHeldRaw = bit.band(currentButtons, xboxDevice.ButtonMasks.RIGHT_SHOULDER) ~= 0;
+    local lbHeldRaw = bit.band(currentButtons, xboxDevice.ButtonMasks.LEFT_SHOULDER) ~= 0;
 
-    -- Debug: log shoulder button state changes
-    if rbHeld ~= state.rightShoulderHeld then
-        DebugLog(string.format('RB/R1 state changed: %s (from xinput_state, buttons=0x%04X)', tostring(rbHeld), currentButtons));
+    if rbHeldRaw ~= state.rightShoulderHeld then
+        DebugLog(string.format('RB/R1 poll: %s (buttons=0x%04X, latched=%s)',
+            tostring(rbHeldRaw), currentButtons, tostring(state.rightShoulderHeld)));
     end
-    if lbHeld ~= state.leftShoulderHeld then
-        DebugLog(string.format('LB/L1 state changed: %s (from xinput_state, buttons=0x%04X)', tostring(lbHeld), currentButtons));
+    if lbHeldRaw ~= state.leftShoulderHeld then
+        DebugLog(string.format('LB/L1 poll: %s (buttons=0x%04X, latched=%s)',
+            tostring(lbHeldRaw), currentButtons, tostring(state.leftShoulderHeld)));
     end
 
-    state.rightShoulderHeld = rbHeld;
-    state.leftShoulderHeld = lbHeld;
+    if rbHeldRaw then state.rightShoulderHeld = true; end
+    if lbHeldRaw then state.leftShoulderHeld = true; end
+
+    local rbHeld = state.rightShoulderHeld;
+    local lbHeld = state.leftShoulderHeld;
 
     -- Check for slot activation from state poll (button press detection)
     local newPresses = bit.band(currentButtons, bit.bnot(state.previousButtons));
@@ -655,7 +666,9 @@ function Controller.HandleXInputState(e)
                 tostring(rbHeld),
                 tostring(lbHeld)));
 
-            -- Check which shoulder button is configured for palette cycling
+            -- Check which shoulder button is configured for palette cycling. `lbHeld` /
+            -- `rbHeld` are the latched values (see shoulder-tracking block above) so this
+            -- works even when the raw poll sample misses the bit on the frame DPad fires.
             local cycleButton = globalSettings and globalSettings.hotbarPaletteCycleButton or 'R1';
             local cycleButtonHeld = (cycleButton == 'L1' and lbHeld) or (cycleButton ~= 'L1' and rbHeld);
 

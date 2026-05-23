@@ -14,6 +14,10 @@ local macrosLib = require('libs.ffxi.macros');
 local palette = require('modules.hotbar.palette');
 local macroparse = require('modules.hotbar.macroparse');
 local universalTwoHour = require('modules.hotbar.universal_two_hour');
+-- Lazy session-cached name->id hashmaps for spells/abilities/items. Used to replace the
+-- O(65535) item scan in LoadItemIconByName below (#17 in audit table). Both 1.8.0 and
+-- Ferris kept this module but neither propagated it into actions.lua's item lookup.
+local actiondb = require('modules.hotbar.actiondb');
 
 -- Debug logging (controlled via /xiui debug hotbar)
 local DEBUG_ENABLED = false;
@@ -184,6 +188,33 @@ end
 
 -- Cache for custom icons loaded from disk
 local customIconCache = {};
+
+-- Negative-result cache: keyed strings for which GetBindIcon already returned nil.
+-- Skips the lookup work (hashmap probes, GetSpellByName, name->id scans) on subsequent
+-- cache misses in display.iconCache. Invalidated whenever an upstream cache that affects
+-- icon resolution is wiped (job/pet/palette change, macroDB edit).
+local noIconCache = {};
+
+-- Build a key for noIconCache from the fields GetBindIcon branches on.
+-- Includes macroRef + recastSource* so macro-recast overrides (which can change icon
+-- resolution per Ferris's macro-aware paths) invalidate the negative result.
+local function buildNoIconKey(bind)
+    if not bind then return nil; end
+    local key = (bind.actionType or '') .. ':' .. (bind.action or '');
+    if bind.customIconType or bind.customIconId or bind.customIconPath then
+        key = key .. ':ci:' .. (bind.customIconType or '')
+                  .. ':' .. tostring(bind.customIconId or '')
+                  .. ':' .. (bind.customIconPath or '');
+    end
+    if bind.macroRef then
+        key = key .. ':mr:' .. tostring(bind.macroRef);
+    end
+    if bind.recastSourceType or bind.recastSourceAction then
+        key = key .. ':rs:' .. (bind.recastSourceType or '')
+                  .. ':' .. (bind.recastSourceAction or '');
+    end
+    return key;
+end
 
 --- After LoadTextureFromPath: use in-memory D3D texture for hotbar (see slotrenderer icon branch).
 --- File-path primitives can re-hit disk every frame; ImGui AddImage uses the loaded texture only.
@@ -499,16 +530,28 @@ end
 --- Find a spell by English name in horizonspells (exact match; used for MP cost, availability, etc.)
 ---@param spellName string The English name of the spell
 ---@return table|nil The spell data table with en, icon_id, prefix, and id fields
+-- O(1) lookup from English spell name -> horizonSpells entry. Built lazily on first use.
+-- NOTE: horizonSpells has duplicate entries for the same English name (different prefixes —
+-- e.g. /ma vs /magic vs blood pact). Builders below preserve the FIRST match found; for
+-- prefix/action-type-specific resolution use GetSpellByNameForIcon (case-insensitive) or
+-- GetSpellIndexForMa (Horizon recast index).
+local spellByNameLookup = nil;
+
+local function buildSpellByNameLookup()
+    spellByNameLookup = {};
+    for _, spell in pairs(horizonSpells) do
+        if spell.en and spellByNameLookup[spell.en] == nil then
+            spellByNameLookup[spell.en] = spell;
+        end
+    end
+end
+
 local function GetSpellByName(spellName)
     if not spellName or spellName == '' then
         return nil;
     end
-    for _, spell in pairs(horizonSpells) do
-        if spell.en == spellName then
-            return spell;
-        end
-    end
-    return nil;
+    if not spellByNameLookup then buildSpellByNameLookup(); end
+    return spellByNameLookup[spellName];
 end
 
 --- Horizon spell rows that are "school magic" (/ma) — never use these for /pet command icons (blood pact shares names).
@@ -520,17 +563,42 @@ end
 --- Case-insensitive spell lookup for icons / palette. When several rows share `en`, pick by action context.
 --- For `pet`, rows that are only WM/BM/BLU are ignored so /pet does not show the /ma icon (e.g. Ramuh vs spell "Thunder II").
 ---@param actionType string|nil 'ma'|'pet'|nil (nil treated like 'ma' for single-match rows)
+
+-- Case-insensitive multimap: lowercase English name -> list of horizonSpells rows.
+-- Built lazily on first GetSpellByNameForIcon call. Matches the 1.8.0 perf pattern used
+-- for spellByNameLookup (case-sensitive single-match): both replace O(n) scans with O(1)
+-- hashmap probes. Multiple entries per key are preserved because the caller filters by
+-- actionType context (pet vs ma vs blood pact) below.
+local spellsByLowerNameLookup = nil;
+
+local function buildSpellsByLowerNameLookup()
+    spellsByLowerNameLookup = {};
+    for _, spell in pairs(horizonSpells) do
+        if spell.en then
+            local k = string.lower(spell.en);
+            local list = spellsByLowerNameLookup[k];
+            if not list then
+                list = {};
+                spellsByLowerNameLookup[k] = list;
+            end
+            list[#list + 1] = spell;
+        end
+    end
+end
+
 local function GetSpellByNameForIcon(spellName, actionType)
     if not spellName or spellName == '' then
         return nil;
     end
+    if not spellsByLowerNameLookup then buildSpellsByLowerNameLookup(); end
     local needle = string.lower(spellName);
-    local list = {};
-    for _, spell in pairs(horizonSpells) do
-        if spell.en and string.lower(spell.en) == needle then
-            table.insert(list, spell);
-        end
+    local matches = spellsByLowerNameLookup[needle];
+    if not matches then
+        return nil;
     end
+    -- Copy into a local working list so we can sort without mutating the cached one.
+    local list = {};
+    for i = 1, #matches do list[i] = matches[i]; end
     if #list == 0 then
         return nil;
     end
@@ -874,13 +942,29 @@ end
 function M.IsActionAvailable(bind)
     if not bind then return true, nil; end
 
-    local player = AshitaCore:GetMemoryManager():GetPlayer();
+    local memMgr = AshitaCore:GetMemoryManager();
+    local player = memMgr and memMgr:GetPlayer();
     if not player then return true, nil; end
 
     local mainJobId = player:GetMainJob();
-    local mainJobLevel = player:GetMainJobLevel();
     local subJobId = player:GetSubJob();
-    local subJobLevel = player:GetSubJobLevel();
+
+    -- IMPORTANT: Use EFFECTIVE (post-Level Sync) levels for spell/JA/pact gates. Party
+    -- member 0 = the player; `GetMemberMainJobLevel(0)` reflects the synced-down value
+    -- (e.g. 40 while synced) whereas `player:GetMainJobLevel()` returns the raw character
+    -- level (e.g. 75). Without this, a synced player gets told a Lv50 spell is available
+    -- when the game itself will reject the cast. Falls back to raw level if party packet
+    -- hasn't populated yet (zone-in race). Effective levels are also embedded in the
+    -- slotrenderer availability cache key, so transitions invalidate cleanly.
+    local mainJobLevel = player:GetMainJobLevel() or 0;
+    local subJobLevel = player:GetSubJobLevel() or 0;
+    local party = memMgr and memMgr:GetParty();
+    if party then
+        local pMain = party:GetMemberMainJobLevel(0);
+        local pSub = party:GetMemberSubJobLevel(0);
+        if pMain and pMain > 0 then mainJobLevel = pMain; end
+        if pSub and pSub > 0 then subJobLevel = pSub; end
+    end
 
     -- Guard: If job data is invalid (e.g., during zoning), assume available
     -- Don't cache this result - return nil as reason to signal "don't cache"
@@ -1284,19 +1368,18 @@ local function LoadItemIconByName(itemName)
         return LoadItemIconById(cachedId);
     end
 
-    -- Search for item by name (slow, but cached after first find)
-    local resMgr = AshitaCore:GetResourceManager();
-    if not resMgr then return nil; end
-
-    for itemId = 1, 65535 do
-        local item = resMgr:GetItemById(itemId);
-        if item and item.Name and NameEqualsI(item.Name[1], itemName) then
-            itemNameToIdCache[cacheKey] = itemId;
-            return LoadItemIconById(itemId);
-        end
+    -- Audit win: O(1) name->id via actiondb (session-cached lazy hashmap built once on
+    -- first call). Previously this did a per-call O(65535) scan that only avoided repeats
+    -- via the local itemNameToIdCache. With actiondb the build cost is paid once across
+    -- ALL callers and every subsequent name lookup is constant-time. The local cache is
+    -- still kept so the LoadItemIconById step is also remembered per icon resolution.
+    local itemId = actiondb.GetItemId(itemName);
+    if itemId and itemId > 0 then
+        itemNameToIdCache[cacheKey] = itemId;
+        return LoadItemIconById(itemId);
     end
 
-    -- CRITICAL: Cache negative result to avoid searching 65535 items every frame!
+    -- Negative-result cache prevents future actiondb probes for misspelled / nonexistent items.
     itemNameToIdCache[cacheKey] = ITEM_NOT_FOUND;
     return nil;
 end
@@ -1338,6 +1421,14 @@ end
 ---@return number|nil iconId The icon ID (for reference)
 function M.GetBindIcon(bind)
     if not bind then
+        return nil, nil;
+    end
+
+    -- Negative cache: if we've already determined this bind has no icon, skip the lookups.
+    -- ClearNoIconCache() must be called by upstream paths whenever icon resolution could change
+    -- (macroDB edit, job/pet/palette change, custom icon asset change).
+    local noIconKey = buildNoIconKey(bind);
+    if noIconKey and noIconCache[noIconKey] then
         return nil, nil;
     end
 
@@ -1598,6 +1689,12 @@ function M.GetBindIcon(bind)
                 icon = def;
             end
         end
+    end
+
+    -- Memoize negative results so future cache misses (after display.iconCache wipes)
+    -- skip the lookup work for binds that have no resolvable icon.
+    if not icon and noIconKey then
+        noIconCache[noIconKey] = true;
     end
 
     return icon, iconId;
@@ -2115,6 +2212,13 @@ end
 function M.ClearCustomIconCache()
     customIconCache = {};
     xiuiDefaultIconCache = {};
+end
+
+--- Clear the negative-result cache. Must be called whenever something upstream
+--- could change icon resolution: macroDB edits, job/pet/palette changes, custom
+--- icon asset changes. Failing to clear it pins stale "no icon" decisions.
+function M.ClearNoIconCache()
+    noIconCache = {};
 end
 
 --- Set debug mode (called via /xiui debug hotbar)

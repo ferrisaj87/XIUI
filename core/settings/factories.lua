@@ -341,6 +341,7 @@ function M.createHotbarGlobalDefaults()
         mpCostOffsetX = 0,
         mpCostOffsetY = 0,
         showQuantity = true,
+        showStackQuantity = false,
         quantityAnchor = 'bottomRight',
         quantityOffsetX = 0,
         quantityOffsetY = 0,
@@ -353,7 +354,16 @@ function M.createHotbarGlobalDefaults()
         skillchainIconScale = 1.0,              -- Scale multiplier for icon (0.5-2.0)
         skillchainIconOffsetX = 0,              -- X offset in pixels
         skillchainIconOffsetY = 0,              -- Y offset in pixels
-    
+
+        -- Magic Burst highlight settings. Window opens IMMEDIATELY when a SC closes and runs
+        -- for 7.0s (matches retail's MB cutoff at the back end while front-loading the visual
+        -- cue). Highlights spell / magical pact rage / /ma-or-/pet macro slots whose element
+        -- matches one of the SC's burstable elements. Uses the same corner icon as the
+        -- skillchain highlight (the SC's name asset) but in the bottom-left corner with a
+        -- cyan-blue border to keep the two highlights visually distinct.
+        magicBurstHighlightEnabled = true,      -- Show MB highlight on element-matching spell slots
+        magicBurstHighlightColor = 0xFF44D4FF,  -- Cyan-blue (ARGB) — distinct from gold SC border
+
         -- Cooldown timer settings
         recastTimerFontSize = 11,               -- Font size for cooldown timer display
         recastTimerFontColor = 0xFFFFFFFF,      -- Color for cooldown timer text
@@ -429,6 +439,7 @@ function M.createHotbarBarDefaults(overrides)
         mpCostOffsetX = 0,
         mpCostOffsetY = 0,
         showQuantity = true,
+        showStackQuantity = false,
         quantityAnchor = 'bottomRight',
         quantityOffsetX = 0,
         quantityOffsetY = 0,
@@ -548,7 +559,7 @@ function M.createCrossbarDefaults()
         buttonIconGapV = 2,                 -- Vertical spacing between center icons
         buttonIconPosition = 'corner',      -- 'corner' or 'replace_keybind'
         -- Job icon set for palette UI (Manage Palettes strip + in-game palette scope icon when Job [J])
-        paletteJobIconTheme = 'Classic',     -- 'Classic', 'FFXI', 'FFXIV-1', 'ClassicFFXIV' (under assets/jobs/)
+        paletteJobIconTheme = 'Classic',     -- 'Classic', 'FFXI', 'FFXIV-1' (under assets/jobs/)
         controllerTheme = 'Xbox',           -- 'PlayStation', 'Xbox', or 'Nintendo' button icons
         controllerScheme = 'xbox',          -- Controller profile: 'xbox', 'dualsense', 'switchpro', 'dinput'
         triggerIconScale = 0.8,             -- Scale for L2/R2 trigger icons (base 49x28)
@@ -570,6 +581,7 @@ function M.createCrossbarDefaults()
 
         -- Item quantity display
         showQuantity = true,                -- Show item quantity on item slots
+        showStackQuantity = false,          -- Show full-stack count above the item quantity
         quantityFontSize = 10,              -- Font size for item quantity
         quantityFontColor = 0xFFFFFFFF,     -- Item quantity text color
         quantityOffsetX = 0,                -- X offset for quantity position

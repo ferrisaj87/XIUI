@@ -274,6 +274,20 @@ local function ClearAllIconCaches()
     if slotrenderer and slotrenderer.ClearSlotRenderingCache then
         slotrenderer.ClearSlotRenderingCache();
     end
+    -- 1.8.0 additions: edits that change a macro's action leave the old actionType:action
+    -- entry orphaned in the MP cost / availability caches. Functionally fine (the new key
+    -- naturally misses) but unbounded across many edits, so flush both during full clears.
+    if slotrenderer and slotrenderer.ClearMPCostCache then
+        slotrenderer.ClearMPCostCache();
+    end
+    if slotrenderer and slotrenderer.ClearAvailabilityCache then
+        slotrenderer.ClearAvailabilityCache();
+    end
+    -- Drop the icon-resolution negative cache so newly-added custom icons on edited
+    -- macros are picked up on the next frame instead of remaining "no icon".
+    if actions and actions.ClearNoIconCache then
+        actions.ClearNoIconCache();
+    end
 end
 
 -- Helper to clear icon cache for a single hotbar slot (targeted - fast)
@@ -291,10 +305,8 @@ local function ClearSlotIconCache(barIndex, slotIndex)
     if display and display.ClearIconCacheForSlot then
         display.ClearIconCacheForSlot(barIndex, slotIndex);
     end
-    -- Clear slotrenderer cache for this slot
-    if slotrenderer and slotrenderer.InvalidateSlotByKey then
-        slotrenderer.InvalidateSlotByKey(barIndex .. ':' .. slotIndex);
-    end
+    -- Note: per-slot slotrenderer.InvalidateSlotByKey was removed in 1.8.0. Slot rendering is
+    -- immediate-mode (no persistent prim cache); the per-frame bind hash naturally re-derives.
 end
 
 -- Helper to clear icon cache for a single crossbar slot (targeted - fast)
@@ -312,10 +324,7 @@ local function ClearCrossbarSlotIconCache(comboMode, slotIndex)
     if crossbar and crossbar.ClearIconCacheForSlot then
         crossbar.ClearIconCacheForSlot(comboMode, slotIndex);
     end
-    -- Clear slotrenderer cache for this slot
-    if slotrenderer and slotrenderer.InvalidateSlotByKey then
-        slotrenderer.InvalidateSlotByKey(comboMode .. ':' .. slotIndex);
-    end
+    -- Note: per-slot slotrenderer.InvalidateSlotByKey was removed in 1.8.0. See ClearSlotIconCache above.
 end
 
 -- Action type constants (needed by DrawMacroTile and DrawMacroEditor)
@@ -2524,7 +2533,11 @@ function M.GetMacroById(macroId)
     return nil;
 end
 
-function M.OpenEditorForSlotData(slotData)
+-- opts.bindTargetSlot = { comboMode = string, slotIndex = number } — when present AND the
+-- editor enters "creating new" mode (slotData nil), the first successful Save will write the
+-- new macro's binding into that crossbar draft slot. Consumed exactly once on first Save;
+-- cleared on Cancel/close to prevent stale binds carrying over to unrelated sessions.
+function M.OpenEditorForSlotData(slotData, opts)
     ClearEditorPreviewIconCache();
     MP.editorDidInitialIconPick = false;
     MP.editorImplicitActionIconDone = false;
@@ -2536,6 +2549,7 @@ function M.OpenEditorForSlotData(slotData)
     MP.abilityJobFilter = 0;
     MP.petTypeOverride = 0;
     MP.editorIconPrefsHydrated = false;
+    MP.pendingNewMacroBindTarget = nil;
 
     if slotData and slotData.macroRef then
         local paletteKey = slotData.macroPaletteKey or data.jobId or 1;
@@ -2565,6 +2579,12 @@ function M.OpenEditorForSlotData(slotData)
         MP.editorAutoIconKey = autoKey;
         SyncMacroEditorSubtypeFieldsFromSaveKey();
         M.ClampMacroEditorForItemsPalette();
+        if opts and opts.bindTargetSlot and opts.bindTargetSlot.comboMode and opts.bindTargetSlot.slotIndex then
+            MP.pendingNewMacroBindTarget = {
+                comboMode = opts.bindTargetSlot.comboMode,
+                slotIndex = opts.bindTargetSlot.slotIndex,
+            };
+        end
     end
     RefreshCachedLists();
 end
@@ -2621,6 +2641,10 @@ end
 
 -- Start dragging from a hotbar slot
 function M.StartDragSlot(barIndex, slotIndex, slotData)
+    -- 1.8.0 defensive guard: empty/orphaned slots have nothing to drag; dragdrop.StartDrag
+    -- with a nil payload bypassed the displayName fallback below and started a "ghost" drag
+    -- in 1.7.5 that confused the drop-zone logic. Bail early instead.
+    if not slotData then return; end
     -- Get icon for this slot
     local icon = actions.GetBindIcon(slotData);
     -- Raw slot preserves dual profile/shared macro arms (resolved slotData is flattened)

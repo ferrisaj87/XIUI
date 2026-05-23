@@ -14,7 +14,7 @@ local M = {};
 function M.createUserSettingsDefaults()
     return T{
         lockPositions = false,
-        tooltipScale = 1.0,
+        globalScale = 1.0,
         hideDuringEvents = true,
 
         showPlayerBar = true,
@@ -28,6 +28,7 @@ function M.createUserSettingsDefaults()
         showPetBar = true,
         showCastCost = true,
         showNotifications = true,
+        showReadyCheck = true,
 
         -- Hide when game menu is open (default off)
         playerBarHideOnMenuFocus = false,
@@ -326,6 +327,7 @@ function M.createUserSettingsDefaults()
         expBarShowPercent = true,
         expBarInlineMode = false,
         expBarLimitPointsMode = false,
+        expBarMasteryMode = false,
         -- Text position offsets (relative to default positions)
         expBarJobTextOffsetX = 0,
         expBarJobTextOffsetY = 0,
@@ -470,7 +472,6 @@ function M.createUserSettingsDefaults()
             hpBarWidth = 150,
             mpBarWidth = 100,
             tpBarWidth = 100,
-            barHeight = 20,
             barSpacing = 8,
             nameTextOffsetX = 1,
             nameTextOffsetY = 0,
@@ -486,7 +487,6 @@ function M.createUserSettingsDefaults()
             hpBarWidth = 200,
             mpBarWidth = 120,
             tpBarWidth = 0,
-            barHeight = 20,
             barSpacing = 8,
             nameTextOffsetX = 1,
             nameTextOffsetY = 0,
@@ -566,7 +566,6 @@ function M.createUserSettingsDefaults()
             hpBarWidth = 150,
             mpBarWidth = 100,
             tpBarWidth = 100,
-            barHeight = 20,
             barSpacing = 8,
             hpBarScaleX = 1,
             mpBarScaleX = 1,
@@ -634,7 +633,6 @@ function M.createUserSettingsDefaults()
             hpBarWidth = 200,
             mpBarWidth = 120,
             tpBarWidth = 0,
-            barHeight = 20,
             barSpacing = 8,
             hpBarScaleX = 0.9,
             mpBarScaleX = 0.6,
@@ -794,6 +792,8 @@ function M.createUserSettingsDefaults()
         petBarHpDisplayMode = 'percent', -- 'percent', 'number'
         petBarTargetFontSize = 10,
         petTargetBackgroundTheme = nil,  -- Uses petBarBackgroundTheme by default
+        petTargetBgScale = 1.0,
+        petTargetBorderScale = 1.0,
         petTargetBackgroundOpacity = 1.0,
         petTargetBorderOpacity = 1.0,
         petTargetBarScaleX = 1.0,

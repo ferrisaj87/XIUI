@@ -1,6 +1,6 @@
 --[[
 * XIUI hotbar - Display Module
-* Renders 6 independent hotbar windows with primitives and GDI fonts
+* Renders 6 independent hotbar windows with primitives and imtext
 ]]--
 
 require('common');
@@ -24,6 +24,11 @@ local palette = require('modules.hotbar.palette');
 local skillchain = require('modules.hotbar.skillchain');
 local macroparse = require('modules.hotbar.macroparse');
 local targetLib = require('libs.target');
+local imtext = require('libs.imtext');
+-- TextureManager.DeferRelease keeps a Lua ref to wiped iconCache entries alive
+-- for one frame so palette-delete / job-change paths don't release a D3D texture
+-- that's still queued in this frame's draw list (CTD on Ashita 4.16).
+local TextureManager = require('libs.texturemanager');
 
 local M = {};
 
@@ -37,9 +42,6 @@ local KEYBIND_OFFSET_Y = 2;
 -- ============================================
 -- State
 -- ============================================
-
--- Loaded theme tracking
-local loadedBgTheme = nil;
 
 -- Textures initialized flag
 local texturesInitialized = false;
@@ -117,13 +119,19 @@ local function BuildBindKey(bind)
     if bind.customIconType or bind.customIconId or bind.customIconPath then
         iconPart = ':icon:' .. (bind.customIconType or '') .. ':' .. tostring(bind.customIconId or '') .. ':' .. (bind.customIconPath or '');
     end
-    if bind.actionType == 'macro' then
+    -- Macros render a /ja badge overlay; its icon (whether resolved from a job-ability
+    -- name in macroText or from a macro.jaBadgeCustom* override) must invalidate the
+    -- cache when changed. Defensive guard: function lives in actions.lua (Phase 2.4).
+    if bind.actionType == 'macro' and actions.GetMacroJaBadgeIconCacheSuffix then
         iconPart = iconPart .. (actions.GetMacroJaBadgeIconCacheSuffix(bind) or '');
     end
     return (bind.actionType or '') .. ':' .. (bind.action or '') .. ':' .. (bind.target or '') .. iconPart;
 end
 
--- Get cached icon for a slot, recompute only if bind changed
+-- Get cached icon (and precomputed abbreviation) for a slot, recompute only if bind changed.
+-- Returns: icon, abbr, abbrW. When the slot has an icon, abbr/abbrW are nil.
+-- When the slot has no icon, abbr/abbrW are precomputed so DrawSlot doesn't have to
+-- run GetActionAbbreviation + imtext.Measure per frame.
 local function GetCachedIcon(barIndex, slotIndex, bind)
     if not iconCache[barIndex] then
         iconCache[barIndex] = {};
@@ -132,19 +140,28 @@ local function GetCachedIcon(barIndex, slotIndex, bind)
     local cached = iconCache[barIndex][slotIndex];
 
     -- Check if we have a valid cache entry for this bind
-    -- Compare by actionType+action+target+icon to detect actual changes
     if cached then
         local bindKey = BuildBindKey(bind);
         if cached.bindKey == bindKey then
-            -- Cache hit - return icon even if nil (nil = no icon exists)
-            return cached.icon;
+            -- Cache hit - return cached values (icon may be nil; that's a valid "no icon" memo)
+            return cached.icon, cached.abbr, cached.abbrW;
         end
     end
 
-    -- Cache miss - resolve icon only (BuildCommand also builds strings; avoid that here)
+    -- Cache miss - resolve icon only (BuildCommand also builds command strings; per-frame
+    -- draw paths don't need the command, so we use GetBindIcon when available to skip that work).
     local icon = nil;
     if bind then
-        icon = actions.GetBindIcon(bind);
+        if actions.GetBindIcon then
+            icon = actions.GetBindIcon(bind);
+        else
+            _, icon = actions.BuildCommand(bind);
+        end
+    end
+
+    local abbr, abbrW = nil, nil;
+    if not icon and bind then
+        abbr, abbrW = slotrenderer.ComputeAbbreviation(bind);
     end
 
     -- Store in cache
@@ -152,19 +169,38 @@ local function GetCachedIcon(barIndex, slotIndex, bind)
     iconCache[barIndex][slotIndex] = {
         bindKey = bindKey,
         icon = icon,
+        abbr = abbr,
+        abbrW = abbrW,
     };
 
-    return icon;
+    return icon, abbr, abbrW;
 end
 
 -- Clear icon cache (call when slots change)
 local function ClearIconCache()
+    -- iconCache rows hold the only Lua ref to D3D textures loaded by actions.GetBindIcon
+    -- (LoadTextureFromPath wires a gc_safe_release finalizer); dropping the table mid-frame
+    -- lets Lua GC release the COM texture while AddImage queued earlier this frame still
+    -- references its pointer. Hold the old table alive until next d3d_present flushes it.
+    TextureManager.DeferRelease(iconCache);
     iconCache = {};
+    -- Mirror the wipe to actions.lua's negative-result cache; otherwise a "no icon" decision
+    -- pinned from a previous job/palette/macro state survives across cache invalidations.
+    if actions.ClearNoIconCache then
+        actions.ClearNoIconCache();
+    end
 end
 
 -- Clear icon cache for a specific slot (call on targeted slot updates)
 local function ClearIconCacheForSlot(barIndex, slotIndex)
     if iconCache[barIndex] then
+        -- Per-slot wipes (drag/drop, single rebuild) need the same deferred-release
+        -- guard as ClearIconCache so the slot's queued AddImage from earlier this frame
+        -- doesn't end up dereferencing a freed COM texture.
+        local oldRow = iconCache[barIndex][slotIndex];
+        if oldRow ~= nil then
+            TextureManager.DeferRelease(oldRow);
+        end
         iconCache[barIndex][slotIndex] = nil;
     end
 end
@@ -197,11 +233,12 @@ end
 -- Calculate bar dimensions using per-bar settings
 local function GetBarDimensions(barIndex)
     local barSettings = data.GetBarSettings(barIndex);
-    local slotSize = barSettings.slotSize or 32;
+    local gs = (gConfig and gConfig.globalScale) or 1.0;
+    local slotSize = (barSettings.slotSize or 32) * gs;
     -- Use per-bar slot padding settings
-    local slotGap = barSettings.slotXPadding or data.BUTTON_GAP;
-    local padding = data.PADDING;
-    local rowGap = barSettings.slotYPadding or data.ROW_GAP;
+    local slotGap = (barSettings.slotXPadding or data.BUTTON_GAP) * gs;
+    local padding = data.PADDING * gs;
+    local rowGap = (barSettings.slotYPadding or data.ROW_GAP) * gs;
 
     local layout = data.GetBarLayout(barIndex);
 
@@ -222,116 +259,126 @@ local function GetAssetsPath()
     return assetsPath;
 end
 
+-- Pre-allocated reusable table for DrawSlot
+local slotParams = {};
+local HOTBAR_DROP_ACCEPTS = {'macro', 'slot', 'crossbar_slot'};
+
+-- Pre-created closures and string IDs per slot (avoids ~288 closure + 72 array allocations per frame)
+local slotInteraction = {};
+
+local function GetSlotInteraction(barIndex, slotIndex)
+    if not slotInteraction[barIndex] then
+        slotInteraction[barIndex] = {};
+    end
+    if not slotInteraction[barIndex][slotIndex] then
+        slotInteraction[barIndex][slotIndex] = {
+            buttonId = string.format('##hotbarslot_%d_%d', barIndex, slotIndex),
+            dropZoneId = string.format('hotbar_%d_%d', barIndex, slotIndex),
+            onDrop = function(payload)
+                macropalette.HandleDropOnSlot(payload, barIndex, slotIndex);
+            end,
+            getDragData = function()
+                local b = data.GetKeybindForSlot(barIndex, slotIndex);
+                macropalette.StartDragSlot(barIndex, slotIndex, b);
+                return nil;  -- StartDragSlot handles the drag itself
+            end,
+            onRightClick = function()
+                macropalette.ClearSlot(barIndex, slotIndex);
+            end,
+        };
+    end
+    return slotInteraction[barIndex][slotIndex];
+end
+
 -- Draw a single hotbar slot using shared renderer
-local function DrawSlot(barIndex, slotIndex, x, y, buttonSize, bind, barSettings, animOpacity, skillchainName)
-    -- Gather resources for this slot
-    local resources = {
-        slotPrim = data.slotPrims[barIndex] and data.slotPrims[barIndex][slotIndex],
-        iconPrim = data.iconPrims[barIndex] and data.iconPrims[barIndex][slotIndex],
-        framePrim = data.framePrims[barIndex] and data.framePrims[barIndex][slotIndex],
-        timerFont = data.timerFonts[barIndex] and data.timerFonts[barIndex][slotIndex],
-        keybindFont = data.keybindFonts[barIndex] and data.keybindFonts[barIndex][slotIndex],
-        labelFont = data.labelFonts[barIndex] and data.labelFonts[barIndex][slotIndex],
-        mpCostFont = data.mpCostFonts[barIndex] and data.mpCostFonts[barIndex][slotIndex],
-        quantityFont = data.quantityFonts[barIndex] and data.quantityFonts[barIndex][slotIndex],
-        abbreviationFont = data.abbreviationFonts[barIndex] and data.abbreviationFonts[barIndex][slotIndex],
-    };
-
-    -- Get icon for this action (cached - only rebuilds when bind changes)
-    local icon = GetCachedIcon(barIndex, slotIndex, bind);
-    local labelText = bind and (bind.displayName or bind.action or '') or '';
-
-    -- Get per-bar display settings
-    local showActionLabels = barSettings and barSettings.showActionLabels or false;
-    local showSlotFrame = barSettings and barSettings.showSlotFrame or false;
-    local customFramePath = barSettings and barSettings.customFramePath or '';
-
-    -- NOTE: Keybind font settings are now applied in slotrenderer with caching
-    -- (removed redundant set_font_height/set_font_color calls that happened every frame)
-
-    -- Hide cooldown overlay primitive (not used - we tint the icon instead)
-    local cooldownPrim = data.cooldownPrims[barIndex] and data.cooldownPrims[barIndex][slotIndex];
-    if cooldownPrim then cooldownPrim.visible = false; end
+local function DrawSlot(barIndex, slotIndex, x, y, buttonSize, bind, barSettings, animOpacity, skillchainName, magicBurstName)
+    -- Get icon (and pre-resolved abbreviation, if no icon) for this slot.
+    -- All three are cached together; recomputed only when bind changes.
+    local icon, cachedAbbr, cachedAbbrW = GetCachedIcon(barIndex, slotIndex, bind);
 
     -- Check if this slot is currently pressed (keyboard)
     local pressedHotbar = actions.GetPressedHotbar();
     local pressedSlot = actions.GetPressedSlot();
-    local isPressed = (pressedHotbar == barIndex and pressedSlot == slotIndex);
+
+    -- Get pre-created interaction closures and IDs
+    local interaction = GetSlotInteraction(barIndex, slotIndex);
+
+    -- Global UI scale (applied to font sizes and pixel offsets that aren't
+    -- already pre-scaled via GetBarDimensions). Position/size args (x, y,
+    -- buttonSize) come in already scaled by the caller.
+    local gs = (gConfig and gConfig.globalScale) or 1.0;
+
+    -- Update reusable params table in-place
+    local p = slotParams;
+    -- Position/Size
+    p.x = x;
+    p.y = y;
+    p.size = buttonSize;
+    -- Action Data
+    p.bind = bind;
+    p.icon = icon;
+    p.cachedAbbr = cachedAbbr;
+    p.cachedAbbrW = cachedAbbrW;
+    -- Visual Settings
+    p.slotBgColor = barSettings and barSettings.slotBackgroundColor or 0xFFFFFFFF;
+    p.slotOpacity = barSettings and barSettings.slotOpacity or 1.0;
+    p.keybindText = (barSettings and barSettings.showKeybinds ~= false) and data.GetKeybindDisplay(barIndex, slotIndex) or nil;
+    p.keybindFontSize = (barSettings and barSettings.keybindFontSize or 10) * gs;
+    p.keybindFontColor = barSettings and barSettings.keybindFontColor or 0xFFFFFFFF;
+    p.keybindAnchor = barSettings and barSettings.keybindAnchor or 'topLeft';
+    p.keybindOffsetX = (barSettings and barSettings.keybindOffsetX or 0) * gs;
+    p.keybindOffsetY = (barSettings and barSettings.keybindOffsetY or 0) * gs;
+    p.showLabel = barSettings and barSettings.showActionLabels or false;
+    p.labelText = bind and (bind.displayName or bind.action or '') or '';
+    p.labelOffsetX = (barSettings and barSettings.actionLabelOffsetX or 0) * gs;
+    p.labelOffsetY = ((barSettings and barSettings.actionLabelOffsetY or 0) + data.LABEL_GAP) * gs;
+    p.labelFontSize = (barSettings and barSettings.labelFontSize or 10) * gs;
+    p.recastTimerFontSize = (barSettings and barSettings.recastTimerFontSize or 11) * gs;
+    p.recastTimerFontColor = barSettings and barSettings.recastTimerFontColor or 0xFFFFFFFF;
+    p.flashCooldownUnder5 = barSettings and barSettings.flashCooldownUnder5 or false;
+    p.useHHMMCooldownFormat = barSettings and barSettings.useHHMMCooldownFormat or false;
+    p.labelFontColor = barSettings and barSettings.labelFontColor or 0xFFFFFFFF;
+    p.labelCooldownColor = barSettings and barSettings.labelCooldownColor or 0xFF888888;
+    p.labelNoMpColor = barSettings and barSettings.labelNoMpColor or 0xFFFF4444;
+    p.showFrame = barSettings and barSettings.showSlotFrame or false;
+    p.customFramePath = barSettings and barSettings.customFramePath or '';
+    p.isPressed = (pressedHotbar == barIndex and pressedSlot == slotIndex);
+    p.showMpCost = barSettings and barSettings.showMpCost ~= false;
+    p.mpCostFontSize = (barSettings and barSettings.mpCostFontSize or 10) * gs;
+    p.mpCostFontColor = barSettings and barSettings.mpCostFontColor or 0xFFD4FF97;
+    p.mpCostNoMpColor = barSettings and barSettings.labelNoMpColor or 0xFFFF4444;
+    p.mpCostAnchor = barSettings and barSettings.mpCostAnchor or 'topLeft';
+    p.mpCostOffsetX = (barSettings and barSettings.mpCostOffsetX or 0) * gs;
+    p.mpCostOffsetY = (barSettings and barSettings.mpCostOffsetY or 0) * gs;
+    p.showQuantity = barSettings and barSettings.showQuantity ~= false;
+    p.showStackQuantity = barSettings and barSettings.showStackQuantity == true;
+    p.quantityFontSize = (barSettings and barSettings.quantityFontSize or 10) * gs;
+    p.quantityFontColor = barSettings and barSettings.quantityFontColor or 0xFFFFFFFF;
+    p.quantityAnchor = barSettings and barSettings.quantityAnchor or 'bottomRight';
+    p.quantityOffsetX = (barSettings and barSettings.quantityOffsetX or 0) * gs;
+    p.quantityOffsetY = (barSettings and barSettings.quantityOffsetY or 0) * gs;
+    -- Interaction Config
+    p.buttonId = interaction.buttonId;
+    p.dropZoneId = interaction.dropZoneId;
+    p.dropAccepts = HOTBAR_DROP_ACCEPTS;
+    p.onDrop = interaction.onDrop;
+    p.dragType = 'slot';
+    p.getDragData = interaction.getDragData;
+    p.onRightClick = interaction.onRightClick;
+    p.showTooltip = true;
+    -- Animation
+    p.animOpacity = animOpacity or 1.0;
+    -- Skillchain highlight
+    p.skillchainName = skillchainName;
+    p.skillchainColor = gConfig.hotbarGlobal.skillchainHighlightColor or 0xFFD4AA44;
+    -- Magic Burst highlight (separate from skillchain — different SC->element predictor,
+    -- different color, different corner icon). Resolved upstream in the per-slot loop so
+    -- this just plumbs the name/color through to slotrenderer.
+    p.magicBurstName = magicBurstName;
+    p.magicBurstColor = gConfig.hotbarGlobal.magicBurstHighlightColor or 0xFF44D4FF;
 
     -- Render slot using shared renderer (handles ALL rendering and interactions)
-    local result = slotrenderer.DrawSlot(resources, {
-        -- Position/Size
-        x = x,
-        y = y,
-        size = buttonSize,
-
-        -- Action Data
-        bind = bind,
-        icon = icon,
-
-        -- Visual Settings
-        slotBgColor = barSettings and barSettings.slotBackgroundColor or 0xFFFFFFFF,
-        slotOpacity = barSettings and barSettings.slotOpacity or 1.0,
-        keybindText = (barSettings and barSettings.showKeybinds ~= false) and data.GetKeybindDisplay(barIndex, slotIndex) or nil,
-        keybindFontSize = barSettings and barSettings.keybindFontSize or 10,
-        keybindFontColor = barSettings and barSettings.keybindFontColor or 0xFFFFFFFF,
-        keybindAnchor = barSettings and barSettings.keybindAnchor or 'topLeft',
-        keybindOffsetX = barSettings and barSettings.keybindOffsetX or 0,
-        keybindOffsetY = barSettings and barSettings.keybindOffsetY or 0,
-        showLabel = showActionLabels,
-        labelText = labelText,
-        labelOffsetX = barSettings and barSettings.actionLabelOffsetX or 0,
-        labelOffsetY = (barSettings and barSettings.actionLabelOffsetY or 0) + data.LABEL_GAP,
-        labelFontSize = barSettings and barSettings.labelFontSize or 10,
-        recastTimerFontSize = barSettings and barSettings.recastTimerFontSize or 11,
-        recastTimerFontColor = barSettings and barSettings.recastTimerFontColor or 0xFFFFFFFF,
-        flashCooldownUnder5 = barSettings and barSettings.flashCooldownUnder5 or false,
-        useHHMMCooldownFormat = barSettings and barSettings.useHHMMCooldownFormat or false,
-        labelFontColor = barSettings and barSettings.labelFontColor or 0xFFFFFFFF,
-        labelCooldownColor = barSettings and barSettings.labelCooldownColor or 0xFF888888,
-        labelNoMpColor = barSettings and barSettings.labelNoMpColor or 0xFFFF4444,
-        showFrame = showSlotFrame,
-        customFramePath = customFramePath,
-        isPressed = isPressed,
-        showMpCost = barSettings and barSettings.showMpCost ~= false,
-        mpCostFontSize = barSettings and barSettings.mpCostFontSize or 10,
-        mpCostFontColor = barSettings and barSettings.mpCostFontColor or 0xFFD4FF97,
-        mpCostNoMpColor = barSettings and barSettings.labelNoMpColor or 0xFFFF4444,
-        mpCostAnchor = barSettings and barSettings.mpCostAnchor or 'topLeft',
-        mpCostOffsetX = barSettings and barSettings.mpCostOffsetX or 0,
-        mpCostOffsetY = barSettings and barSettings.mpCostOffsetY or 0,
-        showQuantity = barSettings and barSettings.showQuantity ~= false,
-        quantityFontSize = barSettings and barSettings.quantityFontSize or 10,
-        quantityFontColor = barSettings and barSettings.quantityFontColor or 0xFFFFFFFF,
-        quantityAnchor = barSettings and barSettings.quantityAnchor or 'bottomRight',
-        quantityOffsetX = barSettings and barSettings.quantityOffsetX or 0,
-        quantityOffsetY = barSettings and barSettings.quantityOffsetY or 0,
-
-        -- Interaction Config
-        buttonId = string.format('##hotbarslot_%d_%d', barIndex, slotIndex),
-        dropZoneId = string.format('hotbar_%d_%d', barIndex, slotIndex),
-        dropAccepts = {'macro', 'slot', 'crossbar_slot'},
-        onDrop = function(payload)
-            macropalette.HandleDropOnSlot(payload, barIndex, slotIndex);
-        end,
-        dragType = 'slot',
-        getDragData = function()
-            macropalette.StartDragSlot(barIndex, slotIndex, bind);
-            return nil;  -- StartDragSlot handles the drag itself
-        end,
-        onRightClick = function()
-            macropalette.ClearSlot(barIndex, slotIndex);
-        end,
-        showTooltip = true,
-
-        -- Animation
-        animOpacity = animOpacity or 1.0,
-
-        -- Skillchain highlight
-        skillchainName = skillchainName,
-        skillchainColor = gConfig.hotbarGlobal.skillchainHighlightColor or 0xFFD4AA44,
-    });
-
+    local result = slotrenderer.DrawSlot(p);
     return result.isHovered;
 end
 
@@ -342,26 +389,6 @@ local function DrawBarWindow(barIndex, settings)
 
     -- Check if bar is enabled
     if not barSettings.enabled then
-        -- Hide bar resources
-        data.SetBarFontsVisible(barIndex, false);
-        if data.bgHandles[barIndex] then
-            windowBg.hide(data.bgHandles[barIndex]);
-        end
-        -- Hide unused slot, icon, cooldown, and frame primitives
-        for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-            if data.slotPrims[barIndex] and data.slotPrims[barIndex][slotIndex] then
-                data.slotPrims[barIndex][slotIndex].visible = false;
-            end
-            if data.iconPrims[barIndex] and data.iconPrims[barIndex][slotIndex] then
-                data.iconPrims[barIndex][slotIndex].visible = false;
-            end
-            if data.cooldownPrims[barIndex] and data.cooldownPrims[barIndex][slotIndex] then
-                data.cooldownPrims[barIndex][slotIndex].visible = false;
-            end
-            if data.framePrims[barIndex] and data.framePrims[barIndex][slotIndex] then
-                data.framePrims[barIndex][slotIndex].visible = false;
-            end
-        end
         return;
     end
 
@@ -381,41 +408,7 @@ local function DrawBarWindow(barIndex, settings)
     -- Get dimensions (now includes layout)
     local barWidth, barHeight, buttonSize, buttonGap, rowGap, layout = GetBarDimensions(barIndex);
 
-    -- Pre-hide any slot primitives/fonts beyond the current slot count
-    -- This prevents orphaned primitives when layout changes (e.g., reducing columns)
     local slotCount = layout.slots;
-    for hiddenSlot = slotCount + 1, data.MAX_SLOTS_PER_BAR do
-        if data.slotPrims[barIndex] and data.slotPrims[barIndex][hiddenSlot] then
-            data.slotPrims[barIndex][hiddenSlot].visible = false;
-        end
-        if data.iconPrims[barIndex] and data.iconPrims[barIndex][hiddenSlot] then
-            data.iconPrims[barIndex][hiddenSlot].visible = false;
-        end
-        if data.cooldownPrims[barIndex] and data.cooldownPrims[barIndex][hiddenSlot] then
-            data.cooldownPrims[barIndex][hiddenSlot].visible = false;
-        end
-        if data.framePrims[barIndex] and data.framePrims[barIndex][hiddenSlot] then
-            data.framePrims[barIndex][hiddenSlot].visible = false;
-        end
-        if data.keybindFonts[barIndex] and data.keybindFonts[barIndex][hiddenSlot] then
-            data.keybindFonts[barIndex][hiddenSlot]:set_visible(false);
-        end
-        if data.labelFonts[barIndex] and data.labelFonts[barIndex][hiddenSlot] then
-            data.labelFonts[barIndex][hiddenSlot]:set_visible(false);
-        end
-        if data.timerFonts[barIndex] and data.timerFonts[barIndex][hiddenSlot] then
-            data.timerFonts[barIndex][hiddenSlot]:set_visible(false);
-        end
-        if data.mpCostFonts[barIndex] and data.mpCostFonts[barIndex][hiddenSlot] then
-            data.mpCostFonts[barIndex][hiddenSlot]:set_visible(false);
-        end
-        if data.quantityFonts[barIndex] and data.quantityFonts[barIndex][hiddenSlot] then
-            data.quantityFonts[barIndex][hiddenSlot]:set_visible(false);
-        end
-        if data.abbreviationFonts[barIndex] and data.abbreviationFonts[barIndex][hiddenSlot] then
-            data.abbreviationFonts[barIndex][hiddenSlot]:set_visible(false);
-        end
-    end
 
     -- Window flags (dummy window for positioning)
     local windowFlags = GetBaseWindowFlags(gConfig.lockPositions);
@@ -466,29 +459,27 @@ local function DrawBarWindow(barIndex, settings)
             borderColor = borderColor,
         };
 
-        if data.bgHandles[barIndex] then
-            windowBg.update(data.bgHandles[barIndex], windowPosX, windowPosY, barWidth, barHeight, bgOptions);
-        end
+        windowBg.Draw(GetUIDrawList(), windowPosX, windowPosY, barWidth, barHeight, bgOptions);
 
         -- Draw hotbar number to the LEFT of the bar (outside container)
-        if data.hotbarNumberFonts[barIndex] then
-            local showNumber = barSettings.showHotbarNumber;
-            if showNumber == nil then showNumber = true; end
-            if showNumber then
-                data.hotbarNumberFonts[barIndex]:set_text(tostring(barIndex));
-                -- Position to the left of the bar with optional offsets
-                local hbnOffsetX = barSettings.hotbarNumberOffsetX or 0;
-                local hbnOffsetY = barSettings.hotbarNumberOffsetY or 0;
-                data.hotbarNumberFonts[barIndex]:set_position_x(windowPosX - 16 + hbnOffsetX);
-                data.hotbarNumberFonts[barIndex]:set_position_y(windowPosY + (barHeight / 2) - 6 + hbnOffsetY);
-                data.hotbarNumberFonts[barIndex]:set_visible(true);
-            else
-                data.hotbarNumberFonts[barIndex]:set_visible(false);
+        local showNumber = barSettings.showHotbarNumber;
+        if showNumber == nil then showNumber = true; end
+        if showNumber then
+            -- Position to the left of the bar with optional offsets
+            local hbnOffsetX = barSettings.hotbarNumberOffsetX or 0;
+            local hbnOffsetY = barSettings.hotbarNumberOffsetY or 0;
+            local hbnText = tostring(barIndex);
+            local hbnX = windowPosX - 16 + hbnOffsetX;
+            local hbnY = windowPosY + (barHeight / 2) - 6 + hbnOffsetY;
+            local hbnDrawList = GetUIDrawList();
+            if hbnDrawList then
+                imtext.Draw(hbnDrawList, hbnText, hbnX, hbnY, 0xFFFFFFFF, 12);
             end
         end
 
         -- Draw slots based on layout (rows x columns)
-        local padding = data.PADDING;
+        local gs = (gConfig and gConfig.globalScale) or 1.0;
+        local padding = data.PADDING * gs;
         local slotCount = layout.slots;
         local slotIndex = 1;
 
@@ -504,10 +495,14 @@ local function DrawBarWindow(barIndex, settings)
         -- drop zones earlier so they're registered when the drag activates
         local isDragging = dragdrop.IsDragging() or dragdrop.IsDragPending();
 
-        -- Get target server ID for skillchain prediction (cached for all slots)
+        -- Get target server ID for skillchain / magic burst prediction (cached for all slots).
+        -- Both features key off the same target so we resolve once per frame here and reuse
+        -- the cached server ID inside the per-slot loop. Either feature being disabled is
+        -- fine: the resolver still returns the ID, and the per-slot path early-exits below.
         local targetServerId = nil;
         local skillchainEnabled = gConfig.hotbarGlobal.skillchainHighlightEnabled ~= false;
-        if skillchainEnabled then
+        local magicBurstEnabled = gConfig.hotbarGlobal.magicBurstHighlightEnabled ~= false;
+        if skillchainEnabled or magicBurstEnabled then
             local mainTargetIdx = targetLib.GetTargets();
             if mainTargetIdx and mainTargetIdx ~= 0 then
                 local targetEntity = GetEntity(mainTargetIdx);
@@ -527,36 +522,10 @@ local function DrawBarWindow(barIndex, settings)
 
                     -- Hide empty slots if setting enabled and not editing/dragging
                     if hideEmptySlots and not paletteOpen and not keybindEditorOpen and not isDragging and not bind then
-                        -- Hide this slot's primitives and fonts
-                        if data.slotPrims[barIndex] and data.slotPrims[barIndex][slotIndex] then
-                            data.slotPrims[barIndex][slotIndex].visible = false;
-                        end
-                        if data.iconPrims[barIndex] and data.iconPrims[barIndex][slotIndex] then
-                            data.iconPrims[barIndex][slotIndex].visible = false;
-                        end
-                        if data.framePrims[barIndex] and data.framePrims[barIndex][slotIndex] then
-                            data.framePrims[barIndex][slotIndex].visible = false;
-                        end
-                        if data.keybindFonts[barIndex] and data.keybindFonts[barIndex][slotIndex] then
-                            data.keybindFonts[barIndex][slotIndex]:set_visible(false);
-                        end
-                        if data.labelFonts[barIndex] and data.labelFonts[barIndex][slotIndex] then
-                            data.labelFonts[barIndex][slotIndex]:set_visible(false);
-                        end
-                        if data.timerFonts[barIndex] and data.timerFonts[barIndex][slotIndex] then
-                            data.timerFonts[barIndex][slotIndex]:set_visible(false);
-                        end
-                        if data.mpCostFonts[barIndex] and data.mpCostFonts[barIndex][slotIndex] then
-                            data.mpCostFonts[barIndex][slotIndex]:set_visible(false);
-                        end
-                        if data.quantityFonts[barIndex] and data.quantityFonts[barIndex][slotIndex] then
-                            data.quantityFonts[barIndex][slotIndex]:set_visible(false);
-                        end
-                        if data.abbreviationFonts[barIndex] and data.abbreviationFonts[barIndex][slotIndex] then
-                            data.abbreviationFonts[barIndex][slotIndex]:set_visible(false);
-                        end
+                        -- Empty slot: skip rendering (ImGui draws are stateless, nothing to hide)
                     else
-                        -- Skillchain prediction: WS, Blood Pact, macros whose primary is /ws or /pet
+                        -- Skillchain prediction: WS slots, Blood Pact slots, and macros whose
+                        -- primary line is /ws or /pet (parsed via macroparse).
                         local slotSkillchainName = nil;
                         if skillchainEnabled and bind then
                             if bind.actionType == 'ws' and bind.action then
@@ -572,15 +541,21 @@ local function DrawBarWindow(barIndex, settings)
                                 end
                             end
                         end
-                        DrawSlot(barIndex, slotIndex, slotX, slotY, buttonSize, bind, barSettings, animOpacity, slotSkillchainName);
+                        -- Magic Burst prediction: spells (/ma), magical pact rages (/pet curated
+                        -- map), and /ma|/pet-primary macros. Routes via skillchain.GetMagicBurstForSlot
+                        -- so the dispatch matches the skillchain pass above; the lookup is a single
+                        -- table read after the lazy element-by-name cache is warmed.
+                        local slotMagicBurstName = nil;
+                        if magicBurstEnabled and bind then
+                            slotMagicBurstName = skillchain.GetMagicBurstForSlot(targetServerId, bind);
+                        end
+                        DrawSlot(barIndex, slotIndex, slotX, slotY, buttonSize, bind, barSettings, animOpacity, slotSkillchainName, slotMagicBurstName);
                     end
                 end
                 slotIndex = slotIndex + 1;
             end
         end
 
-        -- NOTE: Hide loop for unused slots already handled at lines 226-245
-        -- (removed duplicate hide loop that was here)
 
         imgui.End();
     end
@@ -661,27 +636,14 @@ end
 function M.DrawWindow(settings)
     -- Note: dragdrop.Update() is called from init.lua before this
 
-    -- Update recast timers once per frame
-    recast.Update();
-
+    -- Refresh per-frame cached spell/ability/WS/item lists used by macropalette filters
+    -- and by GetBindIcon resolution for macro lines.
     playerdata.RefreshCachedLists(data);
 
     -- Initialize textures on first draw
     if not texturesInitialized then
         textures:Initialize();
         texturesInitialized = true;
-    end
-
-    -- Check if backgrounds are initialized
-    local anyInitialized = false;
-    for i = 1, data.NUM_BARS do
-        if data.bgHandles[i] then
-            anyInitialized = true;
-            break;
-        end
-    end
-    if not anyInitialized then
-        return;
     end
 
     -- Draw each bar as its own window (per-bar themes handled in DrawBarWindow)
@@ -698,59 +660,6 @@ function M.DrawWindow(settings)
 end
 
 function M.HideWindow()
-    -- Hide all backgrounds
-    for barIndex = 1, data.NUM_BARS do
-        if data.bgHandles[barIndex] then
-            windowBg.hide(data.bgHandles[barIndex]);
-        end
-    end
-
-    -- Hide all fonts
-    data.SetAllFontsVisible(false);
-
-    -- Hide slot primitives
-    for barIndex = 1, data.NUM_BARS do
-        if data.slotPrims[barIndex] then
-            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-                if data.slotPrims[barIndex][slotIndex] then
-                    data.slotPrims[barIndex][slotIndex].visible = false;
-                end
-            end
-        end
-    end
-
-    -- Hide icon primitives
-    for barIndex = 1, data.NUM_BARS do
-        if data.iconPrims[barIndex] then
-            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-                if data.iconPrims[barIndex][slotIndex] then
-                    data.iconPrims[barIndex][slotIndex].visible = false;
-                end
-            end
-        end
-    end
-
-    -- Hide cooldown primitives
-    for barIndex = 1, data.NUM_BARS do
-        if data.cooldownPrims[barIndex] then
-            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-                if data.cooldownPrims[barIndex][slotIndex] then
-                    data.cooldownPrims[barIndex][slotIndex].visible = false;
-                end
-            end
-        end
-    end
-
-    -- Hide frame primitives
-    for barIndex = 1, data.NUM_BARS do
-        if data.framePrims[barIndex] then
-            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-                if data.framePrims[barIndex][slotIndex] then
-                    data.framePrims[barIndex][slotIndex].visible = false;
-                end
-            end
-        end
-    end
 end
 
 -- ============================================
@@ -758,26 +667,15 @@ end
 -- ============================================
 
 function M.Initialize(settings)
-    local bgTheme = gConfig.hotbarBackgroundTheme or 'Plain';
-    loadedBgTheme = bgTheme;
-    -- Background primitives are now created in init.lua
-
     -- Register palette change callback for animation
     palette.OnPaletteChanged(OnPaletteChanged);
 end
 
 function M.UpdateVisuals(settings)
-    -- Update each bar's theme from per-bar settings
-    for barIndex = 1, data.NUM_BARS do
-        local barSettings = data.GetBarSettings(barIndex);
-        local bgTheme = barSettings.backgroundTheme or '-None-';
-        local bgScale = barSettings.bgScale or 1.0;
-        local borderScale = barSettings.borderScale or 1.0;
-
-        if data.bgHandles[barIndex] then
-            windowBg.setTheme(data.bgHandles[barIndex], bgTheme, bgScale, borderScale);
-        end
-    end
+    -- Font/visual settings can change the measured width of cached abbreviations.
+    -- Drop the per-slot cache so abbreviation strings and widths get recomputed
+    -- against the new font on the next frame.
+    ClearIconCache();
 end
 
 function M.SetHidden(hidden)
@@ -787,11 +685,11 @@ function M.SetHidden(hidden)
 end
 
 function M.Cleanup()
-    -- Background cleanup is handled in init.lua
-    loadedBgTheme = nil;
     texturesInitialized = false;
     -- Clear icon cache
     ClearIconCache();
+    -- Clear pre-created closures so they're recreated on reinit
+    slotInteraction = {};
     -- Clear slotrenderer cache
     slotrenderer.ClearAllCache();
 end
@@ -807,6 +705,8 @@ function M.ClearIconCacheForSlot(barIndex, slotIndex)
 end
 
 -- Reset all bar positions to defaults (called when settings are reset)
+-- Note: Hotbar uses forcePositionReset + nil positions instead of explicit defaults
+-- because it has its own position pipeline with per-bar default calculation at render time.
 function M.ResetPositions()
     forcePositionReset = true;
     if gConfig.windowPositions and gConfig.appliedPositions then

@@ -25,6 +25,7 @@ local notificationsModule = require('config.notifications');
 local treasurepoolModule = require('config.treasurepool');
 local hotbarModule = require('config.hotbar');
 local crossbarModule = require('config.crossbar');
+local readycheckModule = require('config.readycheck');
 
 local treasurePool = require('modules.treasurepool.init');
 local macropalette = require('modules.hotbar.macropalette');
@@ -101,7 +102,6 @@ end
 
 -- State for confirmation dialogs
 local showRestoreDefaultsConfirm = false;
-local pendingResetConfigWindow = false;
 
 -- Social icon textures
 local discordTexture = nil;
@@ -644,6 +644,7 @@ local categories = {
     { name = 'treasurePool', label = 'Treasure Pool' },
     { name = 'hotbar', label = 'Hotbar' },
     { name = 'crossbar', label = 'Crossbar' },
+    { name = 'readyCheck', label = 'Ready Check' },
 };
 
 
@@ -770,6 +771,10 @@ local function DrawCrossbarSettingsPanel()
     applySettingsState(newState);
 end
 
+local function DrawReadyCheckSettings()
+    readycheckModule.DrawSettings();
+end
+
 -- Color settings draw functions with state handling
 local function DrawGlobalColorSettings()
     globalModule.DrawColorSettings();
@@ -837,6 +842,10 @@ local function DrawCrossbarColorSettingsPanel()
     applyColorState(newState);
 end
 
+local function DrawReadyCheckColorSettings()
+    readycheckModule.DrawColorSettings();
+end
+
 -- Dispatch tables for settings and color settings
 local settingsDrawFunctions = {
     DrawGlobalSettings,
@@ -854,6 +863,7 @@ local settingsDrawFunctions = {
     DrawTreasurePoolSettings,
     DrawHotbarSettings,
     DrawCrossbarSettingsPanel,
+    DrawReadyCheckSettings,
 };
 
 local colorSettingsDrawFunctions = {
@@ -872,6 +882,7 @@ local colorSettingsDrawFunctions = {
     DrawTreasurePoolColorSettings,
     DrawHotbarColorSettings,
     DrawCrossbarColorSettingsPanel,
+    DrawReadyCheckColorSettings,
 };
 
 local function DrawProfilePopups()
@@ -1046,10 +1057,9 @@ config.DrawWindow = function(us)
     -- Push theme styles AFTER validating DisplaySize to avoid leaking
     -- style/var pushes on early returns (which corrupt ImGui state).
     PushThemeStyles();
-    if pendingResetConfigWindow then
-        imgui.SetNextWindowPos({ 50, 50 }, ImGuiCond_Always);
-        pendingResetConfigWindow = false;
-    end
+    -- Note: globalScale intentionally does NOT apply to this window.
+    -- The config is the place users go to fix bad scale values; scaling it
+    -- with the same slider can lock them out at extreme values.
     local maxW = math.min(900, sw - 40);
     local maxH = math.min(650, sh - 40);
     imgui.SetNextWindowSizeConstraints({ 400, 300 }, { sw, sh });
@@ -1208,7 +1218,6 @@ config.DrawWindow = function(us)
 
             if (imgui.Button("Confirm", { 120, 0 })) then
                 ResetSettings();
-                UpdateSettings();
                 imgui.CloseCurrentPopup();
             end
             imgui.SameLine();
@@ -1439,10 +1448,6 @@ function config.ToggleCrossbarManagePalettes()
         return nil;
     end
     return 'opened';
-end
-
-function config.ResetConfigWindowPosition()
-    pendingResetConfigWindow = true;
 end
 
 return config;

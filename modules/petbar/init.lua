@@ -6,10 +6,8 @@
 
 require('common');
 require('handlers.helpers');
-local gdi = require('submodules.gdifonts.include');
-local primitives = require('primitives');
+local imtext = require('libs.imtext');
 local ffi = require('ffi');
-local windowBg = require('libs.windowbackground');
 local abilityRecast = require('libs.abilityrecast');
 local TextureManager = require('libs.texturemanager');
 
@@ -26,115 +24,24 @@ petbar.Initialize = function(settings)
     -- Restore timers from config (session persistence)
     data.RestoreTimersFromConfig();
 
-    -- Create fonts
-    data.nameText = FontManager.create(settings.name_font_settings);
-    data.distanceText = FontManager.create(settings.distance_font_settings);
-
-    data.hpText = FontManager.create(settings.vitals_font_settings);
-    data.hpText:set_font_alignment(gdi.Alignment.Right);
-    data.mpText = FontManager.create(settings.vitals_font_settings);
-    data.mpText:set_font_alignment(gdi.Alignment.Right);
-    data.tpText = FontManager.create(settings.vitals_font_settings);
-    data.tpText:set_font_alignment(gdi.Alignment.Right);
-
-    -- BST timer fonts (jug countdown, charm elapsed)
-    data.bstTimerText = FontManager.create(settings.vitals_font_settings);
-
-    -- Full display mode fonts (recast name + timer for each slot)
-    data.recastNameFonts = {};
-    data.recastTimerFonts = {};
-    for i = 1, data.MAX_RECAST_SLOTS do
-        data.recastNameFonts[i] = FontManager.create(settings.vitals_font_settings);
-        data.recastTimerFonts[i] = FontManager.create(settings.vitals_font_settings);
-    end
-
-    data.allFonts = {data.nameText, data.distanceText, data.hpText, data.mpText, data.tpText, data.bstTimerText};
-    -- Add recast fonts to allFonts for batch visibility control
-    for i = 1, data.MAX_RECAST_SLOTS do
-        table.insert(data.allFonts, data.recastNameFonts[i]);
-        table.insert(data.allFonts, data.recastTimerFonts[i]);
-    end
-
     -- Load jug icon texture (via TextureManager)
     data.jugIconTexture = TextureManager.getFileTexture('pets/jug');
 
-    -- Initialize primitives - creation order determines render order
-    -- Order: background -> pet images -> borders
-    local prim_data = settings.prim_data or {
-        visible = false,
-        can_focus = false,
-        locked = true,
-        width = 100,
-        height = 100,
-    };
-
-    local backgroundName = gConfig.petBarBackgroundTheme or 'Window1';
-    data.loadedBgName = backgroundName;
-
-    -- 1. Create background primitive first (renders at bottom)
-    local bgHandle = windowBg.createBackground(prim_data, backgroundName, settings.bgScale);
-    data.backgroundPrim['bg'] = bgHandle.bg;
-
-    -- 2. Create pet image primitives (render in middle - petbar specific)
-    data.petImagePrims = {};
+    -- Load pet image textures + base dimensions (rendered via drawList:AddImage in data.UpdateBackground)
     data.petImageTextures = {};
+    data.petImageMeta = {};
     for _, petName in ipairs(data.allPetsWithImages) do
         local key = data.GetPetSettingsKey(petName);
-        local imagePath = data.GetPetImagePath(petName);
-        if imagePath then
-            local prim = primitives:new(prim_data);
-            prim.visible = false;
-            prim.can_focus = false;
-            prim.texture = imagePath;
-            prim.exists = ashita.fs.exists(imagePath);
-            prim.scale_x = 1.0;
-            prim.scale_y = 1.0;
-            -- Store base dimensions for clipping calculations
-            prim.baseWidth = 256;
-            prim.baseHeight = 256;
-            -- Try to get actual texture dimensions and store texture for ImGui (via TextureManager)
-            if prim.exists then
-                local texture = TextureManager.getFileTexture(string.format('pets/%s', data.petImageMap[petName]:gsub('%.png$', '')));
-                if texture and texture.image then
-                    prim.baseWidth, prim.baseHeight = GetTextureDimensions(texture, 256, 256);
-                    -- Store full texture object for ImGui rendering (keeps reference alive)
-                    data.petImageTextures[key] = texture;
-                end
-            end
-            data.petImagePrims[key] = prim;
-        end
-    end
-
-    -- 3. Create border primitives (render on top of middle layer)
-    local borderHandle = windowBg.createBorders(prim_data, backgroundName, settings.borderScale);
-    data.backgroundPrim['tl'] = borderHandle.tl;
-    data.backgroundPrim['tr'] = borderHandle.tr;
-    data.backgroundPrim['bl'] = borderHandle.bl;
-    data.backgroundPrim['br'] = borderHandle.br;
-
-    -- 4. Create pet image primitives for TOP layer (render on top of borders - for unclipped mode)
-    data.petImagePrimsTop = {};
-    for _, petName in ipairs(data.allPetsWithImages) do
-        local key = data.GetPetSettingsKey(petName);
-        local imagePath = data.GetPetImagePath(petName);
-        if imagePath then
-            local prim = primitives:new(prim_data);
-            prim.visible = false;
-            prim.can_focus = false;
-            prim.texture = imagePath;
-            prim.exists = ashita.fs.exists(imagePath);
-            prim.scale_x = 1.0;
-            prim.scale_y = 1.0;
-            -- Copy base dimensions from middle layer prim
-            local middlePrim = data.petImagePrims[key];
-            if middlePrim then
-                prim.baseWidth = middlePrim.baseWidth;
-                prim.baseHeight = middlePrim.baseHeight;
+        local imageFile = data.petImageMap[petName];
+        if imageFile then
+            local texture = TextureManager.getFileTexture(string.format('pets/%s', imageFile:gsub('%.png$', '')));
+            if texture and texture.image then
+                local baseWidth, baseHeight = GetTextureDimensions(texture, 256, 256);
+                data.petImageTextures[key] = texture;
+                data.petImageMeta[key] = { baseWidth = baseWidth, baseHeight = baseHeight, exists = true };
             else
-                prim.baseWidth = 256;
-                prim.baseHeight = 256;
+                data.petImageMeta[key] = { baseWidth = 256, baseHeight = 256, exists = false };
             end
-            data.petImagePrimsTop[key] = prim;
         end
     end
 
@@ -184,34 +91,8 @@ end
 -- UpdateVisuals
 -- ============================================
 petbar.UpdateVisuals = function(settings)
-    -- Recreate fonts
-    data.nameText = FontManager.recreate(data.nameText, settings.name_font_settings);
-    data.distanceText = FontManager.recreate(data.distanceText, settings.distance_font_settings);
+    imtext.Reset();
 
-    data.hpText = FontManager.recreate(data.hpText, settings.vitals_font_settings);
-    data.hpText:set_font_alignment(gdi.Alignment.Right);
-    data.mpText = FontManager.recreate(data.mpText, settings.vitals_font_settings);
-    data.mpText:set_font_alignment(gdi.Alignment.Right);
-    data.tpText = FontManager.recreate(data.tpText, settings.vitals_font_settings);
-    data.tpText:set_font_alignment(gdi.Alignment.Right);
-
-    -- BST timer fonts
-    data.bstTimerText = FontManager.recreate(data.bstTimerText, settings.vitals_font_settings);
-
-    -- Full display mode fonts
-    for i = 1, data.MAX_RECAST_SLOTS do
-        data.recastNameFonts[i] = FontManager.recreate(data.recastNameFonts[i], settings.vitals_font_settings);
-        data.recastTimerFonts[i] = FontManager.recreate(data.recastTimerFonts[i], settings.vitals_font_settings);
-    end
-
-    data.allFonts = {data.nameText, data.distanceText, data.hpText, data.mpText, data.tpText, data.bstTimerText};
-    for i = 1, data.MAX_RECAST_SLOTS do
-        table.insert(data.allFonts, data.recastNameFonts[i]);
-        table.insert(data.allFonts, data.recastTimerFonts[i]);
-    end
-
-    -- Clear cached colors
-    data.ClearColorCache();
 
     -- Background theme changes are now handled dynamically in data.UpdateBackground()
     -- based on per-pet-type settings
@@ -240,7 +121,6 @@ end
 -- ============================================
 petbar.SetHidden = function(hidden)
     if hidden then
-        data.SetAllFontsVisible(false);
         data.HideBackground();
         pettarget.SetHidden(true);
     end
@@ -250,60 +130,16 @@ end
 -- Cleanup
 -- ============================================
 petbar.Cleanup = function()
-    data.nameText = FontManager.destroy(data.nameText);
-    data.distanceText = FontManager.destroy(data.distanceText);
-    data.hpText = FontManager.destroy(data.hpText);
-    data.mpText = FontManager.destroy(data.mpText);
-    data.tpText = FontManager.destroy(data.tpText);
-    data.bstTimerText = FontManager.destroy(data.bstTimerText);
-
-    -- Cleanup full display mode fonts
-    if data.recastNameFonts then
-        for i = 1, data.MAX_RECAST_SLOTS do
-            data.recastNameFonts[i] = FontManager.destroy(data.recastNameFonts[i]);
-        end
-        data.recastNameFonts = nil;
-    end
-    if data.recastTimerFonts then
-        for i = 1, data.MAX_RECAST_SLOTS do
-            data.recastTimerFonts[i] = FontManager.destroy(data.recastTimerFonts[i]);
-        end
-        data.recastTimerFonts = nil;
-    end
-
-    data.allFonts = nil;
     data.jugIconTexture = nil;
 
-    -- Cleanup background and border primitives using windowbackground library
-    windowBg.destroy(data.backgroundPrim);
-    data.backgroundPrim = {};
-
-    -- Cleanup pet image primitives (petbar specific) - both layers
-    if data.petImagePrims then
-        for _, prim in pairs(data.petImagePrims) do
-            if prim then
-                prim:destroy();
-            end
-        end
-        data.petImagePrims = nil;
-    end
-    if data.petImagePrimsTop then
-        for _, prim in pairs(data.petImagePrimsTop) do
-            if prim then
-                prim:destroy();
-            end
-        end
-        data.petImagePrimsTop = nil;
-    end
-
     -- Clear pet image textures - gc_safe_release handles D3D Release() via FFI finalizers
-    -- Clear each reference individually to help GC run finalizers promptly
     if data.petImageTextures then
         for key, _ in pairs(data.petImageTextures) do
             data.petImageTextures[key] = nil;
         end
         data.petImageTextures = {};
     end
+    data.petImageMeta = {};
 
     -- Cleanup pet target module
     pettarget.Cleanup();
@@ -387,6 +223,7 @@ petbar.HandlePacket = function(e)
 
                 -- Persist to config
                 if gConfig then
+                    gConfig.petBarCharmLevel = param1;
                     gConfig.petBarCharmExpireTime = data.charmExpireTime;
                 end
             end

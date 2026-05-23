@@ -49,7 +49,7 @@ end
 
 local function ResolveCrossbarPaletteJobIconTheme(cs)
     local t = cs and cs.paletteJobIconTheme;
-    if t == 'Classic' or t == 'FFXI' or t == 'FFXIV-1' or t == 'ClassicFFXIV' then
+    if t == 'Classic' or t == 'FFXI' or t == 'FFXIV-1' then
         return t;
     end
     return 'Classic';
@@ -1045,16 +1045,17 @@ local function DrawCrossbarSettings(selectedCrossbarTab, menuState)
             end
         end
 
-        if crossbarSettings.paletteJobIconTheme == nil then
+        if crossbarSettings.paletteJobIconTheme == nil
+            or crossbarSettings.paletteJobIconTheme == 'ClassicFFXIV' then
             crossbarSettings.paletteJobIconTheme = 'Classic';
         end
 
         if CrossbarGlobalVisualCollapsingSection('palCtrl', 'Palette & Controller Icons##crossbar', false) then
             imgui.TextColored({ 0.85, 0.82, 0.7, 1.0 }, 'Palette Icons');
             imgui.Spacing();
-            local paletteIconThemes = { 'Classic', 'FFXI', 'FFXIV-1', 'ClassicFFXIV' };
+            local paletteIconThemes = { 'Classic', 'FFXI', 'FFXIV-1' };
             components.DrawPartyComboBox(crossbarSettings, 'Icon set##paletteJobIconTheme', 'paletteJobIconTheme', paletteIconThemes, DeferredUpdateVisuals);
-            imgui.ShowHelp('Job icons for Manage Palettes (crossbar) and the in-game palette scope icon when using Job [J] storage. Folders: addons/XIUI/assets/jobs/Classic, FFXI, FFXIV-1, ClassicFFXIV.');
+            imgui.ShowHelp('Job icons for Manage Palettes (crossbar) and the in-game palette scope icon when using Job [J] storage. Folders: addons/XIUI/assets/jobs/Classic, FFXI, FFXIV-1.');
 
             components.DrawPartySlider(crossbarSettings, 'Icon Height##crossbarScopeLift', 'paletteScopeIconOffsetY', 0, 48, '%.0f', DeferredUpdateVisuals, 12);
             imgui.ShowHelp('Vertical lift for the job / Global palette icon above the center line (pixels). Increase if it overlaps the L2/R2 combo text.');
@@ -1150,6 +1151,10 @@ local function DrawCrossbarSettings(selectedCrossbarTab, menuState)
                 components.DrawInlineOffsets(crossbarSettings, 'crossbarqty', 'quantityOffsetX', 'quantityOffsetY', 35);
             end
             imgui.ShowHelp('Display item quantity on item slots. X/Y offsets adjust position.');
+
+            -- 1.8.0 addition: full-stack count above the item quantity (only counts complete stacks)
+            components.DrawPartyCheckbox(crossbarSettings, 'Show Stack Quantity##crossbar', 'showStackQuantity');
+            imgui.ShowHelp('Show full-stack count next to the item quantity. Only complete stacks are counted (e.g. 25 of stack-12 items shows "(2)"). Shares position/font with Show Item Quantity.');
 
             -- Show Combo Text with X/Y offsets
             components.DrawPartyCheckbox(crossbarSettings, 'Show Combo Text##crossbar', 'showComboText');

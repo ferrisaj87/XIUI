@@ -9,6 +9,7 @@ local imgui = require('imgui');
 local ffi = require('ffi');
 local progressbar = require('libs.progressbar');
 local drawing = require('libs.drawing');
+local imtext = require('libs.imtext');
 local statusIcons = require('libs.statusicons');
 local statusHandler = require('handlers.statushandler');
 local buffTable = require('libs.bufftable');
@@ -19,21 +20,18 @@ local defaultPositions = require('libs.defaultpositions');
 
 local display = {};
 
--- Window state for bottom alignment (anchorBottom = locked screen Y of window bottom edge)
+-- Window state for bottom alignment + previous-frame size cache (used for bg layering).
+-- anchorBottom: locked screen Y of the window bottom edge while petBarResizeAnchor='bottom'
+-- and AlwaysAutoResize is on. Stable across +/-1px height steps that the old
+-- "delta > 1px" gate skipped, which caused the window to crawl upward over time.
 local windowState = {
     x = nil,
     y = nil,
     height = nil,
     anchorBottom = nil,
+    cachedWidth = nil,
+    cachedHeight = nil,
 };
-
--- Position saving state
-local hasAppliedSavedPosition = false;
-local lastSavedPosX = nil;
-local lastSavedPosY = nil;
-
--- Force reset flag for default position restore
-local forcePositionReset = false;
 
 -- ============================================
 -- Per-Pet-Type Settings Helpers
@@ -395,7 +393,7 @@ end
 
 -- ============================================
 -- Draw Recast - Full Display Mode
--- Shows name and recast timer with progress bar using GdiFonts
+-- Shows name and recast timer with progress bar
 -- fontIndex: 1-based index for which font slot to use
 -- ============================================
 local function DrawRecastFull(drawList, x, y, timerInfo, colorConfig, fullSettings, fontIndex)
@@ -410,15 +408,10 @@ local function DrawRecastFull(drawList, x, y, timerInfo, colorConfig, fullSettin
         progressStyle = 'Fill';
     end
 
-    -- Get font objects from data module
-    local nameFont = data.recastNameFonts and data.recastNameFonts[fontIndex];
-    local recastFont = data.recastTimerFonts and data.recastTimerFonts[fontIndex];
-
     -- Get gradients based on ability category
     local readyGradient, recastGradient = GetTimerGradients(timerInfo.name, colorConfig);
     local barGradient = timerInfo.isReady and readyGradient or recastGradient;
 
-    -- Get text color from gradient start (convert hex to ARGB for GdiFonts)
     local textColorHex = color.GetGradientTextColor(barGradient[1]);
 
     -- Prepare text content
@@ -433,10 +426,6 @@ local function DrawRecastFull(drawList, x, y, timerInfo, colorConfig, fullSettin
 
     -- Text Y position at top of row
     local textY = y;
-
-    -- Hide fonts by default, will show if needed
-    if nameFont then nameFont:set_visible(false); end
-    if recastFont then recastFont:set_visible(false); end
 
     -- Calculate progress
     local progress = 1.0;
@@ -456,31 +445,20 @@ local function DrawRecastFull(drawList, x, y, timerInfo, colorConfig, fullSettin
     -- Progress bar settings (configurable)
     local barHeight = fullSettings.barHeight or 4;
     local barWidth = fullSettings.barWidth or 150;
-    local barY = textY + maxFontSize + 2;  -- Position below the text
+    local barY = textY + maxFontSize + (fullSettings.textBarGap or 2);  -- Position below the text
 
     -- Track where text/bar should start
     local barStartX = x;
 
     -- Name - left-aligned at start of bar
-    if showName and nameFont then
-        nameFont:set_font_height(nameFontSize);
-        nameFont:set_text(nameText);
-        nameFont:set_position_x(barStartX);
-        nameFont:set_position_y(textY);
-        nameFont:set_font_color(textColorHex);
-        nameFont:set_font_alignment(0); -- Left alignment
-        nameFont:set_visible(true);
+    if showName then
+        imtext.Draw(drawList, nameText, barStartX, textY, textColorHex, nameFontSize);
     end
 
     -- Recast timer - right-aligned at far right of progress bar
-    if showRecast and recastFont then
-        recastFont:set_font_height(recastFontSize);
-        recastFont:set_text(recastText);
-        recastFont:set_position_x(barStartX + barWidth);  -- Right edge of bar
-        recastFont:set_position_y(textY);
-        recastFont:set_font_color(textColorHex);
-        recastFont:set_font_alignment(2); -- Right alignment
-        recastFont:set_visible(true);
+    if showRecast then
+        local recastW = imtext.Measure(recastText, recastFontSize);
+        imtext.Draw(drawList, recastText, barStartX + barWidth - recastW, textY, textColorHex, recastFontSize);
     end
 
     -- Draw progress bar using the progressbar library with custom drawList
@@ -524,17 +502,12 @@ local function DrawRecastFullCharged(drawList, x, y, timerInfo, colorConfig, ful
     local nextChargeTimer = timerInfo.nextChargeTimer or 0;
     local chargeValue = timerInfo.chargeValue or 1800;  -- Default 30s per charge (in 1/60ths)
 
-    -- Get font objects from data module
-    local nameFont = data.recastNameFonts and data.recastNameFonts[fontIndex];
-    local recastFont = data.recastTimerFonts and data.recastTimerFonts[fontIndex];
-
     -- Get gradients based on ability category
     local readyGradient, recastGradient = GetTimerGradients(timerInfo.name, colorConfig);
 
     -- Determine text color based on charge state
     local barGradient = (charges > 0) and readyGradient or recastGradient;
 
-    -- Get text color from gradient start (convert hex to ARGB for GdiFonts)
     local textColorHex = color.GetGradientTextColor(barGradient[1]);
 
     -- Prepare text content
@@ -558,38 +531,23 @@ local function DrawRecastFullCharged(drawList, x, y, timerInfo, colorConfig, ful
     -- Text Y position at top of row
     local textY = y;
 
-    -- Hide fonts by default, will show if needed
-    if nameFont then nameFont:set_visible(false); end
-    if recastFont then recastFont:set_visible(false); end
-
     -- Progress bar settings (configurable)
     local barHeight = fullSettings.barHeight or 4;
     local barWidth = fullSettings.barWidth or 150;
-    local barY = textY + maxFontSize + 2;  -- Position below the text
+    local barY = textY + maxFontSize + (fullSettings.textBarGap or 2);  -- Position below the text
 
     -- Track where text/bar should start
     local barStartX = x;
 
     -- Name - left-aligned at start of bar
-    if showName and nameFont then
-        nameFont:set_font_height(nameFontSize);
-        nameFont:set_text(nameText);
-        nameFont:set_position_x(barStartX);
-        nameFont:set_position_y(textY);
-        nameFont:set_font_color(textColorHex);
-        nameFont:set_font_alignment(0); -- Left alignment
-        nameFont:set_visible(true);
+    if showName then
+        imtext.Draw(drawList, nameText, barStartX, textY, textColorHex, nameFontSize);
     end
 
     -- Recast timer - right-aligned at far right of progress bar
-    if showRecast and recastFont then
-        recastFont:set_font_height(recastFontSize);
-        recastFont:set_text(recastText);
-        recastFont:set_position_x(barStartX + barWidth);  -- Right edge of bar
-        recastFont:set_position_y(textY);
-        recastFont:set_font_color(textColorHex);
-        recastFont:set_font_alignment(2); -- Right alignment
-        recastFont:set_visible(true);
+    if showRecast then
+        local recastW = imtext.Measure(recastText, recastFontSize);
+        imtext.Draw(drawList, recastText, barStartX + barWidth - recastW, textY, textColorHex, recastFontSize);
     end
 
     -- Draw 3 segmented progress bars using progressbar library
@@ -653,7 +611,7 @@ local function DrawRecastFullCharged(drawList, x, y, timerInfo, colorConfig, ful
     return barHeight;
 end
 
--- gConfig.petBarResizeAnchor: 'top' | 'bottom' pins which edge when auto-resize changes height.
+-- gConfig.petBarResizeAnchor: 'top' | 'bottom' pins which edge when AlwaysAutoResize changes height.
 -- When unset/nil (should not persist after migrate), falls back to per-type alignBottom for legacy saves.
 local function PetBarResizeAnchoredBottom(typeSettings)
     local mode = gConfig.petBarResizeAnchor;
@@ -666,7 +624,8 @@ local function PetBarResizeAnchoredBottom(typeSettings)
     return typeSettings.alignBottom == true;
 end
 
--- Resize-anchor preview stripe (Pet Bar Preview + XIUI config open): shows top vs bottom pin edge.
+-- Resize-anchor preview stripe (shown when Pet Bar Preview + XIUI config open): a thin colored
+-- band on the top or bottom edge indicating which edge is pinned during auto-resize.
 local function DrawResizeAnchorEdgePreview(px, py, w, h, anchorBottom)
     if not (showConfig and showConfig[1] and gConfig.petBarPreview) then
         return;
@@ -702,6 +661,10 @@ end
 -- DrawWindow - Main Pet Bar Rendering
 -- ============================================
 function display.DrawWindow(settings)
+    -- Global UI scale multiplier. Applied to raw gConfig.petBar* fallbacks so they
+    -- match dimensions coming from gAdjustedSettings (which is already gs-scaled in updater).
+    local gs = gConfig.globalScale or 1.0;
+
     -- Get pet data from data module (handles preview internally)
     local petData = data.GetPetData();
 
@@ -719,8 +682,6 @@ function display.DrawWindow(settings)
 
     if petData == nil and not alwaysVisible then
         data.currentPetName = nil;
-        data.SetAllFontsVisible(false);
-        data.HideBackground();
         -- Reset window state when hidden so bottom alignment starts fresh
         windowState.x = nil;
         windowState.y = nil;
@@ -770,21 +731,6 @@ function display.DrawWindow(settings)
         windowFlags = bit.bor(windowFlags, ImGuiWindowFlags_NoMove);
     end
 
-    -- Apply saved position on first render, or force reset to default
-    if forcePositionReset then
-        local defX, defY = defaultPositions.GetPetBarPosition();
-        imgui.SetNextWindowPos({defX, defY}, ImGuiCond_Always);
-        forcePositionReset = false;
-        hasAppliedSavedPosition = true;
-        lastSavedPosX = defX;
-        lastSavedPosY = defY;
-    elseif not hasAppliedSavedPosition and gConfig.petBarWindowPosX ~= nil and gConfig.petBarWindowPosY ~= nil then
-        imgui.SetNextWindowPos({gConfig.petBarWindowPosX, gConfig.petBarWindowPosY}, ImGuiCond_Once);
-        hasAppliedSavedPosition = true;
-        lastSavedPosX = gConfig.petBarWindowPosX;
-        lastSavedPosY = gConfig.petBarWindowPosY;
-    end
-
     -- Get per-pet-type settings and colors
     -- typeSettings already retrieved at start of function
     local colorConfig = GetPetTypeColors();
@@ -804,22 +750,28 @@ function display.DrawWindow(settings)
     local recastScaleX = typeSettings.recastScaleX or 1.0;
     local recastScaleY = typeSettings.recastScaleY or 0.5;  -- Default to half height for recast bars
 
-    -- Calculate scaled bar dimensions
-    -- HP bar is full width
+    -- Calculate scaled bar dimensions. Each bar's X scale is independent —
+    -- previously halfBarWidth/recastBarWidth/totalRowWidth all derived from
+    -- the HP-scaled width, so scaling HP X cascaded into MP/TP/recast widths
+    -- and the window total. TP X scale appeared to do nothing because the
+    -- half it lived in had already been resized by the HP slider.
     local hpBarWidth = barWidth * hpScaleX;
     local hpBarHeight = barHeight * hpScaleY;
-    -- MP and TP bars split the HP bar width (minus spacing between them)
-    local halfBarWidth = (hpBarWidth - barSpacing) / 2;
+    -- MP and TP bars split the un-scaled base width so their own scales
+    -- operate on a stable half regardless of HP X.
+    local halfBarWidth = (barWidth - barSpacing) / 2;
     local mpBarWidth = halfBarWidth * mpScaleX;
     local mpBarHeight = barHeight * mpScaleY;
     local tpBarWidth = halfBarWidth * tpScaleX;
     local tpBarHeight = barHeight * tpScaleY;
-    -- Recast bars use full HP bar width by default, scaled height
-    local recastBarWidth = hpBarWidth * recastScaleX;
+    -- Recast bars scale off the base width, independent of HP X.
+    local recastBarWidth = barWidth * recastScaleX;
     local recastBarHeight = barHeight * recastScaleY;
 
-    -- Total row width for proper window sizing (based on HP bar width)
-    local totalRowWidth = hpBarWidth;
+    -- Window auto-fits whichever bar is widest so the user never loses a
+    -- bar to clipping when they push one scale up.
+    local mpTpRowWidth = mpBarWidth + barSpacing + tpBarWidth;
+    local totalRowWidth = math.max(hpBarWidth, mpTpRowWidth, recastBarWidth);
 
     -- Store for pet target window
     data.lastTotalRowWidth = totalRowWidth;
@@ -829,17 +781,32 @@ function display.DrawWindow(settings)
 
     local windowPosX, windowPosY = 0, 0;
 
-    ApplyWindowPosition('PetBar');
+    local positionJustApplied = ApplyWindowPosition('PetBar');
     if imgui.Begin('PetBar', true, windowFlags) then
+        local drawList = drawing.GetUIDrawList();
+        imtext.SetConfigFromSettings(settings.name_font_settings);
+        -- SaveWindowPosition moved to AFTER the bottom-anchor correction below so the
+        -- corrected Y (not the pre-correction one) gets persisted.
         windowPosX, windowPosY = imgui.GetWindowPos();
         local startX, startY = imgui.GetCursorScreenPos();
 
+        -- Draw background + pet image + borders FIRST so they sit beneath text/icons on the draw list.
+        -- Window size only known after content; use the previous frame's cached size (updated below).
+        if windowState.cachedWidth and windowState.cachedHeight then
+            data.UpdateBackground(drawList, windowPosX, windowPosY, windowState.cachedWidth, windowState.cachedHeight, settings);
+        end
+
         if hasPet then
             -- Row 1: Pet Name (with optional level) (left) and HP% (right, same line)
-            local nameFontSize = typeSettings.nameFontSize or gConfig.petBarNameFontSize or settings.name_font_settings.font_height;
-            local hpFontSize = typeSettings.hpFontSize or typeSettings.vitalsFontSize or gConfig.petBarVitalsFontSize or settings.vitals_font_settings.font_height;
-            local mpFontSize = typeSettings.mpFontSize or typeSettings.vitalsFontSize or gConfig.petBarVitalsFontSize or settings.vitals_font_settings.font_height;
-            local tpFontSize = typeSettings.tpFontSize or typeSettings.vitalsFontSize or gConfig.petBarVitalsFontSize or settings.vitals_font_settings.font_height;
+            -- First two fallbacks are raw user values (need gs); third is from adjusted settings (already scaled).
+            local rawNameFontSize = typeSettings.nameFontSize or gConfig.petBarNameFontSize;
+            local nameFontSize = rawNameFontSize and (rawNameFontSize * gs) or settings.name_font_settings.font_height;
+            local rawHpFontSize = typeSettings.hpFontSize or typeSettings.vitalsFontSize or gConfig.petBarVitalsFontSize;
+            local hpFontSize = rawHpFontSize and (rawHpFontSize * gs) or settings.vitals_font_settings.font_height;
+            local rawMpFontSize = typeSettings.mpFontSize or typeSettings.vitalsFontSize or gConfig.petBarVitalsFontSize;
+            local mpFontSize = rawMpFontSize and (rawMpFontSize * gs) or settings.vitals_font_settings.font_height;
+            local rawTpFontSize = typeSettings.tpFontSize or typeSettings.vitalsFontSize or gConfig.petBarVitalsFontSize;
+            local tpFontSize = rawTpFontSize and (rawTpFontSize * gs) or settings.vitals_font_settings.font_height;
 
             -- Format name with level if available and enabled
             local showLevel = typeSettings.showLevel;
@@ -849,39 +816,22 @@ function display.DrawWindow(settings)
                 displayName = string.format('Lv.%d %s', petLevel, petName);
             end
 
-            data.nameText:set_font_height(nameFontSize);
-            data.nameText:set_text(displayName);
-            data.nameText:set_position_x(startX);
-            data.nameText:set_position_y(startY);
             local nameColor = colorConfig.nameTextColor or 0xFFFFFFFF;
-            if data.lastNameColor ~= nameColor then
-                data.nameText:set_font_color(nameColor);
-                data.lastNameColor = nameColor;
-            end
-            data.nameText:set_visible(true);
+            imtext.Draw(drawList, displayName, startX, startY, nameColor, nameFontSize);
 
             -- Distance text (anchored to top right edge of background)
             local showDistance = typeSettings.showDistance;
             if showDistance == nil then showDistance = gConfig.petBarShowDistance; end
             if showDistance then
-                local distanceFontSize = typeSettings.distanceFontSize or gConfig.petBarDistanceFontSize or settings.distance_font_settings.font_height;
-                local distanceOffsetX = typeSettings.distanceOffsetX or gConfig.petBarDistanceOffsetX or 0;
-                local distanceOffsetY = typeSettings.distanceOffsetY or gConfig.petBarDistanceOffsetY or 0;
+                local rawDistanceFontSize = typeSettings.distanceFontSize or gConfig.petBarDistanceFontSize;
+                local distanceFontSize = rawDistanceFontSize and (rawDistanceFontSize * gs) or settings.distance_font_settings.font_height;
+                local distanceOffsetX = (typeSettings.distanceOffsetX or gConfig.petBarDistanceOffsetX or 0) * gs;
+                local distanceOffsetY = (typeSettings.distanceOffsetY or gConfig.petBarDistanceOffsetY or 0) * gs;
 
-                data.distanceText:set_font_height(distanceFontSize);
-                data.distanceText:set_text(string.format('%.1f', petDistance));
-                data.distanceText:set_position_x(startX + totalRowWidth + distanceOffsetX);
-                data.distanceText:set_position_y(windowPosY - 13 + distanceOffsetY);
-                data.distanceText:set_font_alignment(2); -- Right alignment (text grows left)
-
+                local distStr = string.format('%.1f', petDistance);
                 local distColor = colorConfig.distanceTextColor or 0xFFFFFFFF;
-                if data.lastDistanceColor ~= distColor then
-                    data.distanceText:set_font_color(distColor);
-                    data.lastDistanceColor = distColor;
-                end
-                data.distanceText:set_visible(true);
-            else
-                data.distanceText:set_visible(false);
+                local distW = imtext.Measure(distStr, distanceFontSize);
+                imtext.Draw(drawList, distStr, startX + totalRowWidth + distanceOffsetX - distW, windowPosY - 13 + distanceOffsetY, distColor, distanceFontSize);
             end
 
             -- Per-type vitals toggles
@@ -894,18 +844,10 @@ function display.DrawWindow(settings)
 
             -- HP% text (right-aligned to HP bar width)
             if showHP then
-                data.hpText:set_font_height(hpFontSize);
-                data.hpText:set_text(tostring(petHpPercent) .. '%');
-                data.hpText:set_position_x(startX + hpBarWidth);
-                data.hpText:set_position_y(startY + (nameFontSize - hpFontSize) / 2);
+                local hpStr = tostring(petHpPercent) .. '%';
                 local hpColor = colorConfig.hpTextColor or 0xFFFFFFFF;
-                if data.lastHpColor ~= hpColor then
-                    data.hpText:set_font_color(hpColor);
-                    data.lastHpColor = hpColor;
-                end
-                data.hpText:set_visible(true);
-            else
-                data.hpText:set_visible(false);
+                local hpW = imtext.Measure(hpStr, hpFontSize);
+                imtext.Draw(drawList, hpStr, startX + hpBarWidth - hpW, startY + (nameFontSize - hpFontSize) / 2, hpColor, hpFontSize);
             end
 
             imgui.Dummy({totalRowWidth, nameFontSize + 4});
@@ -956,11 +898,12 @@ function display.DrawWindow(settings)
             local actualMpWidth = mpBarWidth;
             local actualTpWidth = tpBarWidth;
             if displayMpBar and not displayTpBar then
-                -- MP bar takes full width when no TP bar
-                actualMpWidth = hpBarWidth;
+                -- MP bar takes the full base row width, scaled by its own MP X
+                -- (not HP X — otherwise the HP slider would resize the lone MP bar).
+                actualMpWidth = barWidth * mpScaleX;
             elseif not displayMpBar and displayTpBar then
-                -- TP bar takes full width when no MP bar
-                actualTpWidth = hpBarWidth;
+                -- TP bar takes the full base row width, scaled by its own TP X.
+                actualTpWidth = barWidth * tpScaleX;
             end
 
             if displayMpBar then
@@ -1006,36 +949,20 @@ function display.DrawWindow(settings)
 
             -- MP text (independent of TP bar visibility)
             if displayMpBar then
-                data.mpText:set_font_height(mpFontSize);
-                data.mpText:set_text(tostring(petMpPercent) .. '%');
                 -- Right-align MP text under MP bar
-                data.mpText:set_position_x(mpBarX + actualMpWidth);
-                data.mpText:set_position_y(mpTextRowY);
+                local mpStr = tostring(petMpPercent) .. '%';
                 local mpColor = colorConfig.mpTextColor or 0xFFFFFFFF;
-                if data.lastMpColor ~= mpColor then
-                    data.mpText:set_font_color(mpColor);
-                    data.lastMpColor = mpColor;
-                end
-                data.mpText:set_visible(true);
-            else
-                data.mpText:set_visible(false);
+                local mpW = imtext.Measure(mpStr, mpFontSize);
+                imtext.Draw(drawList, mpStr, mpBarX + actualMpWidth - mpW, mpTextRowY, mpColor, mpFontSize);
             end
 
             -- TP text (independent of MP bar visibility)
             if displayTpBar then
-                data.tpText:set_font_height(tpFontSize);
-                data.tpText:set_text(tostring(petTp));
                 -- Right-align TP text under TP bar
-                data.tpText:set_position_x(tpBarX + actualTpWidth);
-                data.tpText:set_position_y(tpTextRowY);
+                local tpStr = tostring(petTp);
                 local tpColor = colorConfig.tpTextColor or 0xFFFFFFFF;
-                if data.lastTpColor ~= tpColor then
-                    data.tpText:set_font_color(tpColor);
-                    data.lastTpColor = tpColor;
-                end
-                data.tpText:set_visible(true);
-            else
-                data.tpText:set_visible(false);
+                local tpW = imtext.Measure(tpStr, tpFontSize);
+                imtext.Draw(drawList, tpStr, tpBarX + actualTpWidth - tpW, tpTextRowY, tpColor, tpFontSize);
             end
 
             -- ============================================
@@ -1066,7 +993,7 @@ function display.DrawWindow(settings)
                 end
                 if effectIds and #effectIds > 0 then
                     -- Clamp so 0/invalid from saved config doesn't hide icons (default 16)
-                    local statusIconSize = math.max(8, tonumber(gConfig.petBarStatusIconSize) or 16);
+                    local statusIconSize = math.max(8, tonumber(gConfig.petBarStatusIconSize) or 16) * gs;
 
                     -- Position icons at left side, same Y as MP/TP text
                     imgui.SetCursorScreenPos({barsStartX, textRowY});
@@ -1090,68 +1017,44 @@ function display.DrawWindow(settings)
             end
             -- Add spacing for text row if any vitals text is shown
             -- recastTopSpacing controls the gap between vitals text and recast section (anchored mode)
-            local recastTopSpacing = typeSettings.recastTopSpacing or 2;
+            local recastTopSpacing = (typeSettings.recastTopSpacing or 2) * gs;
             if displayMpBar or displayTpBar then
                 local maxVitalsFontSize = math.max(displayMpBar and mpFontSize or 0, displayTpBar and tpFontSize or 0);
                 imgui.Dummy({totalRowWidth, maxVitalsFontSize + recastTopSpacing});
             end
-        else
-            -- Hide vitals fonts when no pet
-            data.nameText:set_visible(false);
-            data.distanceText:set_visible(false);
-            data.hpText:set_visible(false);
-            data.mpText:set_visible(false);
-            data.tpText:set_visible(false);
         end
 
         -- Row 4: Ability Icons
         local showTimers = typeSettings.showTimers;
         if showTimers == nil then showTimers = gConfig.petBarShowTimers ~= false; end
 
-        -- Helper to hide all recast fonts
-        local function hideAllRecastFonts()
-            for i = 1, data.MAX_RECAST_SLOTS do
-                if data.recastNameFonts and data.recastNameFonts[i] then
-                    data.recastNameFonts[i]:set_visible(false);
-                end
-                if data.recastTimerFonts and data.recastTimerFonts[i] then
-                    data.recastTimerFonts[i]:set_visible(false);
-                end
-            end
-        end
-
         if showTimers then
             -- Get recasts from data module (handles preview internally)
             local timers = data.GetPetRecasts();
             if #timers > 0 then
-                local iconOffsetX = typeSettings.iconsOffsetX or gConfig.petBarIconsOffsetX or 0;
-                local iconOffsetY = typeSettings.iconsOffsetY or gConfig.petBarIconsOffsetY or 0;
+                local iconOffsetX = (typeSettings.iconsOffsetX or gConfig.petBarIconsOffsetX or 0) * gs;
+                local iconOffsetY = (typeSettings.iconsOffsetY or gConfig.petBarIconsOffsetY or 0) * gs;
                 local iconsAbsolute = typeSettings.iconsAbsolute;
                 if iconsAbsolute == nil then iconsAbsolute = gConfig.petBarIconsAbsolute; end
                 local fillStyle = typeSettings.timerFillStyle or 'square';
                 local displayStyle = typeSettings.recastDisplayStyle or 'compact';
-                -- Scale only applies to compact mode; full mode always uses 1.0
-                local iconScale = (displayStyle == 'full') and 1.0 or (typeSettings.iconsScale or gConfig.petBarIconsScale or 1.0);
+                -- Scale only applies to compact mode; full mode always uses 1.0. Multiplied by gs (global scale).
+                local iconScale = (displayStyle == 'full') and 1.0 or ((typeSettings.iconsScale or gConfig.petBarIconsScale or 1.0) * gs);
                 local scaledIconSize = data.RECAST_ICON_SIZE * iconScale;
-                local iconSpacing = typeSettings.recastFullSpacing or 4;
+                local iconSpacing = (typeSettings.recastFullSpacing or 4) * gs;
 
                 local iconX, iconY;
-                local drawList;
 
                 if iconsAbsolute then
                     -- Absolute positioning: relative to window top-left
                     iconX = windowPosX + iconOffsetX;
                     iconY = windowPosY + iconOffsetY;
-                    -- Use UI draw list for consistent rendering
-                    drawList = drawing.GetUIDrawList();
                 else
                     -- Anchored: flow within the pet bar container
                     -- Use recastTopSpacing for vertical offset, no X offset in anchored mode
-                    local topSpacing = typeSettings.recastTopSpacing or 2;
+                    local topSpacing = (typeSettings.recastTopSpacing or 2) * gs;
                     iconX, iconY = imgui.GetCursorScreenPos();
                     iconY = iconY + topSpacing;
-                    -- Use UI draw list for consistent rendering
-                    drawList = drawing.GetUIDrawList();
                 end
 
                 if displayStyle == 'full' then
@@ -1164,8 +1067,8 @@ function display.DrawWindow(settings)
                     local fullSettings = {
                         showName = typeSettings.recastFullShowName ~= false,
                         showRecast = typeSettings.recastFullShowTimer ~= false,
-                        nameFontSize = typeSettings.recastFullNameFontSize or 10,
-                        recastFontSize = typeSettings.recastFullTimerFontSize or 10,
+                        nameFontSize = (typeSettings.recastFullNameFontSize or 10) * gs,
+                        recastFontSize = (typeSettings.recastFullTimerFontSize or 10) * gs,
                         alignment = 'left',
                         iconSize = scaledIconSize,
                         barWidth = recastBarWidth,
@@ -1173,6 +1076,7 @@ function display.DrawWindow(settings)
                         showBookends = recastShowBookends,
                         progressStyle = typeSettings.recastProgressStyle or 'Fill',
                         isJug = isJug,
+                        textBarGap = 2 * gs,
                     };
 
                     -- Calculate row height based on what's visible
@@ -1185,7 +1089,7 @@ function display.DrawWindow(settings)
                         textRowHeight = math.max(textRowHeight, fullSettings.recastFontSize);
                     end
                     -- Entry height = text row + gap + bar height
-                    local textBarGap = 2;
+                    local textBarGap = 2 * gs;
                     local contentHeight = textRowHeight + textBarGap + recastBarHeight;
                     -- If nothing visible (no text), just use bar height
                     if textRowHeight == 0 then
@@ -1204,16 +1108,6 @@ function display.DrawWindow(settings)
                         end
                     end
 
-                    -- Hide unused font slots
-                    for i = #timers + 1, data.MAX_RECAST_SLOTS do
-                        if data.recastNameFonts and data.recastNameFonts[i] then
-                            data.recastNameFonts[i]:set_visible(false);
-                        end
-                        if data.recastTimerFonts and data.recastTimerFonts[i] then
-                            data.recastTimerFonts[i]:set_visible(false);
-                        end
-                    end
-
                     if not iconsAbsolute then
                         -- Only add spacing between rows, not after the last row
                         local totalHeight = #timers * contentHeight + math.max(0, #timers - 1) * iconSpacing;
@@ -1221,16 +1115,6 @@ function display.DrawWindow(settings)
                     end
                 else
                     -- Compact display: horizontal row of icons only
-                    -- Hide all full display fonts when in compact mode
-                    for i = 1, data.MAX_RECAST_SLOTS do
-                        if data.recastNameFonts and data.recastNameFonts[i] then
-                            data.recastNameFonts[i]:set_visible(false);
-                        end
-                        if data.recastTimerFonts and data.recastTimerFonts[i] then
-                            data.recastTimerFonts[i]:set_visible(false);
-                        end
-                    end
-
                     local compactSpacing = 4 * iconScale;
                     local currentX = iconX;
 
@@ -1252,13 +1136,7 @@ function display.DrawWindow(settings)
                         imgui.Dummy({totalRowWidth, scaledIconSize});
                     end
                 end
-            else
-                -- No timers to display, hide all fonts
-                hideAllRecastFonts();
             end
-        else
-            -- Timers disabled, hide all fonts
-            hideAllRecastFonts();
         end
 
         -- BST Pet Timer Display (Jug countdown or Charm elapsed)
@@ -1266,8 +1144,6 @@ function display.DrawWindow(settings)
         local showCharmTimer = isCharmed and gConfig.petBarShowCharmIndicator ~= false;
 
         if showJugTimer or showCharmTimer then
-            local drawList = drawing.GetUIDrawList();
-
             -- Get timer text for positioning
             local timerStr = nil;
             local textColor = colorConfig.charmTimerColor or 0xFFFFFFFF;
@@ -1275,10 +1151,10 @@ function display.DrawWindow(settings)
 
             if showJugTimer then
                 -- Jug-specific settings
-                iconSize = gConfig.petBarJugIconSize or 16;
-                local offsetX = gConfig.petBarJugOffsetX or 0;
-                local offsetY = gConfig.petBarJugOffsetY or -20;
-                timerFontSize = gConfig.petBarJugTimerFontSize or 12;
+                iconSize = (gConfig.petBarJugIconSize or 16) * gs;
+                local offsetX = (gConfig.petBarJugOffsetX or 0) * gs;
+                local offsetY = (gConfig.petBarJugOffsetY or -20) * gs;
+                timerFontSize = (gConfig.petBarJugTimerFontSize or 12) * gs;
                 timerX = windowPosX + offsetX;
                 timerY = windowPosY + offsetY;
 
@@ -1301,10 +1177,10 @@ function display.DrawWindow(settings)
                 end
             elseif showCharmTimer then
                 -- Charm-specific settings
-                iconSize = gConfig.petBarCharmIconSize or 16;
-                local offsetX = gConfig.petBarCharmOffsetX or 0;
-                local offsetY = gConfig.petBarCharmOffsetY or -20;
-                timerFontSize = gConfig.petBarCharmTimerFontSize or 12;
+                iconSize = (gConfig.petBarCharmIconSize or 16) * gs;
+                local offsetX = (gConfig.petBarCharmOffsetX or 0) * gs;
+                local offsetY = (gConfig.petBarCharmOffsetY or -20) * gs;
+                timerFontSize = (gConfig.petBarCharmTimerFontSize or 12) * gs;
                 timerX = windowPosX + offsetX;
                 timerY = windowPosY + offsetY;
 
@@ -1340,28 +1216,11 @@ function display.DrawWindow(settings)
                 );
             end
 
-            -- Draw timer text using GDI font
-            if timerStr and data.bstTimerText then
+            -- Draw timer text
+            if timerStr then
                 local textX = timerX + iconSize + 1;
                 local textY = timerY + (iconSize - timerFontSize) / 2;
-                data.bstTimerText:set_font_height(timerFontSize);
-                data.bstTimerText:set_text(timerStr);
-                data.bstTimerText:set_position_x(textX);
-                data.bstTimerText:set_position_y(textY);
-                if data.lastBstTimerColor ~= textColor then
-                    data.bstTimerText:set_font_color(textColor);
-                    data.lastBstTimerColor = textColor;
-                end
-                data.bstTimerText:set_visible(true);
-            else
-                if data.bstTimerText then
-                    data.bstTimerText:set_visible(false);
-                end
-            end
-        else
-            -- Hide BST timer text when not showing
-            if data.bstTimerText then
-                data.bstTimerText:set_visible(false);
+                imtext.Draw(drawList, timerStr, textX, textY, textColor, timerFontSize);
             end
         end
 
@@ -1370,19 +1229,23 @@ function display.DrawWindow(settings)
 
         local resizeAnchoredBottom = PetBarResizeAnchoredBottom(typeSettings);
 
-        -- Handle bottom alignment: keep the window's bottom edge at a stable screen Y so
-        -- AlwaysAutoResize content changes can't crawl the bar (+1 height steps never
-        -- fired the old >1px delta gate). Skip correction while dragging so placement isn't fought.
+        -- Bottom alignment: lock the on-screen Y of the window's bottom edge so AlwaysAutoResize
+        -- height changes pin to the bottom (instead of the simple "delta > 1px" gate which let
+        -- +/-1px steps slip through and made the bar crawl upward over time). Skip the correction
+        -- while the user is dragging the window so their placement isn't fought.
         local petBarCanMove = not gConfig.lockPositions or (showConfig and showConfig[1] and gConfig.petBarPreview);
         local petBarDragging = petBarCanMove and imgui.IsMouseDragging(0) and imgui.IsWindowHovered();
         if resizeAnchoredBottom then
             local curBottom = windowPosY + windowHeight;
             if data.petBarSyncResizeAnchorNextFrame then
+                -- Cluster drag from PetBarTarget just moved us; re-sync the anchor to the new bottom.
                 windowState.anchorBottom = curBottom;
                 data.petBarSyncResizeAnchorNextFrame = false;
-            elseif windowState.anchorBottom == nil then
+            elseif windowState.anchorBottom == nil or positionJustApplied then
+                -- First frame after open / save-restore: seed the anchor from the current bottom.
                 windowState.anchorBottom = curBottom;
             elseif petBarDragging then
+                -- User is dragging; track the bottom edge live so the anchor follows.
                 windowState.anchorBottom = curBottom;
             else
                 local newPosY = windowState.anchorBottom - windowHeight;
@@ -1402,37 +1265,23 @@ function display.DrawWindow(settings)
             windowState.anchorBottom = nil;
         end
 
-        -- Store main window position for pet target snap (integers reduce subpixel drift in saved snaps)
+        -- Store main window position for pet target window snap (rounded to integers so saved
+        -- snap offsets aren't drifted by subpixel noise across re-renders).
         data.lastMainWindowPosX = math.floor(windowPosX + 0.5);
         data.lastMainWindowTop = math.floor(windowPosY + 0.5);
         -- Themed window borders extend above/below the ImGui outer rect (~NoBackground + windowBg).
-        -- Bottom snap uses +4 below; top snap must reference a line above ImGui top or the gap collapses visually.
+        -- Top snap must reference a line above the ImGui top edge or the visual gap collapses
+        -- to zero; +4 below remains the bottom-snap default that pairs with petTargetSnapOffsetY.
         local petBarTopSnapOutset = 8;
         data.petBarSnapTopReferenceY = data.lastMainWindowTop - petBarTopSnapOutset;
-        -- +4: visual gap between ImGui pet bar rect and decorative border (pairs with default petTargetSnapOffsetY)
         data.lastMainWindowBottom = math.floor(windowPosY + windowHeight + 0.5) + 4;
         data.lastPetBarWindowHeight = math.floor(windowHeight + 0.5);
 
-        -- Update background primitives
-        data.UpdateBackground(windowPosX, windowPosY, windowWidth, windowHeight, settings);
-
         DrawResizeAnchorEdgePreview(windowPosX, windowPosY, windowWidth, windowHeight, resizeAnchoredBottom);
 
-        -- Save position when user moves window (check on mouse release)
-        local canMove = not gConfig.lockPositions or (showConfig[1] and gConfig.petBarPreview);
-        if canMove then
-            -- Only save if position changed significantly (avoid floating point noise)
-            local posChanged = (lastSavedPosX == nil or lastSavedPosY == nil) or
-                               (math.abs(windowPosX - lastSavedPosX) > 1) or
-                               (math.abs(windowPosY - lastSavedPosY) > 1);
-            if posChanged and not imgui.IsMouseDown(0) then
-                -- Mouse released and position changed - save to settings
-                gConfig.petBarWindowPosX = windowPosX;
-                gConfig.petBarWindowPosY = windowPosY;
-                lastSavedPosX = windowPosX;
-                lastSavedPosY = windowPosY;
-            end
-        end
+        -- Cache window size for next frame's bg draw at the top of this function.
+        windowState.cachedWidth = windowWidth;
+        windowState.cachedHeight = windowHeight;
 
         SaveWindowPosition('PetBar');
     end
@@ -1445,8 +1294,14 @@ end
 -- ResetPositions - Reset window to default position
 -- ============================================
 display.ResetPositions = function()
-    forcePositionReset = true;
-    hasAppliedSavedPosition = false;
+    local defX, defY = defaultPositions.GetPetBarPosition();
+    if gConfig.windowPositions then
+        gConfig.windowPositions['PetBar'] = { x = defX, y = defY };
+    end
+    if gConfig.appliedPositions then
+        gConfig.appliedPositions['PetBar'] = nil;
+    end
+    -- Clear bottom-anchor tracking so the next frame re-seeds against the default position.
     windowState.x = nil;
     windowState.y = nil;
     windowState.height = nil;

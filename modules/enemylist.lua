@@ -1,18 +1,12 @@
 require('common');
 require('handlers.helpers');
 local imgui = require('imgui');
-local gdi = require('submodules.gdifonts.include');
-local primitives = require('primitives');
+local imtext = require('libs.imtext');
 local debuffHandler = require('handlers.debuffhandler');
 local statusHandler = require('handlers.statushandler');
 local actionTracker = require('handlers.actiontracker');
 local progressbar = require('libs.progressbar');
 local defaultPositions = require('libs.defaultpositions');
-
--- Position save/restore state
-local hasAppliedSavedPosition = false;
-local forcePositionReset = false;
-local lastSavedPosX, lastSavedPosY = nil, nil;
 
 -- Note: RENDER_FLAG_VISIBLE and RENDER_FLAG_HIDDEN are now imported from helpers.lua
 
@@ -68,24 +62,6 @@ local previewTargets = {
     [9008] = 'Redmage',
 };
 
--- Font objects for enemy list (keyed by numeric enemy index for O(1) lookup)
-local enemyNameFonts = {};  -- Enemy name font objects
-local enemyDistanceFonts = {};  -- Distance text font objects
-local enemyHPFonts = {};  -- HP% text font objects
-local enemyTargetFonts = {};  -- Target name font objects
-
--- Track which enemy indices are currently active (for efficient visibility management)
-local activeEnemyIndices = {};  -- Set of currently rendered enemy indices
-
--- Cache last set colors to avoid expensive SetColor() calls every frame
-local enemyNameColorCache = {};
-local enemyDistanceColorCache = {};  -- Cache for distance font colors
-local enemyHPColorCache = {};  -- Cache for HP font colors
-
--- Background primitive objects (keyed by numeric enemy index)
-local enemyBackgrounds = {};  -- Background rectangles for each enemy entry
-local enemyTargetBackgrounds = {};  -- Background rectangles for target containers
-
 -- Cache for truncated names to avoid expensive binary search every frame
 -- Key: enemy index, Value: {name = original_name, maxWidth = width, fontHeight = height, truncated = result}
 local truncatedNameCache = {};
@@ -110,29 +86,19 @@ end
 -- which uses cached party data for O(1) lookups instead of rebuilding a table each call
 
 -- Truncates text to fit within maxWidth using binary search for optimal performance
-local function TruncateTextToFit(fontObj, text, maxWidth)
+local function TruncateTextToFit(text, maxWidth, fontSize)
 	-- First check if text fits without truncation
-	fontObj:set_text(text);
-	local width, height = fontObj:get_text_size();
-
-	if (width <= maxWidth) then
-		return text;
-	end
-
+	local width, _ = imtext.Measure(text, fontSize);
+	if width <= maxWidth then return text; end
 	-- Text is too long, use binary search to find optimal truncation point
 	local ellipsis = "...";
-	local maxLength = #text;
-
 	-- Binary search for the longest substring that fits with ellipsis
-	local left, right = 1, maxLength;
+	local left, right = 1, #text;
 	local bestLength = 0;
-
 	while left <= right do
 		local mid = math.floor((left + right) / 2);
 		local truncated = text:sub(1, mid) .. ellipsis;
-		fontObj:set_text(truncated);
-		width, height = fontObj:get_text_size();
-
+		width, _ = imtext.Measure(truncated, fontSize);
 		if width <= maxWidth then
 			-- This length fits, try a longer one
 			bestLength = mid;
@@ -142,11 +108,7 @@ local function TruncateTextToFit(fontObj, text, maxWidth)
 			right = mid - 1;
 		end
 	end
-
-	if bestLength > 0 then
-		return text:sub(1, bestLength) .. ellipsis;
-	end
-
+	if bestLength > 0 then return text:sub(1, bestLength) .. ellipsis; end
 	-- Fallback: just ellipsis
 	return ellipsis;
 end
@@ -165,20 +127,6 @@ enemylist.DrawWindow = function(settings)
 	local singleColumnWidth = settings.barWidth;
 	local windowWidth = (windowMargin * 2) + (singleColumnWidth * maxColumns) + (columnSpacing * (maxColumns - 1));
 	imgui.SetNextWindowSize({ windowWidth, -1, }, ImGuiCond_Always);
-
-	-- Handle position reset or restore
-	if forcePositionReset then
-		local defX, defY = defaultPositions.GetEnemyListPosition();
-		imgui.SetNextWindowPos({defX, defY}, ImGuiCond_Always);
-		forcePositionReset = false;
-		hasAppliedSavedPosition = true;
-		lastSavedPosX, lastSavedPosY = defX, defY;
-	elseif not hasAppliedSavedPosition and gConfig.enemyListWindowPosX ~= nil then
-		imgui.SetNextWindowPos({gConfig.enemyListWindowPosX, gConfig.enemyListWindowPosY}, ImGuiCond_Once);
-		hasAppliedSavedPosition = true;
-		lastSavedPosX = gConfig.enemyListWindowPosX;
-		lastSavedPosY = gConfig.enemyListWindowPosY;
-	end
 
 	-- Draw the main target window
 	local windowFlags = GetBaseWindowFlags(gConfig.lockPositions);
@@ -212,9 +160,9 @@ enemylist.DrawWindow = function(settings)
 		-- Cache entity manager once per frame (avoid repeated GetEntitySafe() calls)
 		local entityMgr = GetEntitySafe();
 
-		-- Track previous active indices and reset for this frame
-		local previousActiveIndices = activeEnemyIndices;
-		activeEnemyIndices = {};
+		-- Get draw list and configure imtext for this frame
+		local drawList = GetUIDrawList();
+		imtext.SetConfigFromSettings(settings.name_font_settings);
 
 		-- Multi-column layout tracking
 		local numTargets = 0;
@@ -322,8 +270,7 @@ enemylist.DrawWindow = function(settings)
 				local barWidth = math.max(entryWidth - (padding * 2), 1);
 
 				-- ===== BACKGROUND & BORDER RENDERING =====
-				-- We need to draw these BEFORE the ImGui content so they appear behind progress bars
-				-- but fonts render in a separate Ashita layer, so they may still overlap
+				-- Draw bg fill first, then border on top; both before any content so progress bars / text overlay correctly.
 
 				-- Get entity name color based on type and claim status (ARGB format)
 				local nameColor;
@@ -333,6 +280,20 @@ enemylist.DrawWindow = function(settings)
 				else
 					nameColor = GetEntityNameColor(ent, k, gConfig.colorCustomization.shared);
 				end
+
+				-- Background fill
+				local bgColor = gConfig.colorCustomization.enemyList.backgroundColor;
+				local bgOpacity = gConfig.enemyListBackgroundOpacity;
+				if (bgOpacity ~= nil) then
+					bgColor = ApplyOpacityToColor(bgColor, bgOpacity);
+				end
+				drawList:AddRectFilled(
+					{entryStartX, entryStartY},
+					{entryStartX + entryWidth, entryStartY + entryHeight},
+					imgui.GetColorU32(ARGBToRGBA(bgColor)),
+					bgRadius,
+					ImDrawCornerFlags_All
+				);
 
 				if (gConfig.showEnemyListBorders) then
 					local borderColor;
@@ -348,9 +309,7 @@ enemylist.DrawWindow = function(settings)
 						borderColor = imgui.GetColorU32(ARGBToRGBA(gConfig.colorCustomization.enemyList.borderColor or 0xFF000000));
 					end
 
-					-- Draw border rectangle around the entire entry
-					-- Window margins ensure this won't be clipped
-					imgui.GetWindowDrawList():AddRect(
+					drawList:AddRect(
 						{entryStartX, entryStartY},
 						{entryStartX + entryWidth, entryStartY + entryHeight},
 						borderColor,
@@ -360,50 +319,10 @@ enemylist.DrawWindow = function(settings)
 					);
 				end
 
-				-- ===== PRIMITIVE BACKGROUND RENDERING =====
-				-- Create/get background primitive for this enemy
-				-- Primitives render in the correct layer (behind Ashita fonts)
-				-- Use numeric key directly for O(1) lookup (no string concatenation)
-				if (enemyBackgrounds[k] == nil and settings.prim_data) then
-					enemyBackgrounds[k] = primitives.new(settings.prim_data);
-					enemyBackgrounds[k].can_focus = false;
-					enemyBackgrounds[k].locked = true;
-				end
-
-				if (enemyBackgrounds[k] ~= nil) then
-					local bg = enemyBackgrounds[k];
-					-- Set background position and size
-					bg.position_x = entryStartX;
-					bg.position_y = entryStartY;
-					bg.width = entryWidth;
-					bg.height = entryHeight;
-					local bgColor = gConfig.colorCustomization.enemyList.backgroundColor;
-					local bgOpacity = gConfig.enemyListBackgroundOpacity;
-					if (bgOpacity ~= nil and bgOpacity < 1.0) then
-						bgColor = ApplyOpacityToColor(bgColor, bgOpacity);
-					end
-					bg.color = bgColor;
-					bg.visible = true;
-				end
-
 				-- ===== CONTENT RENDERING =====
 				-- ROW 1: Enemy Name (colored based on entity type and claim status)
 				local nameX = entryStartX + padding;
 				local nameY = entryStartY + padding;
-
-				-- Mark this enemy index as active for efficient visibility management
-				activeEnemyIndices[k] = true;
-
-				-- Use numeric key directly for O(1) lookup (no string concatenation)
-				if (enemyNameFonts[k] == nil) then
-					-- Use FontManager for cleaner font creation
-					enemyNameFonts[k] = FontManager.create(settings.name_font_settings);
-				end
-				local nameFont = enemyNameFonts[k];
-				-- Dynamically set font height based on settings (avoids expensive font recreation)
-				nameFont:set_font_height(settings.name_font_settings.font_height);
-				nameFont:set_position_x(nameX);
-				nameFont:set_position_y(nameY);
 
 				-- Truncate name to fit within available width (use cache to avoid per-frame binary search)
 				local maxNameWidth = entryWidth - (padding * 2);
@@ -415,17 +334,11 @@ enemylist.DrawWindow = function(settings)
 					displayName = nameCache.truncated;
 				else
 					-- Cache miss - compute and store (font height affects text width measurement)
-					displayName = TruncateTextToFit(nameFont, ent.Name, maxNameWidth);
+					displayName = TruncateTextToFit(ent.Name, maxNameWidth, fontHeight);
 					truncatedNameCache[k] = {name = ent.Name, maxWidth = maxNameWidth, fontHeight = fontHeight, truncated = displayName};
 				end
-				nameFont:set_text(displayName);
 
-				-- Only call set_font_color if the color has changed (expensive operation for GDI fonts)
-				if (enemyNameColorCache[k] ~= nameColor) then
-					nameFont:set_font_color(nameColor);
-					enemyNameColorCache[k] = nameColor;
-				end
-				nameFont:set_visible(true);
+				imtext.Draw(drawList, displayName, nameX, nameY, nameColor, fontHeight);
 
 				-- ROW 2: HP Bar (full width)
 				local row2Y = nameY + nameHeight + nameToBarGap;
@@ -445,48 +358,15 @@ enemylist.DrawWindow = function(settings)
 
 					-- Distance text (left-aligned)
 					if (gConfig.showEnemyDistance) then
-						-- Use numeric key directly for O(1) lookup (no string concatenation)
-						if (enemyDistanceFonts[k] == nil) then
-							-- Use FontManager for cleaner font creation
-							enemyDistanceFonts[k] = FontManager.create(settings.distance_font_settings);
-						end
-						local distanceFont = enemyDistanceFonts[k];
-						-- Dynamically set font height based on settings (avoids expensive font recreation)
-						distanceFont:set_font_height(settings.distance_font_settings.font_height);
-						-- Only call set_font_color if the color has changed (expensive operation for GDI fonts)
 						local distanceColor = gConfig.colorCustomization.enemyList.distanceTextColor;
-						if (enemyDistanceColorCache[k] ~= distanceColor) then
-							distanceFont:set_font_color(distanceColor);
-							enemyDistanceColorCache[k] = distanceColor;
-						end
-						distanceFont:set_position_x(entryStartX + padding);
-						distanceFont:set_position_y(row3Y);
-						distanceFont:set_text(distanceText);
-						distanceFont:set_visible(true);
+						imtext.Draw(drawList, distanceText, entryStartX + padding, row3Y, distanceColor, settings.distance_font_settings.font_height);
 					end
 
-					-- HP% text (right-aligned)
+					-- HP% text (right-aligned): measure width first, then position from right edge
 					if (gConfig.showEnemyHPPText) then
-						-- Use numeric key directly for O(1) lookup (no string concatenation)
-						if (enemyHPFonts[k] == nil) then
-							-- Use FontManager for cleaner font creation
-							enemyHPFonts[k] = FontManager.create(settings.percent_font_settings);
-						end
-						local hpFont = enemyHPFonts[k];
-						-- Dynamically set font height based on settings (avoids expensive font recreation)
-						hpFont:set_font_height(settings.percent_font_settings.font_height);
-						-- Only call set_font_color if the color has changed (expensive operation for GDI fonts)
 						local hpColor = gConfig.colorCustomization.enemyList.percentTextColor;
-						if (enemyHPColorCache[k] ~= hpColor) then
-							hpFont:set_font_color(hpColor);
-							enemyHPColorCache[k] = hpColor;
-						end
-						hpFont:set_text(hpText);
-
-						-- Right-align: set position to right edge, font alignment handles the rest
-						hpFont:set_position_x(entryStartX + entryWidth - padding);
-						hpFont:set_position_y(row3Y);
-						hpFont:set_visible(true);
+						local hpWidth, _ = imtext.Measure(hpText, settings.percent_font_settings.font_height);
+						imtext.Draw(drawList, hpText, entryStartX + entryWidth - padding - hpWidth, row3Y, hpColor, settings.percent_font_settings.font_height);
 					end
 				end
 
@@ -562,43 +442,22 @@ enemylist.DrawWindow = function(settings)
 						local targetNameHeight = settings.target_font_settings.font_height;
 						local targetTotalHeight = (targetPadding * 2) + targetNameHeight;
 
-						-- ===== PRIMITIVE BACKGROUND RENDERING =====
-						-- Create/get background primitive for this target container
-						-- Primitives render in the correct layer (behind Ashita fonts)
-						-- Use numeric key directly for O(1) lookup (no string concatenation)
-						if (enemyTargetBackgrounds[k] == nil and settings.prim_data) then
-							enemyTargetBackgrounds[k] = primitives.new(settings.prim_data);
-							enemyTargetBackgrounds[k].can_focus = false;
-							enemyTargetBackgrounds[k].locked = true;
+						-- Target container background fill
+						local targetBgColor = gConfig.colorCustomization.enemyList.targetBackgroundColor or gConfig.colorCustomization.enemyList.backgroundColor;
+						local targetBgOpacity = gConfig.enemyListTargetBackgroundOpacity;
+						if (targetBgOpacity ~= nil) then
+							targetBgColor = ApplyOpacityToColor(targetBgColor, targetBgOpacity);
 						end
+						drawList:AddRectFilled(
+							{targetContainerX, targetContainerY},
+							{targetContainerX + targetWidth, targetContainerY + targetTotalHeight},
+							imgui.GetColorU32(ARGBToRGBA(targetBgColor)),
+							bgRadius,
+							ImDrawCornerFlags_All
+						);
 
-						if (enemyTargetBackgrounds[k] ~= nil) then
-							local targetBg = enemyTargetBackgrounds[k];
-							targetBg.position_x = targetContainerX;
-							targetBg.position_y = targetContainerY;
-							targetBg.width = targetWidth;
-							targetBg.height = targetTotalHeight;
-							local targetBgColor = gConfig.colorCustomization.enemyList.targetBackgroundColor or gConfig.colorCustomization.enemyList.backgroundColor;
-							local targetBgOpacity = gConfig.enemyListTargetBackgroundOpacity;
-							if (targetBgOpacity ~= nil and targetBgOpacity < 1.0) then
-								targetBgColor = ApplyOpacityToColor(targetBgColor, targetBgOpacity);
-							end
-							targetBg.color = targetBgColor;
-							targetBg.visible = true;
-						end
-
-						-- Target name
-						-- Use numeric key directly for O(1) lookup (no string concatenation)
-						if (enemyTargetFonts[k] == nil) then
-							enemyTargetFonts[k] = FontManager.create(settings.target_font_settings);
-						end
-						local targetFont = enemyTargetFonts[k];
-						-- Dynamically set font height and color based on settings
-						targetFont:set_font_height(settings.target_font_settings.font_height);
+						-- Target name text
 						local targetTextColor = gConfig.colorCustomization.enemyList.targetNameTextColor or 0xFFFFAA00;
-						targetFont:set_font_color(targetTextColor);
-						targetFont:set_position_x(targetContainerX + targetPadding);
-						targetFont:set_position_y(targetContainerY + targetPadding);
 						-- Truncate name to fit (use cache to avoid per-frame binary search)
 						local maxTargetNameWidth = targetWidth - (targetPadding * 2);
 						local targetFontHeight = settings.target_font_settings.font_height;
@@ -609,19 +468,11 @@ enemylist.DrawWindow = function(settings)
 							displayTargetName = targetNameCache.truncated;
 						else
 							-- Cache miss - compute and store (font height affects text width measurement)
-							displayTargetName = TruncateTextToFit(targetFont, targetName, maxTargetNameWidth);
+							displayTargetName = TruncateTextToFit(targetName, maxTargetNameWidth, targetFontHeight);
 							truncatedTargetNameCache[k] = {name = targetName, maxWidth = maxTargetNameWidth, fontHeight = targetFontHeight, truncated = displayTargetName};
 						end
-						targetFont:set_text(displayTargetName);
-						targetFont:set_visible(true);
-					else
-						-- Hide target elements if enemy has no valid target (prevents stale overlays)
-						if (enemyTargetBackgrounds[k] ~= nil) then
-							enemyTargetBackgrounds[k].visible = false;
-						end
-						if (enemyTargetFonts[k] ~= nil) then
-							enemyTargetFonts[k]:set_visible(false);
-						end
+
+						imtext.Draw(drawList, displayTargetName, targetContainerX + targetPadding, targetContainerY + targetPadding, targetTextColor, targetFontHeight);
 					end
 				end
 
@@ -656,54 +507,6 @@ enemylist.DrawWindow = function(settings)
 			end
 		end
 
-		-- Hide font objects and backgrounds for enemies that were active last frame but not this frame
-		-- Only iterate over indices that were previously active (O(previous_count) instead of O(all_fonts))
-		-- No regex parsing needed since we use numeric keys directly
-		for enemyIndex in pairs(previousActiveIndices) do
-			if not activeEnemyIndices[enemyIndex] then
-				-- This enemy was visible last frame but not this frame - hide all its elements
-				if enemyNameFonts[enemyIndex] then
-					enemyNameFonts[enemyIndex]:set_visible(false);
-				end
-				if enemyDistanceFonts[enemyIndex] then
-					enemyDistanceFonts[enemyIndex]:set_visible(false);
-				end
-				if enemyHPFonts[enemyIndex] then
-					enemyHPFonts[enemyIndex]:set_visible(false);
-				end
-				if enemyBackgrounds[enemyIndex] then
-					enemyBackgrounds[enemyIndex].visible = false;
-				end
-				if enemyTargetBackgrounds[enemyIndex] then
-					enemyTargetBackgrounds[enemyIndex].visible = false;
-				end
-				if enemyTargetFonts[enemyIndex] then
-					enemyTargetFonts[enemyIndex]:set_visible(false);
-				end
-			end
-		end
-
-		-- Hide optional elements for active enemies when their features are disabled
-		for enemyIndex in pairs(activeEnemyIndices) do
-			-- Hide distance fonts when showEnemyDistance is disabled
-			if not gConfig.showEnemyDistance and enemyDistanceFonts[enemyIndex] then
-				enemyDistanceFonts[enemyIndex]:set_visible(false);
-			end
-			-- Hide HP% fonts when showEnemyHPPText is disabled
-			if not gConfig.showEnemyHPPText and enemyHPFonts[enemyIndex] then
-				enemyHPFonts[enemyIndex]:set_visible(false);
-			end
-			-- Hide target elements when showEnemyListTargets is disabled
-			if not gConfig.showEnemyListTargets then
-				if enemyTargetBackgrounds[enemyIndex] then
-					enemyTargetBackgrounds[enemyIndex].visible = false;
-				end
-				if enemyTargetFonts[enemyIndex] then
-					enemyTargetFonts[enemyIndex]:set_visible(false);
-				end
-			end
-		end
-
 		-- Update max height from last column
 		if (currentColumnHeight > maxColumnHeight) then
 			maxColumnHeight = currentColumnHeight;
@@ -716,18 +519,6 @@ enemylist.DrawWindow = function(settings)
 			imgui.Dummy({windowWidth, 0});
 		end
 
-		-- Save position if moved (with change detection to avoid spam)
-		local winPosX, winPosY = imgui.GetWindowPos();
-		if not gConfig.lockPositions then
-			if lastSavedPosX == nil or
-			   math.abs(winPosX - lastSavedPosX) > 1 or
-			   math.abs(winPosY - lastSavedPosY) > 1 then
-				gConfig.enemyListWindowPosX = winPosX;
-				gConfig.enemyListWindowPosY = winPosY;
-				lastSavedPosX = winPosX;
-				lastSavedPosY = winPosY;
-			end
-		end
 	end
 
 	-- Restore ImGui style variables (must be before End() to avoid affecting other windows)
@@ -767,148 +558,36 @@ end
 enemylist.HandleZonePacket = function(e)
 	-- Empty all our claimed targets on zone
 	allClaimedTargets = T{};
-
-	-- Clear font caches on zone
-	-- Use FontManager for cleaner font destruction
-	for k, v in pairs(enemyNameFonts) do
-		enemyNameFonts[k] = FontManager.destroy(v);
-	end
-	for k, v in pairs(enemyDistanceFonts) do
-		enemyDistanceFonts[k] = FontManager.destroy(v);
-	end
-	for k, v in pairs(enemyHPFonts) do
-		enemyHPFonts[k] = FontManager.destroy(v);
-	end
-	enemyNameFonts = {};
-	enemyDistanceFonts = {};
-	enemyHPFonts = {};
-
-	-- Clear background primitives on zone
-	for k, v in pairs(enemyBackgrounds) do
-		if (v ~= nil) then v:destroy(); end
-	end
-	enemyBackgrounds = {};
-	for k, v in pairs(enemyTargetBackgrounds) do
-		if (v ~= nil) then v:destroy(); end
-	end
-	enemyTargetBackgrounds = {};
-
-	-- Reset color caches, name caches, and active indices tracking
-	enemyNameColorCache = {};
-	enemyDistanceColorCache = {};
-	enemyHPColorCache = {};
-	activeEnemyIndices = {};
 	truncatedNameCache = {};
 	truncatedTargetNameCache = {};
 end
 
 enemylist.Initialize = function(settings)
 	-- Initialization is handled dynamically in DrawWindow
-	-- Font objects are created on-demand for each enemy
 end
 
 enemylist.UpdateVisuals = function(settings)
-	-- Destroy all existing font objects
-	-- Use FontManager for cleaner font destruction
-	for k, v in pairs(enemyNameFonts) do
-		enemyNameFonts[k] = FontManager.destroy(v);
-	end
-	for k, v in pairs(enemyDistanceFonts) do
-		enemyDistanceFonts[k] = FontManager.destroy(v);
-	end
-	for k, v in pairs(enemyHPFonts) do
-		enemyHPFonts[k] = FontManager.destroy(v);
-	end
-	for k, v in pairs(enemyTargetFonts) do
-		enemyTargetFonts[k] = FontManager.destroy(v);
-	end
-
-	-- Clear the tables to force recreation with new settings
-	enemyNameFonts = {};
-	enemyDistanceFonts = {};
-	enemyHPFonts = {};
-	enemyTargetFonts = {};
-
-	-- Reset cached colors when fonts are recreated
-	enemyNameColorCache = {};
-	enemyDistanceColorCache = {};
-	enemyHPColorCache = {};
-
-	-- Reset active indices and name caches
-	activeEnemyIndices = {};
+	imtext.Reset();
 	truncatedNameCache = {};
 	truncatedTargetNameCache = {};
 end
 
 enemylist.SetHidden = function(hidden)
-	if hidden then
-		-- Hide all font objects
-		for _, fontObj in pairs(enemyNameFonts) do
-			fontObj:set_visible(false);
-		end
-		for _, fontObj in pairs(enemyDistanceFonts) do
-			fontObj:set_visible(false);
-		end
-		for _, fontObj in pairs(enemyHPFonts) do
-			fontObj:set_visible(false);
-		end
-		for _, fontObj in pairs(enemyTargetFonts) do
-			fontObj:set_visible(false);
-		end
-		-- Hide all background primitives
-		for _, bgObj in pairs(enemyBackgrounds) do
-			bgObj.visible = false;
-		end
-		for _, bgObj in pairs(enemyTargetBackgrounds) do
-			bgObj.visible = false;
-		end
-		-- Clear active indices so next DrawWindow starts fresh
-		activeEnemyIndices = {};
-	end
 end
 
 enemylist.Cleanup = function()
-	-- Destroy all font objects
-	-- Use FontManager for cleaner font destruction
-	for k, v in pairs(enemyNameFonts) do
-		enemyNameFonts[k] = FontManager.destroy(v);
-	end
-	for k, v in pairs(enemyDistanceFonts) do
-		enemyDistanceFonts[k] = FontManager.destroy(v);
-	end
-	for k, v in pairs(enemyHPFonts) do
-		enemyHPFonts[k] = FontManager.destroy(v);
-	end
-	for k, v in pairs(enemyTargetFonts) do
-		enemyTargetFonts[k] = FontManager.destroy(v);
-	end
-
-	-- Destroy all background primitives
-	for k, v in pairs(enemyBackgrounds) do
-		if (v ~= nil) then v:destroy(); end
-	end
-	for k, v in pairs(enemyTargetBackgrounds) do
-		if (v ~= nil) then v:destroy(); end
-	end
-
-	-- Clear all tables
-	enemyNameFonts = {};
-	enemyDistanceFonts = {};
-	enemyHPFonts = {};
-	enemyTargetFonts = {};
-	enemyBackgrounds = {};
-	enemyTargetBackgrounds = {};
-	enemyNameColorCache = {};
-	enemyDistanceColorCache = {};
-	enemyHPColorCache = {};
-	activeEnemyIndices = {};
 	truncatedNameCache = {};
 	truncatedTargetNameCache = {};
 end
 
 enemylist.ResetPositions = function()
-	forcePositionReset = true;
-	hasAppliedSavedPosition = false;
+	local defX, defY = defaultPositions.GetEnemyListPosition();
+	if gConfig.windowPositions then
+		gConfig.windowPositions['EnemyList'] = { x = defX, y = defY };
+	end
+	if gConfig.appliedPositions then
+		gConfig.appliedPositions['EnemyList'] = nil;
+	end
 end
 
 return enemylist;

@@ -1603,6 +1603,10 @@ local function DrawVisualSettingsContent(settings, configKey)
         end
         imgui.ShowHelp('Display item quantity on item slots. Choose anchor position and fine-tune with X/Y offsets.');
 
+        -- 1.8.0 addition: full-stack count above the item quantity (only counts complete stacks)
+        components.DrawPartyCheckbox(settings, 'Show Stack Quantity##' .. configKey, 'showStackQuantity');
+        imgui.ShowHelp('Show full-stack count next to the item quantity. Only complete stacks are counted (e.g. 25 of stack-12 items shows "(2)"). Shares position/font with Show Item Quantity.');
+
         -- Show Action Labels with offsets
         components.DrawPartyCheckbox(settings, 'Show Action Labels##' .. configKey, 'showActionLabels');
         if settings.showActionLabels then
@@ -1990,7 +1994,25 @@ function M.DrawSharedDisableXiMacrosControls(idSuffix)
     imgui.PopID();
 end
 
--- Skillchain highlight options (hotbarGlobal); shared between Hotbar and Crossbar.
+-- Helper: draw a compact inline ARGB color swatch (no label, no input fields — just the
+-- swatch + click-to-open picker). Used inline with checkboxes so each toggle gets its color
+-- chip on the same row, e.g. `[x] Skillchain Highlight  [██]  (?)`. Saves on edit-finish
+-- the same way DrawTextColorPicker does, so behavior matches the rest of the config UI.
+local function DrawInlineArgbColorSwatch(parentTable, key, defaultArgb, imguiId)
+    local rgba = ARGBToImGui(parentTable[key] or defaultArgb);
+    local flags = bit.bor(ImGuiColorEditFlags_NoInputs, ImGuiColorEditFlags_NoLabel, ImGuiColorEditFlags_AlphaBar);
+    if imgui.ColorEdit4('##' .. imguiId, rgba, flags) then
+        parentTable[key] = ImGuiToARGB(rgba);
+    end
+    if imgui.IsItemDeactivatedAfterEdit() then
+        SaveSettingsOnly();
+    end
+end
+
+-- Skillchain & Magic Burst highlight options (hotbarGlobal); shared between Hotbar and Crossbar.
+-- Layout: each toggle gets its color swatch inline on the same row (only when enabled), with
+-- the (?) help marker trailing. Shared icon Scale/OffsetX/OffsetY sliders sit below and only
+-- render when at least one of the two highlights is enabled (they have no effect otherwise).
 function M.DrawSharedSkillchainHighlightControls(idSuffix)
     idSuffix = idSuffix or 'hb';
     local hg = gConfig.hotbarGlobal;
@@ -1998,20 +2020,41 @@ function M.DrawSharedSkillchainHighlightControls(idSuffix)
         return;
     end
 
+    -- Skillchain highlight: checkbox + inline color swatch (when enabled) + help marker.
     local skillchainHighlight = { hg.skillchainHighlightEnabled ~= false };
     if imgui.Checkbox('Skillchain Highlight##skillchainHl_' .. idSuffix, skillchainHighlight) then
         hg.skillchainHighlightEnabled = skillchainHighlight[1];
         SaveSettingsOnly();
     end
-    imgui.ShowHelp('Show animated border and skillchain icon on weapon skill slots when a skillchain window is open. Applies to keyboard hotbars and controller crossbar.');
-
     if hg.skillchainHighlightEnabled ~= false then
+        imgui.SameLine();
+        DrawInlineArgbColorSwatch(hg, 'skillchainHighlightColor', 0xFFD4AA44, 'skillchainColor_' .. idSuffix);
+    end
+    imgui.ShowHelp('Show animated border and skillchain icon (top-right corner) on weapon skill / Blood Pact / /ws|/pet-macro slots when a skillchain window is open on your target. Applies to keyboard hotbars and controller crossbar.');
+
+    -- Magic Burst highlight: checkbox + inline color swatch (when enabled) + help marker.
+    -- Sits directly under the skillchain row since the two are sibling features sharing the
+    -- icon scale/offset sliders below.
+    local magicBurst = { hg.magicBurstHighlightEnabled ~= false };
+    if imgui.Checkbox('Magic Burst Highlight##magicBurstHl_' .. idSuffix, magicBurst) then
+        hg.magicBurstHighlightEnabled = magicBurst[1];
+        SaveSettingsOnly();
+    end
+    if hg.magicBurstHighlightEnabled ~= false then
+        imgui.SameLine();
+        DrawInlineArgbColorSwatch(hg, 'magicBurstHighlightColor', 0xFF44D4FF, 'magicBurstColor_' .. idSuffix);
+    end
+    imgui.ShowHelp('When a skillchain closes on your target, highlight for 7 seconds any spell slots whose element matches the burstable elements (Fire/Ice/Wind/Earth/Lightning/Water/Light/Dark). Covers White / Black / Blue Magic, Ninjutsu, and the spell-named SMN Magic Blood Pact Rages (Fire II/IV, Blizzard II/IV, etc.). Border draws cyan-blue by default with the SC name in the bottom-left corner so it stays distinct from the skillchain highlight.');
+
+    -- Shared icon scale + offsets. Render only when at least one highlight is enabled — they
+    -- govern both, so showing the sliders with both highlights off would be confusing dead UI.
+    if hg.skillchainHighlightEnabled ~= false or hg.magicBurstHighlightEnabled ~= false then
         components.DrawPartySlider(hg, 'Icon Scale##skillchainScale_' .. idSuffix, 'skillchainIconScale', 0.5, 2.0, '%.1f', nil, 1.0);
-        imgui.ShowHelp('Scale of the skillchain icon (default 1.0).');
+        imgui.ShowHelp('Scale of the highlight icon (default 1.0). Shared between skillchain (top-right) and Magic Burst (bottom-left).');
         components.DrawPartySliderInt(hg, 'Icon Offset X##skillchainOx_' .. idSuffix, 'skillchainIconOffsetX', -50, 50, '%d', nil, 0);
-        imgui.ShowHelp('Horizontal offset for skillchain icon position.');
+        imgui.ShowHelp('Horizontal offset for the highlight icon (shared by both highlights).');
         components.DrawPartySliderInt(hg, 'Icon Offset Y##skillchainOy_' .. idSuffix, 'skillchainIconOffsetY', -50, 50, '%d', nil, 0);
-        imgui.ShowHelp('Vertical offset for skillchain icon position.');
+        imgui.ShowHelp('Vertical offset for the highlight icon (shared by both highlights).');
     end
 end
 

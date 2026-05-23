@@ -146,12 +146,13 @@ local function DrawPetTypeVisualSettings(configKey, petTypeLabel)
         imgui.ShowHelp('Always show the pet bar (recast timers) even when no pet is present.');
         imgui.Spacing();
 
-        -- Charmed pets don't have levels, so hide this option for Charm
-        if configKey ~= 'petBarCharm' then
-            components.DrawPartyCheckbox(typeSettings, 'Show Pet Level##' .. configKey, 'showLevel');
-            imgui.ShowHelp('Show pet level before the name (e.g., "Lv.35 FunguarFamiliar").');
-            imgui.Spacing();
-        end
+        components.DrawPartyCheckbox(typeSettings, 'Show Pet Level##' .. configKey, 'showLevel');
+        imgui.ShowHelp('Show pet level before the name (e.g., "Lv.35 FunguarFamiliar").');
+        imgui.Spacing();
+
+        components.DrawPartyCheckbox(typeSettings, 'Align Bottom##' .. configKey, 'alignBottom');
+        imgui.ShowHelp('Anchor the pet bar to its bottom edge. When the window height changes, it expands upward.');
+        imgui.Spacing();
 
         components.DrawPartyCheckbox(typeSettings, 'Show Distance##' .. configKey, 'showDistance');
         imgui.ShowHelp('Show distance from player to pet.');
@@ -1047,38 +1048,6 @@ local function DrawPetBarSettingsContent()
     components.DrawCheckbox('Hide When Menu Open', 'petBarHideOnMenuFocus');
     imgui.ShowHelp('Hide this module when a game menu is open (equipment, map, etc.).');
     components.DrawCheckbox('Hide During Events', 'petBarHideDuringEvents');
-
-    imgui.Spacing();
-
-    -- Global resize anchor for all pet bar pet types (independent of Pet Target snap settings)
-    if gConfig.petBarResizeAnchor ~= 'top' and gConfig.petBarResizeAnchor ~= 'bottom' then
-        gConfig.petBarResizeAnchor = 'top';
-        SaveSettingsOnly();
-    end
-    imgui.PushID('petBarResizeAnchorGlobal');
-    imgui.Text('Pet bar resize anchor');
-    imgui.ShowHelp(
-        'Which vertical edge stays fixed when buff icons, timers, or layout change window height. Applies to every pet layout '
-            .. '(Pet Target snapping is configured separately). Turn on Preview Mode below to outline the anchored edge on the HUD.');
-    local resizeAnchorLabels = { 'Top - bar grows downward', 'Bottom - bar grows upward' };
-    local resizeIdx = (gConfig.petBarResizeAnchor == 'bottom') and 2 or 1;
-    imgui.SetNextItemWidth(-1);
-    if imgui.BeginCombo('##petBarResizeAnchorCombo', resizeAnchorLabels[resizeIdx]) then
-        for i, lab in ipairs(resizeAnchorLabels) do
-            if imgui.Selectable(lab, resizeIdx == i) then
-                gConfig.petBarResizeAnchor = (i == 2) and 'bottom' or 'top';
-                SaveSettingsOnly();
-            end
-            if resizeIdx == i then
-                imgui.SetItemDefaultFocus();
-            end
-        end
-        imgui.EndCombo();
-    end
-    imgui.PopID();
-
-    imgui.Spacing();
-
     components.DrawCheckbox('Preview Mode', 'petBarPreview');
     imgui.ShowHelp('Show the pet bar with mock data. Preview shows the pet type from the selected tab below.');
 
@@ -1120,38 +1089,19 @@ local function DrawPetTargetSettingsContent()
         components.DrawComboBox('Anchor Point##petTargetSnap', currentAnchor, anchorOptions, function(newValue)
             gConfig.petTargetSnapAnchor = (newValue == 'Top') and 'top' or 'bottom';
             if newValue == 'Top' then
-                -- Prior default used a large X offset; top snap aligns with the pet bar left edge.
-                local ox = tonumber(gConfig.petTargetSnapOffsetX) or 0;
-                if ox >= 100 then
-                    gConfig.petTargetSnapOffsetX = 0;
-                end
-                gConfig.petTargetSnapOffsetY = -6;
+                gConfig.petTargetSnapOffsetX = 180;
+                gConfig.petTargetSnapOffsetY = 0;
             else
                 gConfig.petTargetSnapOffsetX = 0;
                 gConfig.petTargetSnapOffsetY = 16;
             end
             SaveSettingsOnly();
         end);
-        imgui.ShowHelp(
-            'Bottom: Pet Target window top snaps below the pet bar bottom (Y offset pushes it down). '
-                .. 'Top: Pet Target window top is placed above the pet bar top (Y adjusts the gap). '
-                .. 'Pet Bar resize anchor only affects which pet bar edge stays fixed when bar height changes; snapping uses the pet bar edges described above.');
+        imgui.ShowHelp('Bottom: offset from bottom of pet bar (shifts when buffs change height). Top: offset from top (stays fixed when buffs change height).');
 
         components.DrawSlider('Snap Offset X##petTargetSnap', 'petTargetSnapOffsetX', -200, 200);
         components.DrawSlider('Snap Offset Y##petTargetSnap', 'petTargetSnapOffsetY', -200, 200);
-        imgui.ShowHelp(
-            'Horizontal offset from pet bar left. '
-                .. 'Vertical: for Bottom snap, from pet bar bottom (+Y down). For Top snap, from the adjusted bar top (negative Y moves the target higher); positive values are ignored on Top snap because they come from Bottom mode.');
-
-        if (gConfig.petTargetSnapAnchor or 'bottom') == 'top' then
-            if gConfig.petTargetSnapTopGap == nil then
-                gConfig.petTargetSnapTopGap = 5;
-            end
-            components.DrawSlider('Top snap gap##petTargetSnap', 'petTargetSnapTopGap', 0, 32);
-            imgui.ShowHelp(
-                'Space between the bottom of the Pet Target window and the top of the pet bar (top anchor only). '
-                    .. 'Use together with Snap Offset Y for finer placement.');
-        end
+        imgui.ShowHelp(string.format('Offset from %s of pet bar.', (gConfig.petTargetSnapAnchor == 'top') and 'top' or 'bottom'));
     end
 
     if components.CollapsingSection('Display Options##petTarget', false) then
@@ -1263,6 +1213,10 @@ local function DrawPetTargetSettingsContent()
             DeferredUpdateVisuals();
         end);
         imgui.ShowHelp('Select the background window theme for pet target. Uses Pet Bar theme by default.');
+        components.DrawSlider('Background Scale##petTargetBg', 'petTargetBgScale', 0.1, 3.0, '%.2f');
+        imgui.ShowHelp('Scale of the background texture.');
+        components.DrawSlider('Border Scale##petTargetBg', 'petTargetBorderScale', 0.1, 3.0, '%.2f');
+        imgui.ShowHelp('Scale of the window borders (Window themes only).');
         components.DrawSlider('Background Opacity##petTargetBg', 'petTargetBackgroundOpacity', 0.0, 1.0, '%.2f');
         imgui.ShowHelp('Opacity of the background. Uses Pet Bar opacity by default.');
         components.DrawSlider('Border Opacity##petTargetBg', 'petTargetBorderOpacity', 0.0, 1.0, '%.2f');

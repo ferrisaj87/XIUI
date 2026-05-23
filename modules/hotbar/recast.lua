@@ -9,9 +9,10 @@ local itemRecast = require('libs.itemrecast');
 local actiondb = require('modules.hotbar.actiondb');
 local petregistry = require('modules.hotbar.petregistry');
 local universalTwoHour = require('modules.hotbar.universal_two_hour');
-local imgui = require('imgui');
 
--- Lazy: same Horizon spell resolution as icons/MP (avoids wrong spell id from Ashita name collisions).
+local M = {};
+
+-- Lazy require: actions.lua requires recast.lua (circular). Resolved at first call.
 local actionsModule = nil;
 local function getActionsModule()
     if not actionsModule then
@@ -27,20 +28,6 @@ local function normalizeCommandName(name)
     return s:lower();
 end
 
--- Spell list / recast index for /ma (SummonerPact vs duplicate en names must match horizon + GetSpellTimer slot).
-local function resolveSpellIndexForMa(spellName)
-    if not spellName then return nil; end
-    local am = getActionsModule();
-    local row = am.GetHorizonSpellForIconResolution(spellName, 'ma');
-    if row then
-        local idx = row.recast_id or row.id;
-        if idx then return idx; end
-    end
-    return actiondb.GetSpellId(spellName);
-end
-
-local M = {};
-
 -- Module-level setting for Hh:MM format (set once per frame, used by all functions)
 local useHHMMFormat = false;
 
@@ -53,10 +40,9 @@ end
 local BP_RAGE_TIMER_ID = 173;
 local BP_WARD_TIMER_ID = 174;
 
--- Get Blood Pact timer ID by command name
--- Returns timer ID (173 for Rage, 174 for Ward) or nil if not a blood pact
--- Case-insensitive: slot labels / macro text can differ in casing from registry entries; otherwise we fall
--- through to ability-id lookup and miss the shared BP timer (173/174) entirely.
+-- Get Blood Pact timer ID by command name.
+-- Case-insensitive: slot labels / macro text can differ in casing from registry entries; otherwise
+-- we fall through to ability-id lookup and miss the shared BP timer (173/174) entirely.
 local function GetBloodPactTimerId(commandName)
     local want = normalizeCommandName(commandName);
     if not want then return nil; end
@@ -76,11 +62,19 @@ local function GetBloodPactTimerId(commandName)
     return nil;
 end
 
--- Get pet command recast by timer ID
--- Returns: remaining seconds, or 0 if ready
-function M.GetPetCommandRecast(timerId)
-    if not timerId then return 0; end
-    return abilityRecast.GetAbilityRecastSeconds(timerId);
+-- Use Horizon spell list / recast index for /ma. Same resolution as castcost/icons —
+-- otherwise duplicate English names (e.g. SummonerPact) can return the wrong spell ID.
+local function resolveSpellIndexForMa(spellName)
+    if not spellName then return nil; end
+    local am = getActionsModule();
+    if am and am.GetHorizonSpellForIconResolution then
+        local row = am.GetHorizonSpellForIconResolution(spellName, 'ma');
+        if row then
+            local idx = row.recast_id or row.id;
+            if idx then return idx; end
+        end
+    end
+    return actiondb.GetSpellId(spellName);
 end
 
 -- Fixed ability recast component IDs (Windower recast_id / memory compId) for /pet-style commands.
@@ -119,7 +113,8 @@ local function getPetCommandTimerIdByName(commandName)
     return nil;
 end
 
--- Fallback: read timer component id from Ashita ability resource when available (covers gaps / Horizon rows).
+-- Fallback: read timer component id from Ashita ability resource when available
+-- (covers gaps / Horizon-specific rows the static table doesn't list).
 local function getRecastTimerIdFromAbilityResource(commandName)
     local resMgr = AshitaCore:GetResourceManager();
     if not resMgr then return nil; end
@@ -134,7 +129,8 @@ local function getRecastTimerIdFromAbilityResource(commandName)
     return nil;
 end
 
--- Resolve recast using shared BP timer, static pet-command timer id, or resource timer id before ability-id scan.
+-- Resolve recast using shared BP timer, static pet-command timer id, or resource timer id
+-- BEFORE falling back to ability-id scan. Returns (remaining, formattedText) or (nil, nil).
 local function getRemainingForPetLikeAbilityName(commandName)
     local bp = GetBloodPactTimerId(commandName);
     if bp then
@@ -152,13 +148,21 @@ local function getRemainingForPetLikeAbilityName(commandName)
     return nil, nil;
 end
 
--- Cached spell recasts (refreshed periodically)
--- Key: spellId, Value: remaining seconds
-M.spellRecasts = {};
+-- Get pet command recast by timer ID
+-- Returns: remaining seconds, or 0 if ready
+function M.GetPetCommandRecast(timerId)
+    if not timerId then return 0; end
+    return abilityRecast.GetAbilityRecastSeconds(timerId);
+end
 
--- Frame tracking to prevent multiple updates per frame
-M.lastUpdateTime = 0;
-M.lastUpdateFrame = -1;
+-- Cached spell recasts. Populated lazily by GetSpellRecast — only spell IDs
+-- actually queried during a frame get a memory hit. Previously this was a
+-- 1025-id scan every 50ms; with another action-heavy addon loaded that
+-- baseline ate frame budget that didn't need to be spent.
+-- Key: spellId, Value: remaining seconds (entry absent => 0).
+M.spellRecasts = {};
+local spellRecastExpiry = {};      -- spellId -> os.clock() at which entry is stale
+local SPELL_RECAST_TTL = 0.05;     -- 20 Hz refresh, matches old prescan cadence
 
 -- Reusable result table for GetCooldownInfo to avoid GC pressure
 -- (Creating ~7200 tables/sec with 120 slots @ 60fps causes periodic GC hitches)
@@ -171,52 +175,26 @@ local cooldownResult = {
     itemId = nil,
 };
 
--- Update all spell recasts (call once per frame in DrawWindow)
-function M.Update()
-    -- Optional global guard (default on): ensure recast memory scan runs once per render frame
-    -- even when both hotbar and crossbar call Update().
-    local singlePerFrame = true;
-    if gConfig and gConfig.hotbarGlobal and gConfig.hotbarGlobal.perfSingleRecastUpdate == false then
-        singlePerFrame = false;
-    end
-    if singlePerFrame and imgui and imgui.GetFrameCount then
-        local frame = imgui.GetFrameCount();
-        if frame and frame == M.lastUpdateFrame then
-            return;
-        end
-        M.lastUpdateFrame = frame or M.lastUpdateFrame;
-    end
-
-    local currentTime = os.clock();
-    -- Refresh often enough that summon/BP timers feel live (~60Hz); still caps CPU vs scanning every DrawSlot.
-    if currentTime - M.lastUpdateTime < 0.016 then
-        return;
-    end
-    M.lastUpdateTime = currentTime;
-
-    -- Get spell recasts from Ashita memory
-    local recastMgr = AshitaCore:GetMemoryManager():GetRecast();
-    if not recastMgr then return; end
-
-    -- Clear table instead of replacing to avoid GC pressure
-    for k in pairs(M.spellRecasts) do
-        M.spellRecasts[k] = nil;
-    end
-
-    -- Scan spell recast timers (0-1024 covers all spells)
-    for spellId = 0, 1024 do
-        local timer = recastMgr:GetSpellTimer(spellId);
-        if timer and timer > 0 then
-            -- Timer is in 1/60th seconds, convert to seconds
-            M.spellRecasts[spellId] = timer / 60;
-        end
-    end
-end
-
--- Get spell recast by ID
--- Returns: remaining seconds, or 0 if ready
+-- Get spell recast by ID. Fetches from Ashita memory on cache miss / expiry,
+-- otherwise reuses the last value. TTL matches the old prescan interval so
+-- visible cooldown text refreshes at the same rate.
+-- Returns: remaining seconds, or 0 if ready.
 function M.GetSpellRecast(spellId)
     if not spellId then return 0; end
+    local now = os.clock();
+    local exp = spellRecastExpiry[spellId];
+    if exp and now < exp then
+        return M.spellRecasts[spellId] or 0;
+    end
+    local recastMgr = AshitaCore:GetMemoryManager():GetRecast();
+    if not recastMgr then return M.spellRecasts[spellId] or 0; end
+    local timer = recastMgr:GetSpellTimer(spellId);
+    if timer and timer > 0 then
+        M.spellRecasts[spellId] = timer / 60;
+    else
+        M.spellRecasts[spellId] = nil;
+    end
+    spellRecastExpiry[spellId] = now + SPELL_RECAST_TTL;
     return M.spellRecasts[spellId] or 0;
 end
 
@@ -296,6 +274,21 @@ function M.GetActionRecast(actionType, spellId, abilityId, itemId)
     return remaining, M.FormatRecast(remaining);
 end
 
+-- ============================================
+-- Macro Recast Source Sniffing
+-- ============================================
+--
+-- Macros and palette rows can fire /ma, /pet, or /ja lines. To display a meaningful cooldown
+-- timer on the slot we need to figure out WHICH action's recast applies. There are two paths:
+--   1. Explicit override: actionData.recastSourceType set by the macro editor.
+--   2. Implicit sniff: scan the first few lines of macroText for /ma, /pet, /ja and use that
+--      as the recast source.
+--
+-- For palette rows whose actionType is ma / pet / ja (not the literal "macro" type), we sniff
+-- in TYPE-SPECIFIC mode so a leading /ma line in a Pet Command row doesn't replace the shared
+-- BP Ward/Rage timer with a spell recast, and a leading /pet line in a Spell row doesn't steal
+-- Carbuncle's spell timer.
+
 local function trimRecastStr(s)
     if not s then return nil; end
     s = tostring(s):gsub('^%s+', ''):gsub('%s+$', '');
@@ -338,7 +331,7 @@ local function sniffRecastTargetFromMacroText(macroText)
 
             local jaName = extractNameAfterMacroCommand(l, '/ja');
             if jaName then
-                if petregistry.GetBloodPactByName(jaName) then
+                if petregistry.GetBloodPactByName and petregistry.GetBloodPactByName(jaName) then
                     return 'pet', jaName;
                 end
                 return 'ja', jaName;
@@ -348,7 +341,8 @@ local function sniffRecastTargetFromMacroText(macroText)
     return nil, nil;
 end
 
--- Spell (ma) palette rows: only /ma and /magic — ignores leading /pet so summon/buff lines do not steal Carbuncle's spell timer.
+-- Spell (ma) palette rows: only /ma and /magic — ignores leading /pet so summon/buff lines
+-- do not steal Carbuncle's spell timer.
 local function sniffRecastTargetFromMaMacroText(macroText)
     macroText = trimRecastStr(macroText);
     if not macroText then return nil, nil; end
@@ -369,7 +363,8 @@ local function sniffRecastTargetFromMaMacroText(macroText)
     return nil, nil;
 end
 
--- Pet Command palette rows: only /pet and blood-pact /ja — ignores leading /ma so BP Ward/Rage shared timers (173/174) are not replaced by a spell recast.
+-- Pet Command palette rows: only /pet and blood-pact /ja — ignores leading /ma so BP Ward/Rage
+-- shared timers (173/174) are not replaced by a spell recast.
 local function sniffRecastTargetFromPetMacroText(macroText)
     macroText = trimRecastStr(macroText);
     if not macroText then return nil, nil; end
@@ -387,7 +382,7 @@ local function sniffRecastTargetFromPetMacroText(macroText)
             end
 
             local jaName = extractNameAfterMacroCommand(l, '/ja');
-            if jaName and petregistry.GetBloodPactByName(jaName) then
+            if jaName and petregistry.GetBloodPactByName and petregistry.GetBloodPactByName(jaName) then
                 return 'pet', jaName;
             end
         end
@@ -409,7 +404,7 @@ local function sniffRecastTargetFromJaMacroText(macroText)
         if l then
             local jaName = extractNameAfterMacroCommand(l, '/ja');
             if jaName then
-                if petregistry.GetBloodPactByName(jaName) then
+                if petregistry.GetBloodPactByName and petregistry.GetBloodPactByName(jaName) then
                     return 'pet', jaName;
                 end
                 return 'ja', jaName;
@@ -473,8 +468,8 @@ function M.GetCooldownInfo(actionData)
     end
 
     -- Pet Command / Magic / Job Ability palette rows (not actionType "macro"):
-    -- Use type-specific sniffing so shared BP Rage/Ward timers are not replaced by a leading /ma line, and
-    -- Carbuncle (ma row) is not replaced by a leading /pet line.
+    -- Use type-specific sniffing so shared BP Rage/Ward timers are not replaced by a leading /ma line,
+    -- and Carbuncle (ma row) is not replaced by a leading /pet line.
     local mt = actionData.macroText;
     if mt and mt ~= '' then
         if actionData.actionType == 'pet' then
@@ -506,6 +501,7 @@ function M.GetCooldownInfo(actionData)
         spellId = resolveSpellIndexForMa(actionData.action);
         remaining, recastText = M.GetActionRecast(actionData.actionType, spellId, nil, nil);
     elseif actionData.actionType == 'pet' then
+        -- Pet commands (Blood Pacts, pet-command IDs, resource-derived timer IDs) before ability scan.
         local rPet, rtPet = getRemainingForPetLikeAbilityName(actionData.action);
         if rPet ~= nil then
             remaining = rPet;
@@ -515,6 +511,7 @@ function M.GetCooldownInfo(actionData)
             remaining, recastText = M.GetActionRecast(actionData.actionType, nil, abilityId, nil);
         end
     elseif actionData.actionType == 'ja' then
+        -- Universal 2hr: route to the player's current job-specific 2hr ability when applicable.
         local jaActionName = universalTwoHour.ResolveJaActionName(actionData.action) or actionData.action;
         local rJa, rtJa = getRemainingForPetLikeAbilityName(jaActionName);
         if rJa ~= nil then

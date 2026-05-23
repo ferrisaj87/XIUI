@@ -1675,6 +1675,41 @@ return function(MP)
 
                 -- Ensure editor stays in "Create" mode (no id should be present)
                 MP.editingMacro.id = nil;
+
+                -- EFP double-click auto-bind: when the editor was opened from a double-click on
+                -- an empty Edit Full Palette slot, OpenEditorForSlotData stashed the target slot
+                -- coords. Now that AddMacro has minted an id on macroCopy, write the binding into
+                -- the EFP draft so the slot reflects the new macro on the next frame. One-shot
+                -- (cleared below) so "Save & Add Another" doesn't repeatedly stomp the same slot.
+                local target = MP.pendingNewMacroBindTarget;
+                if target and macroCopy.id then
+                    local okData, dataLib = pcall(require, 'modules.hotbar.data');
+                    if okData and dataLib and dataLib.SetDraftSlotData and dataLib.BuildMacroSlotAfterDrop then
+                        local arm = {};
+                        for k, v in pairs(macroCopy) do arm[k] = v; end
+                        arm.macroRef = macroCopy.id;
+                        arm.macroPaletteKey = arm.macroPaletteKey or MP.editorPaletteKey;
+                        local store = (MP.M.GetMacroSourceTagForDrops and MP.M.GetMacroSourceTagForDrops()) or 'profile';
+                        arm.macroSourceStore = arm.macroSourceStore or store;
+                        local existing;
+                        if dataLib.GetCrossbarSlotRawForSwapOverlay and dataLib.NormalizeCrossbarSlotRawForSwap then
+                            existing = dataLib.NormalizeCrossbarSlotRawForSwap(
+                                dataLib.GetCrossbarSlotRawForSwapOverlay(target.comboMode, target.slotIndex)
+                            );
+                        end
+                        local built = dataLib.BuildMacroSlotAfterDrop(arm, store, existing);
+                        dataLib.SetDraftSlotData(target.comboMode, target.slotIndex, built);
+                        -- Visual refresh so the EFP preview picks up the new binding next frame.
+                        -- 1.8.0 immediate-mode renderer has no persistent slot prim cache; the
+                        -- crossbar icon-cache clear is the only refresh needed to surface the new
+                        -- binding on the next frame.
+                        local okCb, crossbar = pcall(require, 'modules.hotbar.crossbar');
+                        if okCb and crossbar and crossbar.ClearIconCacheForSlot then
+                            crossbar.ClearIconCacheForSlot(target.comboMode, target.slotIndex);
+                        end
+                    end
+                    MP.pendingNewMacroBindTarget = nil;
+                end
             else
                 MP.M.UpdateMacro(MP.editingMacro.id, MP.editingMacro, MP.editorPaletteKey);
             end
@@ -1726,6 +1761,7 @@ return function(MP)
             MP.editorPaletteKey = nil;
             MP.editorDidInitialIconPick = false;
             MP.editorJaBadgeManuallySet = false;
+            MP.pendingNewMacroBindTarget = nil;
             MP.ClearEditorPreviewIconCache();
         end
     end
@@ -1741,6 +1777,7 @@ return function(MP)
         MP.iconPickerFilter[1] = '';
         MP.editorPaletteKey = nil;
         MP.editorJaBadgeManuallySet = false;
+        MP.pendingNewMacroBindTarget = nil;
         MP.ClearEditorPreviewIconCache();
     end
 

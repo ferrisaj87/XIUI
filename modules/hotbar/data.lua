@@ -249,50 +249,23 @@ M.ROW_GAP = 6;
 -- Background primitive handles (one per bar)
 M.bgHandles = {};
 
--- Button slot primitives (per bar, per slot)
--- M.slotPrims[barIndex][slotIndex] = primitive
+-- Legacy GDI font/primitive tables (kept as empty placeholders for migration safety only).
+-- 1.8.0 moved all per-slot rendering to libs/imtext.lua (stateless per-frame ImGui drawing)
+-- and libs/windowbackground.lua (immediate-mode background). None of these tables are
+-- populated anymore; any leftover writes from older crossbar/macropalette code are inert.
+-- Once the Tier 3 crossbar.lua / macropalette.lua passes are complete and all GDI writes
+-- are gone, this whole block can be deleted. Reads still work (table lookups just return nil).
 M.slotPrims = {};
-
--- Fonts for keybind labels (per bar, per slot)
--- M.keybindFonts[barIndex][slotIndex] = font
 M.keybindFonts = {};
-
--- Fonts for action labels (per bar, per slot)
--- M.labelFonts[barIndex][slotIndex] = font
 M.labelFonts = {};
-
--- Icon primitives (per bar, per slot)
--- Renders action icons as primitives instead of ImGui
 M.iconPrims = {};
-
--- Cooldown overlay primitives (per bar, per slot)
--- Dark overlay shown when action is on cooldown
 M.cooldownPrims = {};
-
--- Frame overlay primitives (per bar, per slot)
--- Decorative frame rendered above icons
 M.framePrims = {};
-
--- Cooldown timer fonts (per bar, per slot)
--- Shows remaining recast time (e.g., "2:30", "45s")
 M.timerFonts = {};
-
--- MP cost fonts (per bar, per slot)
--- Shows MP cost for magic spells
 M.mpCostFonts = {};
-
--- Item quantity fonts (per bar, per slot)
--- Shows quantity of usable items (e.g., "x5")
 M.quantityFonts = {};
-
--- Abbreviation fonts (per bar, per slot)
--- Shows text abbreviation when action has no icon
 M.abbreviationFonts = {};
-
--- Fonts for hotbar numbers (1-6)
 M.hotbarNumberFonts = {};
-
--- All fonts for batch operations
 M.allFonts = nil;
 
 -- ============================================
@@ -425,6 +398,54 @@ local function buildSlotRecord(slotData)
     return rec;
 end
 
+--- Public write-ready slot builder. Two output shapes:
+---   * macro binding → { macroRef, macroPaletteKey } (the live macro is resolved at read time
+---     via the macro DB so we never persist a stale copy of the macro action/text).
+---   * everything else → full slot record with the standard action / target / customIcon / etc.
+---     fields plus the Ferris extras (macroSourceStore for dual-arm bindings).
+--- This is the 1.8.0 public API that callers like `macropalette.HandleDropOnSlot` rely on.
+--- It coexists with the local `buildSlotRecord` (which always includes the macro extras —
+--- different shape because it's used by Ferris's macro-arm builders that already know they
+--- want the full record).
+---@param slotData table|nil
+---@return table|nil
+function M.BuildSlotDataForWrite(slotData)
+    if not slotData then return nil; end
+
+    local macroRef = slotData.macroRef or slotData.id;
+    if macroRef then
+        -- Preserve dual-arm metadata (macroSourceStore: 'profile'|'shared') and the JA badge flag
+        -- when the caller supplied them. The 1.8.0 minimal {macroRef, macroPaletteKey} shape is
+        -- still the default; the extras are only added when present so untouched slot data round-
+        -- trips losslessly through this builder (i.e. swap operations keep arm identity).
+        return {
+            macroRef = macroRef,
+            macroPaletteKey = slotData.macroPaletteKey,
+            macroSourceStore = slotData.macroSourceStore,
+            showJaBadgeOnMacro = slotData.showJaBadgeOnMacro,
+        };
+    end
+
+    return {
+        actionType = slotData.actionType,
+        action = slotData.action,
+        target = slotData.target,
+        displayName = slotData.displayName,
+        equipSlot = slotData.equipSlot,
+        macroText = slotData.macroText,
+        itemId = slotData.itemId,
+        customIconType = slotData.customIconType,
+        customIconId = slotData.customIconId,
+        customIconPath = slotData.customIconPath,
+        recastSourceType = slotData.recastSourceType,
+        recastSourceAction = slotData.recastSourceAction,
+        recastSourceItemId = slotData.recastSourceItemId,
+        -- showJaBadgeOnMacro applies to macro slots too; forward when present so swap/move
+        -- operations from macropalette.lua preserve the user's per-slot badge preference.
+        showJaBadgeOnMacro = slotData.showJaBadgeOnMacro,
+    };
+end
+
 --- Build a parent macro slot with one arm set from a palette drop, preserving the other arm from existing.
 function M.BuildMacroSlotAfterDrop(armData, sourceStore, existingParentSlot)
     -- sourceStore: 'profile' | 'shared' (GetMacroSourceTagForDrops)
@@ -515,6 +536,19 @@ local function resolveSlotMacro(slotAction)
     end
     if not liveMacro then
         if scopeShared then
+            return nil;
+        end
+        -- Orphan macro binding: the macroRef no longer resolves to a live macro (deleted from
+        -- Macro Manager, or the draft layer still holds a stale ref the live gConfig sweep
+        -- didn't reach). Modern slots are minimal {macroRef, macroPaletteKey} records with no
+        -- fallback displayName/action — returning slotAction would render the slot with no
+        -- name and the abbreviation pass produces "?" placeholder garbage. Return nil so the
+        -- slot draws empty. Legacy slots that still carry cached displayName/action keep their
+        -- old behaviour (slotAction fallback) so partially-migrated profiles aren't wiped.
+        if isDualMacroSlotTable(slotAction) then
+            return nil;
+        end
+        if not slotAction.displayName and not slotAction.action then
             return nil;
         end
         return slotAction;
@@ -2488,112 +2522,19 @@ end
 -- ============================================
 -- Font Visibility Helpers
 -- ============================================
-
--- Rebuild the flattened all-fonts list used for batch operations.
--- IMPORTANT: When fonts are recreated (FontManager.recreate), references change, so we must refresh this list
--- or SetAllFontsVisible() will toggle stale/destroyed objects and leave the new fonts visible.
-function M.RebuildAllFonts()
-    local all = {};
-
-    for barIndex = 1, M.NUM_BARS do
-        -- Per-slot fonts
-        for slotIndex = 1, M.MAX_SLOTS_PER_BAR do
-            local f;
-
-            f = M.keybindFonts[barIndex] and M.keybindFonts[barIndex][slotIndex];
-            if f then table.insert(all, f); end
-
-            f = M.labelFonts[barIndex] and M.labelFonts[barIndex][slotIndex];
-            if f then table.insert(all, f); end
-
-            f = M.timerFonts[barIndex] and M.timerFonts[barIndex][slotIndex];
-            if f then table.insert(all, f); end
-
-            f = M.mpCostFonts[barIndex] and M.mpCostFonts[barIndex][slotIndex];
-            if f then table.insert(all, f); end
-
-            f = M.quantityFonts[barIndex] and M.quantityFonts[barIndex][slotIndex];
-            if f then table.insert(all, f); end
-
-            f = M.abbreviationFonts[barIndex] and M.abbreviationFonts[barIndex][slotIndex];
-            if f then table.insert(all, f); end
-        end
-
-        -- Per-bar fonts
-        if M.hotbarNumberFonts[barIndex] then
-            table.insert(all, M.hotbarNumberFonts[barIndex]);
-        end
-    end
-
-    M.allFonts = all;
-end
-
-function M.SetAllFontsVisible(visible)
-    if M.allFonts then
-        SetFontsVisible(M.allFonts, visible);
-    end
-end
-
-function M.SetBarFontsVisible(barIndex, visible)
-    -- Hotbar number font
-    if M.hotbarNumberFonts[barIndex] then
-        M.hotbarNumberFonts[barIndex]:set_visible(visible);
-    end
-
-    -- Keybind fonts for this bar
-    if M.keybindFonts[barIndex] then
-        for _, font in pairs(M.keybindFonts[barIndex]) do
-            if font then
-                font:set_visible(visible);
-            end
-        end
-    end
-
-    -- Label fonts for this bar
-    if M.labelFonts[barIndex] then
-        for _, font in pairs(M.labelFonts[barIndex]) do
-            if font then
-                font:set_visible(visible);
-            end
-        end
-    end
-
-    -- Timer fonts for this bar
-    if M.timerFonts[barIndex] then
-        for _, font in pairs(M.timerFonts[barIndex]) do
-            if font then
-                font:set_visible(visible);
-            end
-        end
-    end
-
-    -- MP cost fonts for this bar
-    if M.mpCostFonts[barIndex] then
-        for _, font in pairs(M.mpCostFonts[barIndex]) do
-            if font then
-                font:set_visible(visible);
-            end
-        end
-    end
-
-    -- Item quantity fonts for this bar
-    if M.quantityFonts[barIndex] then
-        for _, font in pairs(M.quantityFonts[barIndex]) do
-            if font then
-                font:set_visible(visible);
-            end
-        end
-    end
-
-    -- Abbreviation fonts for this bar
-    if M.abbreviationFonts[barIndex] then
-        for _, font in pairs(M.abbreviationFonts[barIndex]) do
-            if font then
-                font:set_visible(visible);
-            end
-        end
-    end
-end
+-- REMOVED in 1.8.0 (and intentionally preserved-deleted here during migration):
+--   M.RebuildAllFonts, M.SetAllFontsVisible, M.SetBarFontsVisible
+-- These managed the GDI font lifecycle (`primitives` + `FontManager`) for per-slot keybind/
+-- label/timer/MP/quantity/abbreviation text. 1.8.0 replaced the entire rendering pipeline
+-- with libs/imtext.lua which is stateless per-frame — no font objects to create, hide,
+-- or rebuild. The old per-bar font tables (M.keybindFonts / M.labelFonts / M.timerFonts /
+-- M.mpCostFonts / M.quantityFonts / M.abbreviationFonts / M.hotbarNumberFonts / M.allFonts)
+-- are no longer populated; any lingering refs would also be obsolete.
+--
+-- Any caller of the dropped functions should be considered dead code from 1.7.5; the
+-- imtext path needs no per-bar visibility toggling because un-emitted draw calls don't
+-- render. If a caller still exists in macropalette.lua / crossbar.lua, it should be
+-- removed when that file is migrated (no replacement needed).
 
 -- ============================================
 -- Preview Mode (stub for compatibility)

@@ -1,46 +1,51 @@
 --[[
 * XIUI Crossbar - Display Module
 * Renders crossbar UI with controller-friendly layout
-* Uses primitives for backgrounds, GDI fonts for text, ImGui for icons
+* Uses windowBg.Draw (ImGui draw list) for background, ImGui/imtext for text and icons
 ]]--
 
 require('common');
 require('handlers.helpers');
 local imgui = require('imgui');
 local ffi = require('ffi');
-local primitives = require('primitives');
 local windowBg = require('libs.windowbackground');
+-- Note: windowBg is now an immediate-mode renderer; call windowBg.Draw() per frame.
 local drawing = require('libs.drawing');
-local fonts = require('libs.fonts');
-local FontManager = fonts.FontManager;
+local imtext = require('libs.imtext');
 local dragdrop = require('libs.dragdrop');
 
 local data = require('modules.hotbar.data');
-local gamestate = require('core.gamestate');
-local macropalette = require('modules.hotbar.macropalette');
-local playerdata = require('modules.hotbar.playerdata');
 local actions = require('modules.hotbar.actions');
 local textures = require('modules.hotbar.textures');
+-- TextureManager is used for the palette scope icon overlay (job icon / infinity for universal palettes).
+local TextureManager = require('libs.texturemanager');
 local controller = require('modules.hotbar.controller');
 local recast = require('modules.hotbar.recast');
 local slotrenderer = require('modules.hotbar.slotrenderer');
+-- playerdata caches the player's known abilities + weaponskills; `IsActionAvailable` falls
+-- back to "unavailable" when the caches are empty. Keyboard hotbars warm these from their
+-- own DrawWindow, but crossbar-only setups (`hotbarEnabled=false, crossbarEnabled=true`)
+-- never touched playerdata before — every JA/WS slot then read as unavailable (grayed +
+-- "X") even on jobs that knew the abilities. We now refresh once per frame from crossbar
+-- DrawWindow as well; the refresh is signature-gated internally (job/level/equip diff) so
+-- the steady-state cost is a few cache reads, not a full re-scan.
+local playerdata = require('modules.hotbar.playerdata');
 local animation = require('libs.animation');
 local skillchain = require('modules.hotbar.skillchain');
+-- macroparse extracts the primary line + JA badge type from a /ws or /pet macro body, so we can
+-- predict skillchain icons on macro slots whose first line is a weapon skill or blood pact.
+-- Display.lua does the same thing for keyboard hotbars; without it, crossbar macro slots whose
+-- primary line is /ws or /pet would never light up even though firing the macro IS the WS/pact.
 local macroparse = require('modules.hotbar.macroparse');
 local targetLib = require('libs.target');
 local palette = require('modules.hotbar.palette');
-local TextureManager = require('libs.texturemanager');
-
-local function GetCrossbarSkillchainVisualsFromGlobal()
-    local hg = gConfig.hotbarGlobal or {};
-    return {
-        enabled = hg.skillchainHighlightEnabled ~= false,
-        color = hg.skillchainHighlightColor or 0xFFD4AA44,
-        iconScale = hg.skillchainIconScale or 1.0,
-        iconOffsetX = hg.skillchainIconOffsetX or 0,
-        iconOffsetY = hg.skillchainIconOffsetY or 0,
-    };
-end
+-- Used to dim the crossbar when a blocking game menu is open AND `crossbarDisableInMenu`
+-- is enabled, so the player can see at a glance that controller input is paused.
+local gamestate = require('core.gamestate');
+-- macropalette is required only for the palette-editor drop handlers (effective palette key
+-- + macro source store). Required at module scope here (mirrors Ferris); if a future
+-- circular dependency creeps in this can be flipped to a lazy `require` inside the closures.
+local macropalette = require('modules.hotbar.macropalette');
 
 local M = {};
 
@@ -60,7 +65,31 @@ local function getStorageKey(crossbarSettings, jobId, subjobId)
     return string.format('%d:%d', jobId or 1, subjobId or 0);
 end
 
--- (Slot lookup uses data.lua's unified getSlotActionsForKey helper)
+-- Helper to get slotActions with storage key
+-- Handles: 'global' and composite keys ('15:10', '15:10:palette:Stuns')
+-- Falls back to base job key (jobId:0) preserving any suffix if full job:subjob key doesn't exist
+local function getSlotActionsForJob(slotActions, storageKey)
+    if not slotActions then return nil; end
+    -- Handle 'global' key specially
+    if storageKey == GLOBAL_SLOT_KEY then
+        return slotActions[GLOBAL_SLOT_KEY];
+    end
+    -- Try exact storage key first (e.g., '3:5' for WHM/RDM, '3:5:palette:Stuns')
+    local result = slotActions[storageKey];
+    if result then
+        return result;
+    end
+    -- Fallback: try base job key (jobId:0) for imported data without subjob
+    -- IMPORTANT: Preserve any suffix (palette:X, avatar:Y) in the fallback key
+    local jobId, subjobId, suffix = storageKey:match('^(%d+):(%d+)(.*)$');
+    if jobId and subjobId ~= '0' then
+        local fallbackKey = jobId .. ':0' .. (suffix or '');
+        if fallbackKey ~= storageKey then
+            return slotActions[fallbackKey];
+        end
+    end
+    return nil;
+end
 
 -- ============================================
 -- Constants
@@ -68,7 +97,12 @@ end
 
 local SLOTS_PER_SIDE = 8;
 local COMBO_MODES = controller.COMBO_MODES;
+-- Full enumeration of combo-mode storage keys (used by the Edit Full Palette editor and the
+-- pet-tab filter). 'Shared' is the chord-fallback for sharedExpanded layouts where both
+-- L2+R2 and R2+L2 collapse to one set.
 local ALL_COMBO_MODES = { 'L2', 'R2', 'L2R2', 'R2L2', 'L2x2', 'R2x2', 'Shared' };
+-- Naming prefix on resource maps + IDs used by the Edit Full Palette draft layer so its
+-- ImGui drop zones / animation keys never collide with the live HUD's 'crossbar_*' set.
 local PAL_ED_PREFIX = 'PalEd_';
 
 -- ============================================
@@ -216,17 +250,8 @@ end
 -- State
 -- ============================================
 
--- Icon cache per slot: iconCache[namespace][comboMode][slotIndex] = { bindKey = key, icon = cachedIcon }
+-- Icon cache per slot: iconCache[comboMode][slotIndex] = { bindKey = key, icon = cachedIcon }
 local iconCache = {};
-
-local function IconCacheNs()
-    local sk = data.GetCrossbarPaletteEditSessionKey and data.GetCrossbarPaletteEditSessionKey();
-    if sk then
-        return 'pal_' .. tostring(sk);
-    end
-    -- HUD stays on live bindings during Edit Full Palette until Apply; draft edits affect palette row cache only.
-    return '__live__';
-end
 
 -- Build a cache key that includes all fields that affect the icon
 local function BuildCrossbarBindKey(slotData)
@@ -236,51 +261,59 @@ local function BuildCrossbarBindKey(slotData)
     if slotData.customIconType or slotData.customIconId or slotData.customIconPath then
         iconPart = ':icon:' .. (slotData.customIconType or '') .. ':' .. tostring(slotData.customIconId or '') .. ':' .. (slotData.customIconPath or '');
     end
-    if slotData.actionType == 'macro' then
-        iconPart = iconPart .. (actions.GetMacroJaBadgeIconCacheSuffix(slotData) or '');
-    end
     return (slotData.actionType or '') .. ':' .. (slotData.action or '') .. ':' .. (slotData.target or '') .. iconPart;
 end
 
--- Get cached icon for a crossbar slot, recompute only if bind changed
+-- Get cached icon (and precomputed abbreviation, when no icon) for a crossbar slot.
+-- Returns: icon, abbr, abbrW. Mirrors display.lua's GetCachedIcon shape so DrawSlot
+-- can skip GetActionAbbreviation + imtext.Measure per frame.
 local function GetCachedCrossbarIcon(comboMode, slotIndex, slotData)
     -- Use effective combo mode for cache key (Shared when shared expanded bar is enabled)
     comboMode = data.GetEffectiveComboModeForStorage and data.GetEffectiveComboModeForStorage(comboMode) or comboMode;
 
-    local ns = IconCacheNs();
-    if not iconCache[ns] then
-        iconCache[ns] = {};
-    end
-    if not iconCache[ns][comboMode] then
-        iconCache[ns][comboMode] = {};
+    if not iconCache[comboMode] then
+        iconCache[comboMode] = {};
     end
 
-    local cached = iconCache[ns][comboMode][slotIndex];
+    local cached = iconCache[comboMode][slotIndex];
 
     -- Check if we have a valid cache entry for this bind
     local bindKey = BuildCrossbarBindKey(slotData);
     if cached and cached.bindKey == bindKey then
-        -- Cache hit - return icon even if nil (nil = no icon exists)
-        return cached.icon;
+        return cached.icon, cached.abbr, cached.abbrW;
     end
 
-    -- Cache miss - compute icon
+    -- Cache miss - compute icon and (when no icon) the abbreviation
     local icon = nil;
     if slotData and slotData.actionType then
         icon = actions.GetBindIcon(slotData);
     end
 
+    local abbr, abbrW = nil, nil;
+    if not icon and slotData then
+        abbr, abbrW = slotrenderer.ComputeAbbreviation(slotData);
+    end
+
     -- Store in cache
-    iconCache[ns][comboMode][slotIndex] = {
+    iconCache[comboMode][slotIndex] = {
         bindKey = bindKey,
         icon = icon,
+        abbr = abbr,
+        abbrW = abbrW,
     };
 
-    return icon;
+    return icon, abbr, abbrW;
 end
 
 -- Clear crossbar icon cache
+-- iconCache rows hold the only Lua ref to D3D textures returned by actions.GetBindIcon
+-- (LoadTextureFromPath wires a gc_safe_release finalizer). Wiping mid-frame — e.g. palette
+-- deletion fires InvalidateAllVisualCachesAfterPaletteListMutation while the crossbar
+-- DrawWindow is still building this frame's ImGui draw list — lets Lua GC finalize the COM
+-- texture while AddImage still references it (CTD on Ashita 4.16). DeferRelease holds the
+-- old table alive until FlushPendingReleases runs at the top of the next d3d_present.
 local function ClearCrossbarIconCache()
+    TextureManager.DeferRelease(iconCache);
     iconCache = {};
 end
 
@@ -288,69 +321,21 @@ end
 local function ClearCrossbarIconCacheForSlot(comboMode, slotIndex)
     -- Use effective combo mode for cache key (Shared when shared expanded bar is enabled)
     comboMode = data.GetEffectiveComboModeForStorage and data.GetEffectiveComboModeForStorage(comboMode) or comboMode;
-    for _, byMode in pairs(iconCache) do
-        if byMode[comboMode] then
-            byMode[comboMode][slotIndex] = nil;
+    if iconCache[comboMode] then
+        local oldRow = iconCache[comboMode][slotIndex];
+        if oldRow ~= nil then
+            TextureManager.DeferRelease(oldRow);
         end
+        iconCache[comboMode][slotIndex] = nil;
     end
 end
 
 local state = {
     initialized = false,
 
-    -- Window background
-    bgHandle = nil,
-
-    -- Slot primitives per combo mode
-    -- slotPrims[comboMode][slotIndex] = primitive
-    slotPrims = {},
-
-    -- Icon primitives per combo mode (action icons)
-    -- iconPrims[comboMode][slotIndex] = primitive
-    iconPrims = {},
-
-    -- Timer fonts per combo mode (cooldown timers)
-    -- timerFonts[comboMode][slotIndex] = font
-    timerFonts = {},
-
-    -- MP cost fonts per combo mode
-    -- mpCostFonts[comboMode][slotIndex] = font
-    mpCostFonts = {},
-
-    -- Item quantity fonts per combo mode
-    -- quantityFonts[comboMode][slotIndex] = font
-    quantityFonts = {},
-
-    -- Center icon primitives per combo mode (in the middle of each diamond)
-    -- centerIconPrims[comboMode][diamondType][iconIndex] = primitive
-    -- diamondType: 'dpad' or 'face'
-    -- iconIndex: 1-4 (the 4 icons in the center mini-diamond)
-    centerIconPrims = {},
-
-    -- GDI Fonts per combo mode (for action labels, not keybinds)
-    labelFonts = {},
-
-    -- Abbreviation fonts per combo mode (for actions without icons)
-    abbreviationFonts = {},
-
-    -- Trigger label font (shows current combo mode)
-    triggerLabelFont = nil,
-
-    -- Combo text font (shows L2+R2, R2+L2, etc. in center)
-    comboTextFont = nil,
-
-    -- Palette name font (shows current palette name and index)
-    paletteNameFont = nil,
-
     -- Window position (updated by ImGui window)
     windowX = 0,
     windowY = 0,
-    -- Wide (dual-group) window left X — frozen while shared expanded chord is centered so we can restore after chord
-    lastWideCrossbarWindowX = nil,
-    wasSharedCenterChordLayout = false,
-
-    -- Loaded theme
-    loadedBgTheme = nil,
 
     -- Animation state for bar transitions
     animation = {
@@ -383,30 +368,17 @@ local state = {
         progress = 1.0,
         wasHidden = false,
     },
+
+    -- useSharedExpandedBar bookkeeping. The shared-center layout collapses the bar to one
+    -- diamond width and forces the X anchor to screen-center every frame; without these the
+    -- normal X anchor would either get persisted as the centered narrow value (chord persists
+    -- across a save) or snap back to the leftmost saved position on chord exit. The two-step
+    -- handoff is: while in chord we stash the last "wide" window X here, then on the first
+    -- frame that exits chord we re-anchor to that stashed X so the bar returns where the
+    -- user actually placed it (rather than wherever the centered narrow bar happened to land).
+    lastWideCrossbarWindowX = nil,
+    wasSharedCenterChordLayout = false,
 };
-
--- ============================================
--- Primitive Creation
--- ============================================
-
--- Base primitive data for creating new primitives
-local basePrimData = {
-    visible = false,
-    can_focus = false,
-    locked = true,
-    width = 48,
-    height = 48,
-};
-
--- Create a primitive using the primitives module
-local function CreatePrimitive(primData)
-    local prim = primitives.new(primData or basePrimData);
-    if prim then
-        prim.visible = false;
-        prim.can_focus = false;
-    end
-    return prim;
-end
 
 -- ============================================
 -- Helper Functions
@@ -419,11 +391,12 @@ end
 
 -- Calculate crossbar window dimensions based on settings
 local function GetCrossbarDimensions(settings)
-    local slotSize = settings.slotSize or 48;
-    local slotGapV = settings.slotGapV or 4;
-    local slotGapH = settings.slotGapH or 4;
-    local diamondSpacing = settings.diamondSpacing or 20;
-    local groupSpacing = settings.groupSpacing or 40;
+    local gs = (gConfig and gConfig.globalScale) or 1.0;
+    local slotSize = (settings.slotSize or 48) * gs;
+    local slotGapV = (settings.slotGapV or 4) * gs;
+    local slotGapH = (settings.slotGapH or 4) * gs;
+    local diamondSpacing = (settings.diamondSpacing or 20) * gs;
+    local groupSpacing = (settings.groupSpacing or 40) * gs;
 
     -- Calculate group dimensions using layout functions
     local groupWidth, groupHeight = CalculateGroupDimensions(slotSize, slotGapV, slotGapH, diamondSpacing);
@@ -433,57 +406,6 @@ local function GetCrossbarDimensions(settings)
     local height = groupHeight;
 
     return width, height, groupWidth, groupHeight;
-end
-
--- Extra height at the top of the Crossbar ImGui window so palette scope / L2 / R2 / refresh draw inside the
--- window draw list (correct stacking vs other addons). Profile `windowPositions.Crossbar.y` stays the slot
--- grid top (unchanged from before this padding existed).
-local CROSSBAR_WINDOW_TOP_DECOR_PAD = 80;
-
--- Bottom slots can draw action labels below the slot rect (slotrenderer default). Without extra window height,
--- ImGui clips the lower portion of those labels (and a little outline slack for icons / corner text).
-local function GetCrossbarWindowBottomPad(settings)
-    settings = settings or {};
-    local pad = 10;
-    if settings.showActionLabels then
-        pad = pad + (settings.labelFontSize or 10) + 6 + math.max(0, tonumber(settings.actionLabelOffsetY) or 0);
-    end
-    pad = pad + math.floor(((settings.mpCostFontSize or 10) + (settings.quantityFontSize or 10)) * 0.15 + 0.5);
-    return math.min(72, math.max(10, pad));
-end
-
-local function ApplyCrossbarWindowPositionOnce()
-    if not gConfig or not gConfig.windowPositions or not gConfig.windowPositions['Crossbar'] then
-        return false;
-    end
-    if not gConfig.appliedPositions then
-        gConfig.appliedPositions = {};
-    end
-    if gConfig.appliedPositions['Crossbar'] then
-        return false;
-    end
-    local pos = gConfig.windowPositions['Crossbar'];
-    imgui.SetNextWindowPos({ pos.x, pos.y - CROSSBAR_WINDOW_TOP_DECOR_PAD }, ImGuiCond_Always);
-    gConfig.appliedPositions['Crossbar'] = true;
-    return true;
-end
-
-local function SaveCrossbarWindowSlotTopPosition()
-    if not gConfig then
-        return;
-    end
-    local wx, wy = imgui.GetWindowPos();
-    if not gConfig.windowPositions then
-        gConfig.windowPositions = {};
-    end
-    local slotTopY = wy + CROSSBAR_WINDOW_TOP_DECOR_PAD;
-    local saved = gConfig.windowPositions['Crossbar'];
-    if not saved then
-        gConfig.windowPositions['Crossbar'] = { x = wx, y = slotTopY };
-    elseif saved.x ~= wx or saved.y ~= slotTopY then
-        saved.x = wx;
-        saved.y = slotTopY;
-    end
 end
 
 -- Get default window position (centered at bottom of screen)
@@ -505,8 +427,10 @@ end
 
 -- Determine which combo modes to display on left/right based on active combo
 -- Returns: leftMode, rightMode, isExpanded, expandedSide ('left', 'right', 'center', 'both', or nil)
--- When useSharedExpandedBar and expandedSide == 'center', only the left column is drawn (Shared),
--- window width is one diamond group, and the bar is centered like a single 8-slot strip.
+-- When useSharedExpandedBar is enabled and the user holds a chord (L2+R2 / R2+L2), expandedSide
+-- becomes 'center': only the left column is drawn (using the 'Shared' storage key), the window
+-- shrinks to one diamond width, and DrawWindow re-centers it to screen X (a single 8-slot strip
+-- centered like the FFXIV controller bar) rather than the two-diamond wide layout.
 local function GetDisplayModes(activeCombo, settings)
     settings = settings or (gConfig and gConfig.hotbarCrossbar);
     local useSharedExp = settings and settings.useSharedExpandedBar == true;
@@ -539,8 +463,9 @@ end
 
 -- Determine which sides are visible based on display mode
 -- Returns: leftVisible, rightVisible, crossbarVisible
-local function GetVisibilityState(activeCombo, settings)
-    if settings.displayMode ~= 'activeOnly' then
+local function GetVisibilityState(activeCombo, settings, isEditMode)
+    -- Always show full crossbar in edit mode or normal display mode
+    if isEditMode or settings.displayMode ~= 'activeOnly' then
         return true, true, true;
     end
 
@@ -695,46 +620,14 @@ local function UpdateVisibilityAnimation(settings)
     return state.visibilityAnimation.progress;
 end
 
-local function GetModesToResetForFrame(settings, targetLeftMode, targetRightMode)
-    local allModes = ALL_COMBO_MODES;
-    if settings and settings.perfOptimizeHideVisibleModes == false then
-        return allModes;
-    end
-
-    local modes = {};
-    local seen = {};
-    local function addMode(m)
-        if m and not seen[m] then
-            seen[m] = true;
-            table.insert(modes, m);
-        end
-    end
-
-    addMode(state.currentLeftMode);
-    addMode(state.currentRightMode);
-    addMode(targetLeftMode);
-    addMode(targetRightMode);
-
-    if state.animation.active then
-        addMode(state.animation.fromLeftMode);
-        addMode(state.animation.fromRightMode);
-        addMode(state.animation.toLeftMode);
-        addMode(state.animation.toRightMode);
-    end
-
-    if #modes == 0 then
-        return allModes;
-    end
-    return modes;
-end
-
 -- Get slot position within the crossbar window
 local function GetSlotPositionInWindow(side, slotIndex, windowX, windowY, settings)
-    local slotSize = settings.slotSize or 48;
-    local slotGapV = settings.slotGapV or 4;
-    local slotGapH = settings.slotGapH or 4;
-    local diamondSpacing = settings.diamondSpacing or 20;
-    local groupSpacing = settings.groupSpacing or 40;
+    local gs = (gConfig and gConfig.globalScale) or 1.0;
+    local slotSize = (settings.slotSize or 48) * gs;
+    local slotGapV = (settings.slotGapV or 4) * gs;
+    local slotGapH = (settings.slotGapH or 4) * gs;
+    local diamondSpacing = (settings.diamondSpacing or 20) * gs;
+    local groupSpacing = (settings.groupSpacing or 40) * gs;
 
     -- Calculate group width for positioning
     local groupWidth = CalculateGroupDimensions(slotSize, slotGapV, slotGapH, diamondSpacing);
@@ -754,89 +647,74 @@ local function GetSlotPositionInWindow(side, slotIndex, windowX, windowY, settin
 end
 
 -- ============================================
+-- Window-decor padding (slot-top vs window-top accounting)
+-- ============================================
+-- ImGui clips anything we draw OUTSIDE the window's content rect. The crossbar paints a
+-- lot of decoration above the slot grid (L2/R2 trigger icons, combo text, R1 cpal-anchor
+-- pulse, palette-modifier refresh glyph) and below it (palette name, action labels). To
+-- keep all of that inside the window's draw region we open the ImGui window taller than
+-- the slot grid by CROSSBAR_WINDOW_TOP_DECOR_PAD on top and `GetCrossbarWindowBottomPad`
+-- on the bottom, then offset the window-top so the SLOT GRID still lands at the user's
+-- saved (or default) Y. `state.windowY` continues to mean "slot grid top" everywhere
+-- else in this module, which lets the rest of the layout code stay unchanged.
+local CROSSBAR_WINDOW_TOP_DECOR_PAD = 80;
+
+local function GetCrossbarWindowBottomPad(settings)
+    settings = settings or {};
+    local pad = 10;
+    if settings.showActionLabels then
+        pad = pad + (settings.labelFontSize or 10) + 6 + math.max(0, tonumber(settings.actionLabelOffsetY) or 0);
+    end
+    pad = pad + math.floor(((settings.mpCostFontSize or 10) + (settings.quantityFontSize or 10)) * 0.15 + 0.5);
+    return math.min(72, math.max(10, pad));
+end
+
+-- Profile stores SLOT TOP Y (`gConfig.windowPositions.Crossbar.y`), not window-top. When
+-- we apply a saved position we subtract the decor pad so the slot grid lands where the
+-- user originally placed it. The `appliedPositions` flag keeps ImGui's drag from being
+-- overridden every frame (ImGuiCond_Always otherwise).
+local function ApplyCrossbarWindowPositionOnce()
+    if not gConfig or not gConfig.windowPositions or not gConfig.windowPositions['Crossbar'] then
+        return false;
+    end
+    if not gConfig.appliedPositions then
+        gConfig.appliedPositions = {};
+    end
+    if gConfig.appliedPositions['Crossbar'] then
+        return false;
+    end
+    local pos = gConfig.windowPositions['Crossbar'];
+    imgui.SetNextWindowPos({ pos.x, pos.y - CROSSBAR_WINDOW_TOP_DECOR_PAD }, ImGuiCond_Always);
+    gConfig.appliedPositions['Crossbar'] = true;
+    return true;
+end
+
+-- Save SLOT TOP Y, not window-top, so the saved coordinate stays meaningful even if the
+-- decor pad changes between releases (or a future patch adds more decoration above the
+-- slot grid). Skips writes when nothing changed to avoid table churn / unnecessary disk
+-- saves on every frame.
+local function SaveCrossbarWindowSlotTopPosition()
+    if not gConfig then return; end
+    local wx, wy = imgui.GetWindowPos();
+    if not gConfig.windowPositions then
+        gConfig.windowPositions = {};
+    end
+    local slotTopY = wy + CROSSBAR_WINDOW_TOP_DECOR_PAD;
+    local saved = gConfig.windowPositions['Crossbar'];
+    if not saved then
+        gConfig.windowPositions['Crossbar'] = { x = wx, y = slotTopY };
+    elseif saved.x ~= wx or saved.y ~= slotTopY then
+        saved.x = wx;
+        saved.y = slotTopY;
+    end
+end
+
+-- ============================================
 -- Initialization
 -- ============================================
 
--- Module settings captured at Initialize (used to lazily build PalEd_* primitives for the palette editor)
-local crossbarInitModuleSettings = nil;
-
-local function InitComboModeSlotResources(comboKey, moduleSettings, settings)
-    state.slotPrims[comboKey] = {};
-    state.iconPrims[comboKey] = {};
-    state.timerFonts[comboKey] = {};
-    state.mpCostFonts[comboKey] = {};
-    state.quantityFonts[comboKey] = {};
-    state.centerIconPrims[comboKey] = {};
-    state.labelFonts[comboKey] = {};
-    state.abbreviationFonts[comboKey] = {};
-
-    for slotIndex = 1, SLOTS_PER_SIDE do
-        local slotPrim = CreatePrimitive(basePrimData);
-        state.slotPrims[comboKey][slotIndex] = slotPrim;
-
-        local iconPrim = CreatePrimitive(basePrimData);
-        state.iconPrims[comboKey][slotIndex] = iconPrim;
-
-        local timerFontSettings = moduleSettings and deep_copy_table(moduleSettings.label_font_settings) or {};
-        timerFontSettings.font_height = settings.recastTimerFontSize or 11;
-        timerFontSettings.font_alignment = 1;
-        timerFontSettings.font_color = settings.recastTimerFontColor or 0xFFFFFFFF;
-        timerFontSettings.outline_color = 0xFF000000;
-        timerFontSettings.outline_width = 2;
-        state.timerFonts[comboKey][slotIndex] = FontManager.create(timerFontSettings);
-
-        local mpCostFontSettings = moduleSettings and deep_copy_table(moduleSettings.label_font_settings) or {};
-        mpCostFontSettings.font_height = settings.mpCostFontSize or 10;
-        mpCostFontSettings.font_alignment = 2;
-        mpCostFontSettings.font_color = settings.mpCostFontColor or 0xFFD4FF97;
-        mpCostFontSettings.outline_color = 0xFF000000;
-        mpCostFontSettings.outline_width = 2;
-        state.mpCostFonts[comboKey][slotIndex] = FontManager.create(mpCostFontSettings);
-
-        local quantityFontSettings = moduleSettings and deep_copy_table(moduleSettings.label_font_settings) or {};
-        quantityFontSettings.font_height = settings.quantityFontSize or 10;
-        quantityFontSettings.font_alignment = 2;
-        quantityFontSettings.font_color = settings.quantityFontColor or 0xFFFFFFFF;
-        quantityFontSettings.outline_color = 0xFF000000;
-        quantityFontSettings.outline_width = 2;
-        state.quantityFonts[comboKey][slotIndex] = FontManager.create(quantityFontSettings);
-
-        local labelFontSettings = moduleSettings and moduleSettings.label_font_settings or {};
-        state.labelFonts[comboKey][slotIndex] = FontManager.create(labelFontSettings);
-
-        local abbrSettings = moduleSettings and deep_copy_table(moduleSettings.label_font_settings) or {};
-        abbrSettings.font_height = 12;
-        abbrSettings.font_alignment = 1;
-        abbrSettings.font_color = 0xFFF4DA97;
-        abbrSettings.outline_color = 0xFF000000;
-        abbrSettings.outline_width = 2;
-        state.abbreviationFonts[comboKey][slotIndex] = FontManager.create(abbrSettings);
-    end
-
-    state.centerIconPrims[comboKey]['dpad'] = {};
-    state.centerIconPrims[comboKey]['face'] = {};
-
-    for iconIdx = 1, 4 do
-        local dpadIconPrim = CreatePrimitive(basePrimData);
-        state.centerIconPrims[comboKey]['dpad'][iconIdx] = dpadIconPrim;
-
-        local faceIconPrim = CreatePrimitive(basePrimData);
-        state.centerIconPrims[comboKey]['face'][iconIdx] = faceIconPrim;
-    end
-end
-
-local function EnsurePalEdPrimitivesForComboMode(comboMode, settings)
-    local primKey = PAL_ED_PREFIX .. comboMode;
-    if state.slotPrims[primKey] then
-        return;
-    end
-    InitComboModeSlotResources(primKey, crossbarInitModuleSettings, settings);
-end
-
 function M.Initialize(settings, moduleSettings)
     if state.initialized then return; end
-
-    crossbarInitModuleSettings = moduleSettings;
 
     -- Initial position - use saved position from profile or default
     local savedPos = gConfig and gConfig.windowPositions and gConfig.windowPositions['Crossbar'];
@@ -844,38 +722,8 @@ function M.Initialize(settings, moduleSettings)
     local defaultX, defaultY = GetDefaultPosition(settings);
     state.windowX = savedPos and savedPos.x or defaultX;
     state.windowY = savedPos and savedPos.y or defaultY;
-    state.lastWideCrossbarWindowX = state.windowX;
 
     local width, height, groupWidth, groupHeight = GetCrossbarDimensions(settings);
-
-    -- Create window background
-    local primData = moduleSettings and moduleSettings.prim_data or {};
-    state.bgHandle = windowBg.create(primData, settings.backgroundTheme, settings.bgScale, settings.borderScale);
-
-    for _, comboMode in ipairs(ALL_COMBO_MODES) do
-        InitComboModeSlotResources(comboMode, moduleSettings, settings);
-    end
-
-    -- Create trigger label font
-    local triggerFontSettings = moduleSettings and moduleSettings.trigger_font_settings or {};
-    state.triggerLabelFont = FontManager.create(triggerFontSettings);
-
-    -- Create combo text font (uses global font settings with center alignment)
-    local comboTextFontSettings = moduleSettings and deep_copy_table(moduleSettings.trigger_font_settings) or {};
-    comboTextFontSettings.font_height = settings.comboTextFontSize or 10;
-    comboTextFontSettings.font_color = 0xFFFFFFFF;  -- White
-    comboTextFontSettings.font_alignment = 1;  -- Center alignment
-    state.comboTextFont = FontManager.create(comboTextFontSettings);
-
-    -- Create palette name font (center aligned, below crossbar)
-    local paletteNameFontSettings = moduleSettings and deep_copy_table(moduleSettings.trigger_font_settings) or {};
-    paletteNameFontSettings.font_height = settings.paletteNameFontSize or 10;
-    paletteNameFontSettings.font_color = 0xFFFFFFFF;
-    paletteNameFontSettings.font_alignment = 1;  -- Center alignment
-    state.paletteNameFont = FontManager.create(paletteNameFontSettings);
-
-    -- Set loaded theme
-    state.loadedBgTheme = settings.backgroundTheme;
 
     state.initialized = true;
 end
@@ -884,53 +732,247 @@ end
 -- Rendering
 -- ============================================
 
+-- Pre-allocated reusable table for DrawSlot
+local cbParams = {};
+local CB_DROP_ACCEPTS = {'macro', 'crossbar_slot', 'slot'};
+
+-- Pre-created closures and string IDs per combo/slot (avoids closure + string allocations per frame)
+local cbInteraction = {};
+
+local function GetCbInteraction(comboMode, slotIndex)
+    if not cbInteraction[comboMode] then
+        cbInteraction[comboMode] = {};
+    end
+    if not cbInteraction[comboMode][slotIndex] then
+        cbInteraction[comboMode][slotIndex] = {
+            buttonId = string.format('##crossbar_%s_%d', comboMode, slotIndex),
+            dropZoneId = string.format('crossbar_%s_%d', comboMode, slotIndex),
+            pressKey = comboMode .. '_' .. slotIndex,
+            onDrop = function(payload)
+                if payload.type == 'macro' then
+                    -- Ensure stored slot has a macroPaletteKey (fallback to current job if missing)
+                    if payload.data then payload.data.macroPaletteKey = payload.data.macroPaletteKey or data.jobId; end
+                    data.SetCrossbarSlotData(comboMode, slotIndex, payload.data);
+                elseif payload.type == 'crossbar_slot' then
+                    -- Swap crossbar slots
+                    local targetData = data.GetCrossbarSlotData(comboMode, slotIndex);
+                    data.SetCrossbarSlotData(comboMode, slotIndex, payload.data);
+                    data.SetCrossbarSlotData(payload.comboMode, payload.slotIndex, targetData);
+                elseif payload.type == 'slot' then
+                    -- Copy from hotbar slot to crossbar (one-way copy, doesn't clear source)
+                    if payload.data then
+                        data.SetCrossbarSlotData(comboMode, slotIndex, payload.data);
+                    end
+                end
+                -- Clear icon cache for affected slots
+                ClearCrossbarIconCacheForSlot(comboMode, slotIndex);
+                -- For crossbar slot swaps, also clear the source slot
+                if payload.type == 'crossbar_slot' then
+                    ClearCrossbarIconCacheForSlot(payload.comboMode, payload.slotIndex);
+                end
+            end,
+            getDragData = function()
+                local sd = data.GetCrossbarSlotData(comboMode, slotIndex);
+                local ic = GetCachedCrossbarIcon(comboMode, slotIndex, sd);
+                return {
+                    comboMode = comboMode,
+                    slotIndex = slotIndex,
+                    data = sd,
+                    icon = ic,
+                    label = sd and (sd.displayName or sd.action) or ('Slot ' .. slotIndex),
+                };
+            end,
+            onRightClick = function()
+                data.ClearCrossbarSlotData(comboMode, slotIndex);
+                -- Clear icon cache for this slot
+                ClearCrossbarIconCacheForSlot(comboMode, slotIndex);
+            end,
+        };
+    end
+    return cbInteraction[comboMode][slotIndex];
+end
+
 -- Draw a single slot with drag/drop support using shared renderer
 -- animOpacity: 0-1 for animation fade (default 1.0)
 -- yOffset: Y offset in pixels for animation (default 0)
 -- skillchainName: (optional) Skillchain name for WS slots
-local function DrawSlot(comboMode, slotIndex, x, y, slotSize, settings, isActive, isPressed, animOpacity, yOffset, skillchainName, activeCombo, editorClipRect)
+-- Reusable cbInteraction sub-tables built lazily for palette-editor slots so the editor and
+-- the live crossbar each get their own slotInteraction set (different idPrefix/buttonId/
+-- dropZoneId — palette editor uses 'paled_*'; live crossbar uses 'crossbar_*'). Keeping
+-- them separate also lets the slotrenderer drop-zone-lock semantics treat them differently
+-- (paled_* are never locked; crossbar_* respect crossbarLockMovement).
+local cbInteractionPalEd = {};
+
+local function GetCbInteractionPaletteEditor(comboMode, slotIndex)
+    if not cbInteractionPalEd[comboMode] then cbInteractionPalEd[comboMode] = {}; end
+    local cached = cbInteractionPalEd[comboMode][slotIndex];
+    if cached then return cached; end
+
+    local entry = {
+        buttonId = string.format('##paled_%s_%d', comboMode, slotIndex),
+        dropZoneId = string.format('paled_%s_%d', comboMode, slotIndex),
+        pressKey = 'paled_' .. comboMode .. '_' .. slotIndex,
+        onDrop = function(payload)
+            -- Palette-editor drops go through the draft layer; Apply Draft promotes them to live.
+            -- All branches normalize through the overlay (draft falls back to live) and finalize
+            -- before writing so dual-arm macros swap correctly and empty results clear properly.
+            if payload.type == 'macro' then
+                if payload.data and payload.data.macroPaletteKey == nil then
+                    if macropalette.GetEffectivePaletteType then
+                        payload.data.macroPaletteKey = macropalette.GetEffectivePaletteType();
+                    else
+                        payload.data.macroPaletteKey = data.jobId or 1;
+                    end
+                end
+                if payload.data and macropalette.GetMacroSourceTagForDrops
+                    and payload.data.macroSourceStore == nil then
+                    payload.data.macroSourceStore = macropalette.GetMacroSourceTagForDrops();
+                end
+                local arm = {};
+                for k, v in pairs(payload.data) do arm[k] = v; end
+                if arm.macroRef == nil and payload.data.id then
+                    arm.macroRef = payload.data.id;
+                end
+                local existingRaw = data.GetCrossbarSlotRawForSwapOverlay(comboMode, slotIndex);
+                local existing = data.NormalizeCrossbarSlotRawForSwap(existingRaw);
+                local store = arm.macroSourceStore
+                    or (macropalette.GetMacroSourceTagForDrops and macropalette.GetMacroSourceTagForDrops())
+                    or 'profile';
+                local built = data.BuildMacroSlotAfterDrop(arm, store, existing);
+                data.SetDraftSlotData(comboMode, slotIndex, built);
+            elseif payload.type == 'crossbar_slot' then
+                -- Always read source/target from overlay at drop time; payload.data was captured
+                -- at drag start and can alias stale tables after earlier moves in the same session.
+                local srcCombo = payload.comboMode;
+                local srcSlot = payload.slotIndex;
+                if srcCombo == comboMode and srcSlot == slotIndex then return; end
+                if data.BeginDraftUndoGroup then data.BeginDraftUndoGroup(); end
+                local srcRaw = data.NormalizeCrossbarSlotRawForSwap(data.GetCrossbarSlotRawForSwapOverlay(srcCombo, srcSlot));
+                local tgtRaw = data.NormalizeCrossbarSlotRawForSwap(data.GetCrossbarSlotRawForSwapOverlay(comboMode, slotIndex));
+                local newTgt, newSrc = data.SwapActiveMacroArmsInPlace(srcRaw, tgtRaw);
+                local fT = data.FinalizeCrossbarRawSlotForStorage(newTgt);
+                local fS = data.FinalizeCrossbarRawSlotForStorage(newSrc);
+                if fT == nil then
+                    data.ClearDraftSlotData(comboMode, slotIndex);
+                else
+                    data.SetDraftSlotData(comboMode, slotIndex, fT);
+                end
+                if fS == nil then
+                    data.ClearDraftSlotData(srcCombo, srcSlot);
+                else
+                    data.SetDraftSlotData(srcCombo, srcSlot, fS);
+                end
+                if data.EndDraftUndoGroup then data.EndDraftUndoGroup(); end
+                -- 1.8.0 immediate-mode renderer has no persistent slot prim cache to invalidate;
+                -- the icon cache clear above is the only refresh needed for the source slot.
+                ClearCrossbarIconCacheForSlot(srcCombo, srcSlot);
+            elseif payload.type == 'slot' then
+                if payload.data then
+                    local c = data.FinalizeCrossbarRawSlotForStorage(data.CopyTable(payload.data));
+                    if c == nil then
+                        data.ClearDraftSlotData(comboMode, slotIndex);
+                    else
+                        data.SetDraftSlotData(comboMode, slotIndex, c);
+                    end
+                end
+            end
+            -- Visual refresh for the target slot (matches live-HUD drop behaviour).
+            -- 1.8.0 immediate-mode renderer has no persistent slot prim cache to invalidate;
+            -- the icon cache clear is the only refresh needed (the bind hash on next frame
+            -- naturally re-derives slot draw state — see ClearSlotIconCache notes in macropalette).
+            ClearCrossbarIconCacheForSlot(comboMode, slotIndex);
+        end,
+        getDragData = function()
+            -- Use overlay (draft falling back to live) so dragging a slot that hasn't been
+            -- touched in this edit session still carries its persisted data. Reading draft-only
+            -- here would drag nil and the drop handler would clear the target slot.
+            local raw = data.NormalizeCrossbarSlotRawForSwap(data.GetCrossbarSlotRawForSwapOverlay(comboMode, slotIndex));
+            return {
+                type = 'crossbar_slot',
+                comboMode = comboMode,
+                slotIndex = slotIndex,
+                data = raw,
+            };
+        end,
+        onRightClick = function()
+            data.ClearDraftSlotData(comboMode, slotIndex);
+            ClearCrossbarIconCacheForSlot(comboMode, slotIndex);
+        end,
+        -- Double-click in Edit Full Palette opens the macro editor for the slot's draft
+        -- content. For empty slots that resolves to nil and macropalette.OpenEditorForSlotData
+        -- starts a fresh "creating new" session seeded with the active palette type's defaults.
+        -- The (comboMode, slotIndex) carried in the pending edit lets palettemanager auto-bind
+        -- the new macro to this slot after Save (see config/palettemanager.lua consume site).
+        -- We funnel through data.SetPendingPaletteSlotEdit so the editor opens on the NEXT
+        -- frame (consumed by config/palettemanager.lua after slots draw); opening it directly
+        -- inside this click handler would put a modal inside the hotbar's draw pass and skip
+        -- the macropalette draw-order assumptions.
+        onDoubleClick = function()
+            local slotData = data.GetDraftSlotData
+                and data.GetDraftSlotData(comboMode, slotIndex)
+                or nil;
+            data.SetPendingPaletteSlotEdit(slotData, comboMode, slotIndex);
+        end,
+    };
+    cbInteractionPalEd[comboMode][slotIndex] = entry;
+    return entry;
+end
+
+-- Palette-editor empty-slot panel tint (matches the Edit Full Palette row fill in palettemanager.lua).
+-- Lighter than the live crossbar's 0x55000000 so slot outlines read clearly against the editor row.
+local PAL_ED_EMPTY_SLOT_BG = 0xFF8E96AC;
+
+local function DrawSlot(comboMode, slotIndex, x, y, slotSize, settings, isActive, isPressed, animOpacity, yOffset, skillchainName, activeCombo, editorClipRect, magicBurstName)
     animOpacity = animOpacity or 1.0;
     yOffset = yOffset or 0;
 
+    -- Edit Full Palette state: when active, this slot belongs to the editor's draft layer
+    -- rather than the live crossbar. palSk is the storage-key the editor is targeting; the
+    -- draft layer is separate per-key (so editing one palette doesn't touch the live binding).
     local palSk = data.GetCrossbarPaletteEditSessionKey and data.GetCrossbarPaletteEditSessionKey();
-    local draftLayer = data.IsCrossbarDraftLayerOpen and data.IsCrossbarDraftLayerOpen();
-    local primKey = comboMode;
-    if palSk then
-        EnsurePalEdPrimitivesForComboMode(comboMode, settings);
-        primKey = PAL_ED_PREFIX .. comboMode;
-    end
+    local isEditor = palSk ~= nil;
+
+    -- Get pre-created interaction closures and IDs. Editor and live get different prefixes so
+    -- the slotrenderer drop-zone-lock policy can distinguish them (paled_* are never locked).
+    local interaction = isEditor
+        and GetCbInteractionPaletteEditor(comboMode, slotIndex)
+        or GetCbInteraction(comboMode, slotIndex);
 
     -- Apply Y offset for animation
     local drawY = y + yOffset;
 
-    -- Get press scale animation for icon (scales up when pressed, animates back down on release)
-    local pressKey = primKey .. '_' .. slotIndex;
+    -- Get press scale animation for icon
     local iconPressScale = 1.0;
     if settings.enablePressScale ~= false then
-        iconPressScale = animation.getPressScale(pressKey, isPressed and isActive);
+        iconPressScale = animation.getPressScale(interaction.pressKey, isPressed and isActive);
     end
 
-    local function rawForSwap(cm, si)
-        if palSk then
-            return data.GetCrossbarSlotRawForSwapOverlay(cm, si);
-        end
-        return data.GetRawCrossbarSlotAction(cm, si);
-    end
-
-    -- Palette row shows draft overlay; HUD uses live data (live edits sync into draft via SyncDraftSlotFromLive).
+    -- Slot data source: editor reads from the draft layer (synced from live at session start
+    -- via data.SyncDraftSlotFromLive); live crossbar always reads the persisted binding.
     local slotData;
-    if palSk then
-        slotData = data.GetDraftSlotData(comboMode, slotIndex);
+    if isEditor then
+        slotData = data.GetDraftSlotData and data.GetDraftSlotData(comboMode, slotIndex) or nil;
     else
         slotData = data.GetCrossbarSlotData(comboMode, slotIndex);
     end
 
-    -- Get icon for this action (cached - only rebuilds when bind changes)
-    local icon = GetCachedCrossbarIcon(comboMode, slotIndex, slotData);
+    -- Get icon + cached abbreviation for this action (cached - only rebuilds when bind changes)
+    local icon, cachedAbbr, cachedAbbrW = GetCachedCrossbarIcon(comboMode, slotIndex, slotData);
 
-    -- Dim inactive side: much stronger while a trigger is held (non-active half of the bar).
+    -- Global UI scale (slotSize/x/y come in already scaled; we apply gs here to
+    -- font sizes and pixel offsets that come straight from settings).
+    local gs = (gConfig and gConfig.globalScale) or 1.0;
+
+    -- Diamond position: 1=Top, 2=Right, 3=Bottom, 4=Left (slots 5-8 map via -4 for face buttons).
+    -- Top-slot labels placed below would overlap the bottom slot's MP/quantity text, so the
+    -- editor (and any caller that asks for labels) flips them above for the top position.
+    local posIndex = (slotIndex <= 4) and slotIndex or (slotIndex - 4);
+    local labelAboveSlot = (posIndex == 1);
+
+    -- Dim policy. Live crossbar: inactive sides get a softer dim; when a trigger is held the
+    -- non-active half dims much harder so the active set pops. Editor: nothing is "inactive".
     local dimFactor = 1.0;
-    if not isActive then
+    if not isEditor and not isActive then
         if activeCombo and activeCombo ~= COMBO_MODES.NONE then
             dimFactor = settings.inactiveSideWhileTriggerDim;
             if dimFactor == nil then dimFactor = 0.15; end
@@ -939,225 +981,108 @@ local function DrawSlot(comboMode, slotIndex, x, y, slotSize, settings, isActive
         end
     end
 
-    -- Crossbar layout: slotIndex maps to a position within the diamond:
-    -- 1=Top, 2=Right, 3=Bottom, 4=Left (same mapping for face slots 5-8 via -4).
-    -- Top-slot labels placed below can overlap the bottom slot's MP cost, so render them above.
-    local posIndex = (slotIndex <= 4) and slotIndex or (slotIndex - 4);
-    local labelAboveSlot = (posIndex == 1);
-
-    -- Edit Full Palette: empty slots — lighter tint so they read clearly on the row panel (see palettemanager child BG).
-    local PAL_ED_EMPTY_SLOT_BG = 0xFF8E96AC;
+    -- Editor background: lighter tint behind empty editor slots so slot borders pop on the
+    -- panel row; filled editor slots use the user's normal background.
     local slotBgColor = settings.slotBackgroundColor or 0x55000000;
     local slotOpacity = settings.slotOpacity or 1.0;
-    if palSk and not slotData then
+    if isEditor and not slotData then
         slotBgColor = PAL_ED_EMPTY_SLOT_BG;
         slotOpacity = 1.0;
     end
 
-    -- Gather resources for this slot
-    local resources = {
-        slotPrim = state.slotPrims[primKey] and state.slotPrims[primKey][slotIndex],
-        iconPrim = state.iconPrims[primKey] and state.iconPrims[primKey][slotIndex],
-        timerFont = state.timerFonts[primKey] and state.timerFonts[primKey][slotIndex],
-        mpCostFont = state.mpCostFonts[primKey] and state.mpCostFonts[primKey][slotIndex],
-        quantityFont = state.quantityFonts[primKey] and state.quantityFonts[primKey][slotIndex],
-        labelFont = state.labelFonts[primKey] and state.labelFonts[primKey][slotIndex],
-        abbreviationFont = state.abbreviationFonts[primKey] and state.abbreviationFonts[primKey][slotIndex],
-    };
-
-    local idPrefix = palSk and 'paled' or 'crossbar';
-
-    local scvForSlot = GetCrossbarSkillchainVisualsFromGlobal();
+    -- Update reusable params table in-place
+    local p = cbParams;
+    p.x = x;
+    p.y = drawY;
+    p.size = slotSize;
+    p.windowName = 'Crossbar';
+    p.cachedAbbr = cachedAbbr;
+    p.cachedAbbrW = cachedAbbrW;
+    p.bind = slotData;
+    p.icon = icon;
+    p.slotBgColor = slotBgColor;
+    p.slotOpacity = slotOpacity;
+    p.dimFactor = dimFactor;
+    p.animOpacity = animOpacity;
+    p.isPressed = isPressed and isActive;
+    p.iconPressScale = iconPressScale;
+    p.showMpCost = isEditor and false or (settings.showMpCost ~= false);
+    p.mpCostFontSize = (settings.mpCostFontSize or 10) * gs;
+    p.mpCostFontColor = settings.mpCostFontColor or 0xFFD4FF97;
+    p.mpCostNoMpColor = settings.mpCostNoMpColor or 0xFFFF4444;
+    p.mpCostOffsetX = (settings.mpCostOffsetX or 0) * gs;
+    p.mpCostOffsetY = (settings.mpCostOffsetY or 0) * gs;
+    p.showQuantity = isEditor and false or (settings.showQuantity ~= false);
+    p.showStackQuantity = settings.showStackQuantity == true;
+    p.quantityFontSize = (settings.quantityFontSize or 10) * gs;
+    p.quantityFontColor = settings.quantityFontColor or 0xFFFFFFFF;
+    p.quantityOffsetX = (settings.quantityOffsetX or 0) * gs;
+    p.quantityOffsetY = (settings.quantityOffsetY or 0) * gs;
+    -- Editor: always show labels (on-slot abbrev with hover popup); live crossbar respects the user setting.
+    p.showLabel = isEditor and true or (settings.showActionLabels or false);
+    p.labelText = slotData and (slotData.displayName or slotData.action or '') or '';
+    p.labelOffsetX = isEditor and 0 or ((settings.actionLabelOffsetX or 0) * gs);
+    p.labelOffsetY = isEditor and 0 or (((settings.actionLabelOffsetY or 0) + 2) * gs);
+    p.labelAboveSlot = labelAboveSlot;
+    p.labelFontSize = (settings.labelFontSize or 10) * gs;
+    p.recastTimerFontSize = (settings.recastTimerFontSize or 11) * gs;
+    p.recastTimerFontColor = settings.recastTimerFontColor or 0xFFFFFFFF;
+    p.flashCooldownUnder5 = settings.flashCooldownUnder5 or false;
+    p.useHHMMCooldownFormat = settings.useHHMMCooldownFormat or false;
+    p.labelFontColor = settings.labelFontColor or 0xFFFFFFFF;
+    p.labelCooldownColor = settings.labelCooldownColor or 0xFF888888;
+    p.labelNoMpColor = settings.labelNoMpColor or 0xFFFF4444;
+    p.buttonId = interaction.buttonId;
+    p.dropZoneId = interaction.dropZoneId;
+    p.dropAccepts = CB_DROP_ACCEPTS;
+    p.onDrop = interaction.onDrop;
+    p.dragType = 'crossbar_slot';
+    p.getDragData = interaction.getDragData;
+    p.onRightClick = interaction.onRightClick;
+    -- Editor slots: double-click opens the macro editor (empty slot = new macro seeded
+    -- with palette defaults, filled slot = edit existing). Live crossbar slots leave
+    -- onDoubleClick nil so single-click executes the action immediately.
+    p.onDoubleClick = isEditor and interaction.onDoubleClick or nil;
+    -- Editor slots don't have a "live" action to execute; suppressing the single-click
+    -- action is what enables the click-tracking pipeline in slotrenderer to detect a
+    -- second click and dispatch onDoubleClick. Live HUD keeps the default behavior.
+    p.suppressActionOnClick = isEditor and true or false;
+    p.showTooltip = true;
+    -- Editor-only params consumed by slotrenderer Pass 2 (clip culling + on-slot multi-line label).
+    p.editorClipRect = editorClipRect;
+    p.editorMinimalView = isEditor;
+    p.labelForeground = isEditor;
+    -- Editor drops should win against the live crossbar zone underneath when the editor preview
+    -- overlaps the HUD (FlushDeferredDrops resolves overlaps by highest priority).
+    p.dropPriority = isEditor and 10 or nil;
+    -- Skillchain highlight (only on live crossbar; editor preview suppresses it).
+    p.skillchainName = (not isEditor) and skillchainName or nil;
+    p.skillchainColor = gConfig.hotbarGlobal.skillchainHighlightColor or 0xFFD4AA44;
+    -- Magic Burst highlight — same suppression rules as skillchain (editor preview has no
+    -- live target so the prediction would be meaningless / misleading there).
+    p.magicBurstName = (not isEditor) and magicBurstName or nil;
+    p.magicBurstColor = gConfig.hotbarGlobal.magicBurstHighlightColor or 0xFF44D4FF;
 
     -- Render slot using shared renderer (handles ALL rendering and interactions)
-    slotrenderer.DrawSlot(resources, {
-        -- Position/Size
-        x = x,
-        y = drawY,
-        size = slotSize,
-        
-        -- Window wrapper name for inputs
-        windowName = 'Crossbar',
-
-        -- Action Data
-        bind = slotData,
-        icon = icon,
-
-        -- Visual Settings
-        slotBgColor = slotBgColor,
-        slotOpacity = slotOpacity,
-        dimFactor = dimFactor,
-        animOpacity = animOpacity,
-        isPressed = isPressed and isActive,
-        iconPressScale = iconPressScale,
-        showMpCost = palSk and false or (settings.showMpCost ~= false),
-        mpCostFontSize = settings.mpCostFontSize or 10,
-        mpCostFontColor = settings.mpCostFontColor or 0xFFD4FF97,
-        mpCostNoMpColor = settings.mpCostNoMpColor or 0xFFFF4444,
-        mpCostOffsetX = settings.mpCostOffsetX or 0,
-        mpCostOffsetY = settings.mpCostOffsetY or 0,
-        showQuantity = palSk and false or (settings.showQuantity ~= false),
-        quantityFontSize = settings.quantityFontSize or 10,
-        quantityFontColor = settings.quantityFontColor or 0xFFFFFFFF,
-        quantityOffsetX = settings.quantityOffsetX or 0,
-        quantityOffsetY = settings.quantityOffsetY or 0,
-        showLabel = palSk and true or (settings.showActionLabels or false),
-        labelText = slotData and (slotData.displayName or slotData.action or '') or '',
-        labelOffsetX = palSk and 0 or (settings.actionLabelOffsetX or 0),
-        labelOffsetY = palSk and 0 or ((settings.actionLabelOffsetY or 0) + 2),
-        labelAboveSlot = labelAboveSlot,
-        labelFontSize = settings.labelFontSize or 10,
-        recastTimerFontSize = settings.recastTimerFontSize or 11,
-        recastTimerFontColor = settings.recastTimerFontColor or 0xFFFFFFFF,
-        flashCooldownUnder5 = settings.flashCooldownUnder5 or false,
-        useHHMMCooldownFormat = settings.useHHMMCooldownFormat or false,
-        labelFontColor = settings.labelFontColor or 0xFFFFFFFF,
-        labelCooldownColor = settings.labelCooldownColor or 0xFF888888,
-        labelNoMpColor = settings.labelNoMpColor or 0xFFFF4444,
-
-        -- Interaction Config (use original Y for interaction, not animated Y)
-        buttonId = string.format('##%s_%s_%d', idPrefix, comboMode, slotIndex),
-        dropZoneId = string.format('%s_%s_%d', idPrefix, comboMode, slotIndex),
-        dropAccepts = {'macro', 'crossbar_slot', 'slot'},
-        onDrop = function(payload)
-            if payload.type == 'macro' then
-                -- Must match macropalette.HandleDropOnSlot: defaulting to data.jobId breaks Global/Items/Equipment/XIUI
-                -- and custom bucket macros (same macroRef would resolve in the current job's macroDB).
-                if payload.data and payload.data.macroPaletteKey == nil then
-                    if macropalette.GetEffectivePaletteType then
-                        payload.data.macroPaletteKey = macropalette.GetEffectivePaletteType();
-                    else
-                        payload.data.macroPaletteKey = data.jobId or 1;
-                    end
-                end
-                if payload.data and macropalette.GetMacroSourceTagForDrops and payload.data.macroSourceStore == nil then
-                    payload.data.macroSourceStore = macropalette.GetMacroSourceTagForDrops();
-                end
-                local m = payload.data;
-                local arm = {};
-                for k, v in pairs(m) do arm[k] = v; end
-                if arm.macroRef == nil and m.id then
-                    arm.macroRef = m.id;
-                end
-                local ex = data.NormalizeCrossbarSlotRawForSwap(rawForSwap(comboMode, slotIndex));
-                local store = m.macroSourceStore or (macropalette.GetMacroSourceTagForDrops and macropalette.GetMacroSourceTagForDrops()) or 'profile';
-                local built = data.BuildMacroSlotAfterDrop(arm, store, ex);
-                if palSk then
-                    data.SetDraftSlotData(comboMode, slotIndex, built);
-                else
-                    data.SetCrossbarSlotData(comboMode, slotIndex, built);
-                end
-            elseif payload.type == 'crossbar_slot' then
-                -- Always read source/target from live draft/config at drop time. payload.data was captured at
-                -- drag start and can alias stale tables after earlier moves in the same session (wrong swaps).
-                local srcCombo = payload.comboMode;
-                local srcSlot = payload.slotIndex;
-                if srcCombo == comboMode and srcSlot == slotIndex then
-                    return;
-                end
-                if palSk then data.BeginDraftUndoGroup(); end
-                local srcRaw = data.NormalizeCrossbarSlotRawForSwap(rawForSwap(srcCombo, srcSlot));
-                local tgtRaw = data.NormalizeCrossbarSlotRawForSwap(rawForSwap(comboMode, slotIndex));
-                local newTgt, newSrc = data.SwapActiveMacroArmsInPlace(srcRaw, tgtRaw);
-                local fT = data.FinalizeCrossbarRawSlotForStorage(newTgt);
-                local fS = data.FinalizeCrossbarRawSlotForStorage(newSrc);
-                if palSk then
-                    if fT == nil then data.ClearDraftSlotData(comboMode, slotIndex) else data.SetDraftSlotData(comboMode, slotIndex, fT) end
-                else
-                    data.SetCrossbarSlotData(comboMode, slotIndex, fT);
-                end
-                if palSk then
-                    if fS == nil then data.ClearDraftSlotData(payload.comboMode, payload.slotIndex) else data.SetDraftSlotData(payload.comboMode, payload.slotIndex, fS) end
-                else
-                    data.SetCrossbarSlotData(payload.comboMode, payload.slotIndex, fS);
-                end
-                if palSk then data.EndDraftUndoGroup(); end
-            elseif payload.type == 'slot' then
-                if payload.data then
-                    local c = data.FinalizeCrossbarRawSlotForStorage(data.CopyTable(payload.data));
-                    if palSk then
-                        if c == nil then data.ClearDraftSlotData(comboMode, slotIndex) else data.SetDraftSlotData(comboMode, slotIndex, c) end
-                    else
-                        data.SetCrossbarSlotData(comboMode, slotIndex, c);
-                    end
-                end
-            end
-            -- Clear icon cache for affected slots (targeted - fast)
-            ClearCrossbarIconCacheForSlot(comboMode, slotIndex);
-            slotrenderer.InvalidateSlotByKey(comboMode .. ':' .. slotIndex);
-            -- For crossbar slot swaps, also clear the source slot
-            if payload.type == 'crossbar_slot' then
-                ClearCrossbarIconCacheForSlot(payload.comboMode, payload.slotIndex);
-                slotrenderer.InvalidateSlotByKey(payload.comboMode .. ':' .. payload.slotIndex);
-            end
-        end,
-        dragType = 'crossbar_slot',
-        getDragData = function()
-            local raw = data.NormalizeCrossbarSlotRawForSwap(rawForSwap(comboMode, slotIndex));
-            return {
-                comboMode = comboMode,
-                slotIndex = slotIndex,
-                data = raw,
-                icon = icon,
-                label = slotData and (slotData.displayName or slotData.action) or ('Slot ' .. slotIndex),
-                paletteEditStorageKey = draftLayer or palSk,
-            };
-        end,
-        -- Edit Full Palette zones overlap HUD crossbar rects; FlushDeferredDrops picks highest priority first.
-        dropPriority = palSk and 100 or 0,
-        onRightClick = function()
-            if palSk then
-                data.ClearDraftSlotData(comboMode, slotIndex);
-            else
-                data.ClearCrossbarSlotData(comboMode, slotIndex);
-            end
-            -- Clear icon cache for this slot (targeted - fast)
-            ClearCrossbarIconCacheForSlot(comboMode, slotIndex);
-            slotrenderer.InvalidateSlotByKey(comboMode .. ':' .. slotIndex);
-        end,
-        onDoubleClick = palSk and function()
-            data.SetPendingPaletteSlotEdit(slotData, comboMode, slotIndex);
-        end or nil,
-        showTooltip = true,
-
-        -- Draw MP/Lv/Qty corner strings via ImGui foreground so they sit above D3D icon prims (and overlapping slots).
-        drawCornerTextForeground = palSk and false or true,
-        -- Edit Full Palette only: on-slot action labels via ImGui (not GDI); normal HUD uses labelFont above/below slots.
-        labelForeground = palSk and true or false,
-
-        -- Skillchain highlight (per-crossbar overrides with Hotbar Global fallback; palette editor uses helper when outside DrawWindow)
-        skillchainName = skillchainName,
-        skillchainColor = scvForSlot.color,
-        skillchainIconScale = scvForSlot.iconScale,
-        skillchainIconOffsetX = scvForSlot.iconOffsetX,
-        skillchainIconOffsetY = scvForSlot.iconOffsetY,
-
-        -- Scroll / parent clip (Edit Full Palette): hide D3D + GDI outside visible region
-        editorClipRect = editorClipRect,
-        editorStrictContain = false,
-        -- Edit Full Palette: always use lightweight, non-reactive rendering.
-        performanceLiteChecks = palSk and true or false,
-        editorMinimalView = palSk and true or false,
-        forceImGuiIcon = palSk and true or false,
-        suppressActionOnClick = palSk and true or false,
-    });
+    slotrenderer.DrawSlot(p);
 end
 
 -- Note: HandleSlotInteraction removed - now handled by slotrenderer.DrawSlot
 
 -- Draw center icons for a diamond via ImGui (renders on top of everything)
 -- animOpacity: 0-1 for animation fade (default 1.0)
-local function DrawDiamondCenterIconsImGui(diamondType, groupX, groupY, settings, isActive, drawList, animOpacity, activeCombo)
+local function DrawDiamondCenterIconsImGui(diamondType, groupX, groupY, settings, isActive, drawList, animOpacity)
     animOpacity = animOpacity or 1.0;
     if animOpacity <= 0.01 then return; end
 
-    local slotSize = settings.slotSize or 48;
-    local slotGapV = settings.slotGapV or 4;
-    local slotGapH = settings.slotGapH or 4;
-    local diamondSpacing = settings.diamondSpacing or 20;
-    local iconSize = settings.buttonIconSize or 24;
-    local iconGapH = settings.buttonIconGapH or 2;
-    local iconGapV = settings.buttonIconGapV or 2;
+    local gs = (gConfig and gConfig.globalScale) or 1.0;
+    local slotSize = (settings.slotSize or 48) * gs;
+    local slotGapV = (settings.slotGapV or 4) * gs;
+    local slotGapH = (settings.slotGapH or 4) * gs;
+    local diamondSpacing = (settings.diamondSpacing or 20) * gs;
+    local iconSize = (settings.buttonIconSize or 24) * gs;
+    local iconGapH = (settings.buttonIconGapH or 2) * gs;
+    local iconGapV = (settings.buttonIconGapV or 2) * gs;
     local controllerTheme = settings.controllerTheme or 'Xbox';
 
     -- Get diamond center position using layout calculation
@@ -1188,15 +1113,7 @@ local function DrawDiamondCenterIconsImGui(diamondType, groupX, groupY, settings
             local iconPtr = tonumber(ffi.cast("uint32_t", texture.image));
             if iconPtr then
                 -- Apply tint color based on active state and animation opacity (opacity-based dimming)
-                local dimFactor = 1.0;
-                if not isActive then
-                    if activeCombo and activeCombo ~= COMBO_MODES.NONE then
-                        dimFactor = settings.inactiveSideWhileTriggerDim;
-                        if dimFactor == nil then dimFactor = 0.15; end
-                    else
-                        dimFactor = settings.inactiveSlotDim or 0.5;
-                    end
-                end
+                local dimFactor = isActive and 1.0 or (settings.inactiveSlotDim or 0.5);
                 local alpha = math.floor(255 * animOpacity * dimFactor);
                 local tintColor = bit.bor(bit.lshift(alpha, 24), 0x00FFFFFF);
                 drawList:AddImage(
@@ -1206,19 +1123,6 @@ local function DrawDiamondCenterIconsImGui(diamondType, groupX, groupY, settings
                     {0, 0}, {1, 1},
                     tintColor
                 );
-            end
-        end
-    end
-end
-
--- Legacy primitive-based drawing (kept for compatibility but not used)
-local function DrawDiamondCenterIcons(comboMode, diamondType, groupX, groupY, settings, isActive)
-    -- Hide primitives since we're using ImGui now
-    local centerPrims = state.centerIconPrims[comboMode] and state.centerIconPrims[comboMode][diamondType];
-    if centerPrims then
-        for iconIdx = 1, 4 do
-            if centerPrims[iconIdx] then
-                centerPrims[iconIdx].visible = false;
             end
         end
     end
@@ -1290,45 +1194,43 @@ local function DrawTriggerIcons(activeCombo, l2GroupX, r2GroupX, groupY, groupWi
                 tintColor
             );
 
-            -- Draw R1 return icon above R2 when a cpal anchor is active for the current scope
+            -- R1 return indicator: rendered above R2 when the user has set a "cpal" anchor
+            -- (via `/xiui cpal <Job>`). Pulses to draw the eye toward the return-to-anchor
+            -- shortcut. Per-scope so anchors don't leak across universal vs job-scoped views.
             local scope = palette.GetCrossbarPaletteScope();
-            local anchor = palette.GetCpalAnchor(scope);
+            local anchor = palette.GetCpalAnchor and palette.GetCpalAnchor(scope);
             if anchor then
                 local r1Texture = textures:GetControllerIcon('R1');
                 if r1Texture and r1Texture.image then
-                    local r1Ptr = tonumber(ffi.cast("uint32_t", r1Texture.image));
+                    local r1Ptr = tonumber(ffi.cast('uint32_t', r1Texture.image));
                     if r1Ptr then
-                        -- Base (un-scaled) icon anchor position
                         local r1Width = baseIconWidth;
                         local r1Height = baseIconHeight;
                         local r1IconX = r2GroupX + (groupWidth / 2) - (r1Width / 2);
                         local r1IconY = r2IconY - r1Height - 4;
 
-                        -- Size pulse: icon grows 30% at peak (~2.5 Hz, smooth in/out)
+                        -- ~2.5 Hz size pulse (peak +30%) keeps the indicator visible without
+                        -- being distracting. Sin → abs so the icon "breathes" symmetrically.
                         local pulse = math.abs(math.sin(os.clock() * 2.5));
                         local sizeScale = 1.0 + 0.30 * pulse;
                         local sw = r1Width * sizeScale;
                         local sh = r1Height * sizeScale;
-                        -- Keep centered on the original icon centre point
                         local sx = r1IconX + r1Width * 0.5 - sw * 0.5;
                         local sy = r1IconY + r1Height * 0.5 - sh * 0.5;
 
-                        -- Subtle dark rounded pill BG spanning icon + "x2" label
-                        -- 0xAABBGGRR format: 0x99000000 = ~60% opaque black
+                        -- Pill-shaped dark backdrop spans the icon + "x2" text so they read
+                        -- as a single legend regardless of the underlying scene.
                         local textGap, textEstW, pad = 3, 14, 4;
                         drawList:AddRectFilled(
-                            {r1IconX - pad,                           r1IconY - pad},
-                            {r1IconX + r1Width + textGap + textEstW + pad, r1IconY + r1Height + pad},
+                            { r1IconX - pad, r1IconY - pad },
+                            { r1IconX + r1Width + textGap + textEstW + pad, r1IconY + r1Height + pad },
                             0x99000000, 5
                         );
 
-                        -- R1 icon, full white tint, size-pulsing from centre
-                        drawList:AddImage(r1Ptr, {sx, sy}, {sx + sw, sy + sh}, {0, 0}, {1, 1}, 0xFFFFFFFF);
-
-                        -- "x2" gold text, fixed to the right of the original icon bounds
-                        -- Gold: R=FF,G=C8,B=32,A=FF → 0xFF32C8FF
+                        drawList:AddImage(r1Ptr, { sx, sy }, { sx + sw, sy + sh }, { 0, 0 }, { 1, 1 }, 0xFFFFFFFF);
+                        -- Gold ARGB: A=FF R=FF G=C8 B=32 → ImGui's GetColorU32 byte order is 0xAABBGGRR
                         drawList:AddText(
-                            {r1IconX + r1Width + textGap, r1IconY + r1Height * 0.5 - 6},
+                            { r1IconX + r1Width + textGap, r1IconY + r1Height * 0.5 - 6 },
                             0xFF32C8FF,
                             'x2'
                         );
@@ -1339,7 +1241,12 @@ local function DrawTriggerIcons(activeCombo, l2GroupX, r2GroupX, groupY, groupWi
     end
 end
 
--- useSharedExpandedBar: L2+R2 / R2+L2 use one centered 8-slot row — chord glyph above that group only
+-- Shared expanded bar (useSharedExpandedBar): the L2+R2 / R2+L2 chord collapses both diamonds
+-- into a single centered 8-slot strip, so DrawTriggerIcons can't position L2 over the left group
+-- and R2 over the (now-absent) right group. This variant renders an "L2 + R2" chord glyph centred
+-- on the single visible diamond: both icons inline with a small "+" between them, tinted brighter
+-- when their trigger is part of the active combo. Same draw list as DrawTriggerIcons so the chord
+-- glyph layers with the same z-order as the regular trigger labels.
 local function DrawTriggerIconsSharedExpandedCenter(activeCombo, groupLeftX, groupY, groupWidth, settings, drawList)
     if not settings.showTriggerLabels then return; end
     if not drawList then return; end
@@ -1348,10 +1255,13 @@ local function DrawTriggerIconsSharedExpandedCenter(activeCombo, groupLeftX, gro
     local iw = 49 * baseScale;
     local ih = 28 * baseScale;
     local textCol = imgui.GetColorU32({ 0.92, 0.86, 0.65, 0.95 });
+    -- chordTight: pull the +/glyphs closer together as the icons shrink so the legend stays compact
+    -- (matches the spacing the editor's shared-chord glyph uses in DrawPaletteEditorL2R2TriggerGlyphs).
     local chordTight = math.max(0.5, 0.65 * baseScale);
     local cx = groupLeftX + groupWidth * 0.5;
     local cy = groupY - ih * 0.5;
 
+    -- Both triggers participate in any chord / double-tap involving them, so animate accordingly.
     local l2Active = activeCombo == COMBO_MODES.L2 or activeCombo == COMBO_MODES.L2_THEN_R2 or activeCombo == COMBO_MODES.R2_THEN_L2 or activeCombo == COMBO_MODES.L2_DOUBLE;
     local r2Active = activeCombo == COMBO_MODES.R2 or activeCombo == COMBO_MODES.L2_THEN_R2 or activeCombo == COMBO_MODES.R2_THEN_L2 or activeCombo == COMBO_MODES.R2_DOUBLE;
     if activeCombo == COMBO_MODES.NONE then
@@ -1366,6 +1276,8 @@ local function DrawTriggerIconsSharedExpandedCenter(activeCombo, groupLeftX, gro
         r2PressScale = animation.getPressScale('trigger_R2', r2Active);
     end
 
+    -- Measure the "+" once so the chord can be centered as a single unit (icon + plus + icon).
+    -- Fallback dims 10x14 keep layout sensible on builds where imgui.CalcTextSize isn't bound.
     local function plusSize()
         local ptw, pth = 10, 14;
         if imgui.CalcTextSize then
@@ -1389,26 +1301,22 @@ local function DrawTriggerIconsSharedExpandedCenter(activeCombo, groupLeftX, gro
     end
 
     local ptw, pth = plusSize();
-    local gL, gR = chordTight, chordTight;
     local lw = iw * l2PressScale;
     local lh = ih * l2PressScale;
     local rw = iw * r2PressScale;
     local rh = ih * r2PressScale;
-    local total = lw + gL + ptw + gR + rw;
+    local total = lw + chordTight + ptw + chordTight + rw;
     local leftX = cx - total * 0.5;
     local l2Tint = l2Active and 0xFFFFFFFF or 0x88FFFFFF;
     local r2Tint = r2Active and 0xFFFFFFFF or 0x88FFFFFF;
     drawImageScaled('L2', leftX, cy - lh * 0.5, lw, lh, l2Tint);
-    drawList:AddText({ leftX + lw + gL, cy - pth * 0.5 }, textCol, '+');
-    drawImageScaled('R2', leftX + lw + gL + ptw + gR, cy - rh * 0.5, rw, rh, r2Tint);
+    drawList:AddText({ leftX + lw + chordTight, cy - pth * 0.5 }, textCol, '+');
+    drawImageScaled('R2', leftX + lw + chordTight + ptw + chordTight, cy - rh * 0.5, rw, rh, r2Tint);
 end
 
--- Draw combo text in center for complex combos (L2R2, R2L2, L2x2, R2x2), or L2/R2 when enabled
+-- Draw combo text in center for complex combos (L2R2, R2L2, L2x2, R2x2) or edit mode
 local function DrawComboText(activeCombo, centerX, topY, settings)
-    if not settings.showComboText then
-        if state.comboTextFont then
-            state.comboTextFont:set_visible(false);
-        end
+    if not settings.showComboText and not settings.editMode then
         return;
     end
 
@@ -1432,31 +1340,75 @@ local function DrawComboText(activeCombo, centerX, topY, settings)
         comboText = 'R2';
     end
 
-    if not comboText then
-        if state.comboTextFont then
-            state.comboTextFont:set_visible(false);
-        end
-        return;
+    -- In edit mode, always show with warning indicator
+    if settings.editMode then
+        comboText = '(!) ' .. (comboText or 'EDIT');
     end
 
-    -- Get font size and offsets from settings
-    local fontSize = settings.comboTextFontSize or 10;
-    local offsetX = settings.comboTextOffsetX or 0;
-    local offsetY = settings.comboTextOffsetY or 0;
+    if not comboText then return; end
 
-    -- Update and show GDI font for text (centered)
-    if state.comboTextFont then
-        state.comboTextFont:set_font_height(fontSize);
-        state.comboTextFont:set_text(comboText);
-        state.comboTextFont:set_position_x(centerX + offsetX);
-        state.comboTextFont:set_position_y(topY + offsetY);
-        state.comboTextFont:set_font_color(0xFFFFFFFF);
-        state.comboTextFont:set_visible(true);
+    -- Get font size and offsets from settings (scaled by globalScale)
+    local gs = (gConfig and gConfig.globalScale) or 1.0;
+    local fontSize = (settings.comboTextFontSize or 10) * gs;
+    local offsetX = (settings.comboTextOffsetX or 0) * gs;
+    local offsetY = (settings.comboTextOffsetY or 0) * gs;
+
+    -- Draw centered text via imtext
+    local drawList = GetUIDrawList();
+    if drawList then
+        -- Yellow warning color in edit mode, white otherwise
+        local fontColor = settings.editMode and 0xFFFFFF00 or 0xFFFFFFFF;
+        local textW = imtext.Measure(comboText, fontSize);
+        local drawX = centerX + offsetX - (textW / 2);
+        local drawY = topY + offsetY;
+        imtext.Draw(drawList, comboText, drawX, drawY, fontColor, fontSize);
     end
 end
 
--- Infinity icon for Global [G] (universal) crossbar palette scope
+-- Draw palette name below crossbar (e.g., "Stuns (2/5)"). The index/total count is
+-- restricted to ENABLED palettes (RB-cycle filtered) and is hidden entirely when there
+-- is only one cycleable palette (a 1/1 badge is just noise). For universal [G] scope,
+-- routes through GetCrossbarPaletteLabelIndexAndTotal which uses the universal cycle list
+-- instead of the per-job rows. (Lookup is microseconds at typical 1-10 palette counts; a
+-- per-frame label cache was tried and reverted because it could go stale on PaletteManager
+-- CRUD without a roster-version invalidation hook.)
+local function DrawPaletteName(centerX, bottomY, settings)
+    if not settings.showPaletteName then return; end
+
+    local paletteName = palette.GetActivePaletteForCombo('L2');
+    if not paletteName then return; end
+
+    local jobId = data.jobId or 1;
+    local subjobId = data.subjobId or 0;
+    local index, total = palette.GetCrossbarPaletteLabelIndexAndTotal(paletteName, jobId, subjobId);
+
+    local displayText;
+    if index and total and total > 1 then
+        displayText = string.format('%s (%d/%d)', paletteName, index, total);
+    else
+        displayText = paletteName;
+    end
+    local gs = (gConfig and gConfig.globalScale) or 1.0;
+    local fontSize = (settings.paletteNameFontSize or 10) * gs;
+    local offsetX = (settings.paletteNameOffsetX or 0) * gs;
+    local offsetY = (settings.paletteNameOffsetY or 0) * gs;
+
+    local drawList = GetUIDrawList();
+    if drawList then
+        local textW = imtext.Measure(displayText, fontSize);
+        local drawX = centerX + offsetX - (textW / 2);
+        local drawY = bottomY + offsetY;
+        imtext.Draw(drawList, displayText, drawX, drawY, 0xFFFFFFFF, fontSize);
+    end
+end
+
+-- ============================================
+-- Palette scope icon (above the center divider)
+-- Shows the infinity glyph for Global/universal palettes, or the job icon for job-scoped.
+-- Lazily caches the infinity texture; the job-icon TextureManager has its own cache.
+-- ============================================
 local cachedInfinityPaletteTex = nil;
+
 local function GetInfinityPaletteIconTexture()
     if cachedInfinityPaletteTex and cachedInfinityPaletteTex.image then
         return cachedInfinityPaletteTex;
@@ -1470,36 +1422,29 @@ end
 
 local function GetPaletteJobIconThemeFromSettings(settings)
     local t = settings and settings.paletteJobIconTheme;
-    if t == 'Classic' or t == 'FFXI' or t == 'FFXIV-1' or t == 'ClassicFFXIV' then
+    if t == 'Classic' or t == 'FFXI' or t == 'FFXIV-1' then
         return t;
     end
     return 'Classic';
 end
 
--- When showPaletteScopeIcon is nil (legacy profiles), scope icon followed showPaletteName; explicit true/false overrides.
+-- When showPaletteScopeIcon is nil (legacy profiles), the scope icon follows showPaletteName;
+-- explicit true/false overrides. Keeps the icon visible by default for existing users without
+-- forcing them through the settings menu after the upgrade.
 local function ShouldShowPaletteScopeIcon(settings)
-    if not settings then
-        return false;
-    end
-    if settings.showPaletteScopeIcon == false then
-        return false;
-    end
-    if settings.showPaletteScopeIcon == true then
-        return true;
-    end
+    if not settings then return false; end
+    if settings.showPaletteScopeIcon == false then return false; end
+    if settings.showPaletteScopeIcon == true then return true; end
     return settings.showPaletteName == true;
 end
 
--- Scope icon (infinity = Global [G], else main job): centered above the center divider line
+-- Draws the scope marker (infinity for Global / universal, job icon otherwise) centred just
+-- above the divider. Only fires when a palette is actually active for the L2 group.
 local function DrawPaletteScopeIconAboveDivider(dividerX, dividerTopY, settings, drawList)
-    if not ShouldShowPaletteScopeIcon(settings) or not drawList then
-        return;
-    end
+    if not ShouldShowPaletteScopeIcon(settings) or not drawList then return; end
 
     local paletteName = palette.GetActivePaletteForCombo('L2');
-    if not paletteName then
-        return;
-    end
+    if not paletteName then return; end
 
     local jobId = data.jobId or 1;
     local iconTex;
@@ -1509,15 +1454,12 @@ local function DrawPaletteScopeIconAboveDivider(dividerX, dividerTopY, settings,
         iconTex = TextureManager.getJobIcon(jobId, GetPaletteJobIconThemeFromSettings(settings));
     end
 
-    if not iconTex or not iconTex.image then
-        return;
-    end
+    if not iconTex or not iconTex.image then return; end
 
     local iconPtr = tonumber(ffi.cast('uint32_t', iconTex.image));
-    if not iconPtr then
-        return;
-    end
+    if not iconPtr then return; end
 
+    -- Size: explicit slider override (8..64 px) or auto-derive from palette-name font size.
     local iconSize;
     local explicitSize = tonumber(settings.paletteScopeIconSize);
     if explicitSize and explicitSize > 0 then
@@ -1528,13 +1470,10 @@ local function DrawPaletteScopeIconAboveDivider(dividerX, dividerTopY, settings,
         iconSize = math.floor(iconSize * 1.50 + 0.5);
     end
     local gapAboveLine = 3;
-    local scopeLiftY = tonumber(settings.paletteScopeIconOffsetY);
-    if not scopeLiftY then
-        scopeLiftY = 6;
-    end
-    -- Fixed gap between combo text ("L2"/"R2" at window top) and this icon; tune lift with the slider above.
+    local scopeLiftY = tonumber(settings.paletteScopeIconOffsetY) or 6;
+    -- Clearance above the L2 / R2 combo-text strip at the top of the window.
     local clearanceAboveComboText = 6;
-    -- Horizontally align with palette name offsets; sit just above the divider’s top endpoint
+    -- Horizontally align with palette-name X offset so the icon stacks with the name.
     local iconCenterX = dividerX + (settings.paletteNameOffsetX or 0);
     local iconTopY = dividerTopY - gapAboveLine - iconSize - scopeLiftY - clearanceAboveComboText;
     local leftX = iconCenterX - iconSize / 2;
@@ -1549,212 +1488,292 @@ local function DrawPaletteScopeIconAboveDivider(dividerX, dividerTopY, settings,
     );
 end
 
--- Draw palette name below crossbar (e.g., "Stuns (2/5)") — text only; scope icon is above the divider
-local function DrawPaletteName(centerX, bottomY, settings)
-    if not settings.showPaletteName then
-        if state.paletteNameFont then
-            state.paletteNameFont:set_visible(false);
-        end
-        return;
-    end
-
-    local paletteName = palette.GetActivePaletteForCombo('L2');
-    if not paletteName then
-        if state.paletteNameFont then
-            state.paletteNameFont:set_visible(false);
-        end
-        return;
-    end
-
-    local jobId = data.jobId or 1;
-    local subjobId = data.subjobId or 0;
-    local index, total = palette.GetCrossbarPaletteLabelIndexAndTotal(paletteName, jobId, subjobId);
-
-    local displayText;
-    if index and total and total > 0 then
-        displayText = string.format('%s (%d/%d)', paletteName, index, total);
-    else
-        displayText = paletteName;
-    end
-    local fontSize = settings.paletteNameFontSize or 10;
-    local offsetX = settings.paletteNameOffsetX or 0;
-    local offsetY = settings.paletteNameOffsetY or 0;
-    local anchorX = centerX + offsetX;
-    local anchorY = bottomY + offsetY;
-
-    if state.paletteNameFont then
-        state.paletteNameFont:set_font_height(fontSize);
-        state.paletteNameFont:set_text(displayText);
-        state.paletteNameFont:set_position_x(anchorX);
-        state.paletteNameFont:set_position_y(anchorY);
-        state.paletteNameFont:set_visible(true);
-    end
-end
-
--- Shared helper to draw one side (left or right) of the crossbar.
--- `side`: 'L2' or 'R2' — selects slot positions and center icon placement.
-local function DrawSide(side, mode, groupX, groupY, slotSize, settings, isActive, pressedSlot, showPressed, animOpacity, drawList, yOffset, targetServerId, skillchainEnabled, activeCombo)
+-- Helper to draw just the left side. `activeCombo` is threaded through so DrawSlot's dim
+-- policy can apply Ferris's "stronger dim on the inactive half while a trigger is held"
+-- behavior (settings.inactiveSideWhileTriggerDim, default 0.15) — without it the inactive
+-- half just gets settings.inactiveSlotDim (default 0.5) like 1.7.5/early-1.8.0.
+local function DrawLeftSide(mode, groupX, groupY, slotSize, settings, isActive, pressedSlot, showPressed, animOpacity, drawList, yOffset, targetServerId, skillchainEnabled, activeCombo, magicBurstEnabled)
     animOpacity = animOpacity or 1.0;
     yOffset = yOffset or 0;
 
+    -- Draw left side slots
     for slotIndex = 1, SLOTS_PER_SIDE do
-        local slotX, slotY = GetSlotPositionInWindow(side, slotIndex, state.windowX, state.windowY, settings);
+        local slotX, slotY = GetSlotPositionInWindow('L2', slotIndex, state.windowX, state.windowY, settings);
         local isPressed = showPressed and pressedSlot == slotIndex;
+        -- Resolve slotData ONCE per slot so both prediction paths (skillchain + magic burst)
+        -- share the same fetch; previously the SC path re-fetched per branch. Cheap either
+        -- way, but cleaner now that two features need the same row.
+        local slotData = (skillchainEnabled or magicBurstEnabled) and data.GetCrossbarSlotData(mode, slotIndex) or nil;
+
+        -- Skillchain prediction: matches display.lua's coverage so the crossbar lights up the
+        -- same WS / Blood Pact / macro slots the keyboard hotbar does. Bloodpact slots use the
+        -- separate name->attributes map in skillchain.lua (bloodPactResonationMap); macro slots
+        -- run through macroparse to extract the primary /ws or /pet line and then route to the
+        -- matching predictor. Without the pet/macro branches, SMN ability slots and any /pet or
+        -- /ws macro would never get a skillchain icon overlay on the crossbar.
         local slotSkillchainName = nil;
-        if skillchainEnabled then
-            local slotData = data.GetCrossbarSlotData(mode, slotIndex);
-            if slotData then
-                if slotData.actionType == 'ws' and slotData.action then
-                    slotSkillchainName = skillchain.GetSkillchainForSlot(targetServerId, slotData.action);
-                elseif slotData.actionType == 'pet' and slotData.action then
-                    slotSkillchainName = skillchain.GetSkillchainForBloodPact(targetServerId, slotData.action);
-                elseif slotData.actionType == 'macro' and slotData.macroText then
-                    local primaryType, primaryName = macroparse.GetMacroPrimaryAndJaBadge(slotData.macroText);
-                    if primaryType == 'ws' and primaryName then
-                        slotSkillchainName = skillchain.GetSkillchainForSlot(targetServerId, primaryName);
-                    elseif primaryType == 'pet' and primaryName then
-                        slotSkillchainName = skillchain.GetSkillchainForBloodPact(targetServerId, primaryName);
-                    end
+        if skillchainEnabled and slotData and slotData.action then
+            if slotData.actionType == 'ws' then
+                slotSkillchainName = skillchain.GetSkillchainForSlot(targetServerId, slotData.action);
+            elseif slotData.actionType == 'pet' then
+                slotSkillchainName = skillchain.GetSkillchainForBloodPact(targetServerId, slotData.action);
+            elseif slotData.actionType == 'macro' and slotData.macroText then
+                local primaryType, primaryName = macroparse.GetMacroPrimaryAndJaBadge(slotData.macroText);
+                if primaryType == 'ws' and primaryName then
+                    slotSkillchainName = skillchain.GetSkillchainForSlot(targetServerId, primaryName);
+                elseif primaryType == 'pet' and primaryName then
+                    slotSkillchainName = skillchain.GetSkillchainForBloodPact(targetServerId, primaryName);
                 end
             end
         end
-        DrawSlot(mode, slotIndex, slotX, slotY, slotSize, settings, isActive, isPressed, animOpacity, yOffset, slotSkillchainName, activeCombo);
+        -- Magic Burst prediction: spells / magical pact rages / /ma|/pet-primary macros. The
+        -- single GetMagicBurstForSlot call internally routes by actionType + (for macros) the
+        -- macroparse primary line — mirrors the dispatch pattern used by display.lua.
+        local slotMagicBurstName = nil;
+        if magicBurstEnabled and slotData then
+            slotMagicBurstName = skillchain.GetMagicBurstForSlot(targetServerId, slotData);
+        end
+        DrawSlot(mode, slotIndex, slotX, slotY, slotSize, settings, isActive, isPressed, animOpacity, yOffset, slotSkillchainName, activeCombo, nil, slotMagicBurstName);
     end
 
-    DrawDiamondCenterIcons(mode, 'dpad', groupX, groupY, settings, isActive);
-    DrawDiamondCenterIcons(mode, 'face', groupX, groupY, settings, isActive);
-
+    -- Draw center button icons via ImGui (if visible enough)
     if drawList and settings.showButtonIcons and animOpacity > 0.1 then
         local drawY = groupY + yOffset;
-        DrawDiamondCenterIconsImGui('dpad', groupX, drawY, settings, isActive, drawList, animOpacity, activeCombo);
-        DrawDiamondCenterIconsImGui('face', groupX, drawY, settings, isActive, drawList, animOpacity, activeCombo);
+        DrawDiamondCenterIconsImGui('dpad', groupX, drawY, settings, isActive, drawList, animOpacity);
+        DrawDiamondCenterIconsImGui('face', groupX, drawY, settings, isActive, drawList, animOpacity);
     end
 end
 
+-- Helper to draw just the right side. See DrawLeftSide above for the rationale on the
+-- trailing activeCombo / magicBurstEnabled parameters.
+local function DrawRightSide(mode, groupX, groupY, slotSize, settings, isActive, pressedSlot, showPressed, animOpacity, drawList, yOffset, targetServerId, skillchainEnabled, activeCombo, magicBurstEnabled)
+    animOpacity = animOpacity or 1.0;
+    yOffset = yOffset or 0;
+
+    -- Draw right side slots
+    for slotIndex = 1, SLOTS_PER_SIDE do
+        local slotX, slotY = GetSlotPositionInWindow('R2', slotIndex, state.windowX, state.windowY, settings);
+        local isPressed = showPressed and pressedSlot == slotIndex;
+        -- See DrawLeftSide for slotData / SC / MB routing rationale (identical logic).
+        local slotData = (skillchainEnabled or magicBurstEnabled) and data.GetCrossbarSlotData(mode, slotIndex) or nil;
+
+        local slotSkillchainName = nil;
+        if skillchainEnabled and slotData and slotData.action then
+            if slotData.actionType == 'ws' then
+                slotSkillchainName = skillchain.GetSkillchainForSlot(targetServerId, slotData.action);
+            elseif slotData.actionType == 'pet' then
+                slotSkillchainName = skillchain.GetSkillchainForBloodPact(targetServerId, slotData.action);
+            elseif slotData.actionType == 'macro' and slotData.macroText then
+                local primaryType, primaryName = macroparse.GetMacroPrimaryAndJaBadge(slotData.macroText);
+                if primaryType == 'ws' and primaryName then
+                    slotSkillchainName = skillchain.GetSkillchainForSlot(targetServerId, primaryName);
+                elseif primaryType == 'pet' and primaryName then
+                    slotSkillchainName = skillchain.GetSkillchainForBloodPact(targetServerId, primaryName);
+                end
+            end
+        end
+        local slotMagicBurstName = nil;
+        if magicBurstEnabled and slotData then
+            slotMagicBurstName = skillchain.GetMagicBurstForSlot(targetServerId, slotData);
+        end
+        DrawSlot(mode, slotIndex, slotX, slotY, slotSize, settings, isActive, isPressed, animOpacity, yOffset, slotSkillchainName, activeCombo, nil, slotMagicBurstName);
+    end
+
+    -- Draw center button icons via ImGui (if visible enough)
+    if drawList and settings.showButtonIcons and animOpacity > 0.1 then
+        local drawY = groupY + yOffset;
+        DrawDiamondCenterIconsImGui('dpad', groupX, drawY, settings, isActive, drawList, animOpacity);
+        DrawDiamondCenterIconsImGui('face', groupX, drawY, settings, isActive, drawList, animOpacity);
+    end
+end
+
+-- Helper to draw a complete bar set (both sides) - used for non-animated drawing.
+-- activeCombo flows from M.DrawWindow down to DrawSlot for the trigger-held dim policy.
 local function DrawBarSet(leftMode, rightMode, leftGroupX, leftGroupY, rightGroupX, rightGroupY,
                           slotSize, settings, leftActive, rightActive, pressedSlot,
-                          leftShowPressed, rightShowPressed, animOpacity, drawList, yOffset, targetServerId, skillchainEnabled, activeCombo)
-    DrawSide('L2', leftMode, leftGroupX, leftGroupY, slotSize, settings, leftActive, pressedSlot, leftShowPressed, animOpacity, drawList, yOffset, targetServerId, skillchainEnabled, activeCombo);
-    DrawSide('R2', rightMode, rightGroupX, rightGroupY, slotSize, settings, rightActive, pressedSlot, rightShowPressed, animOpacity, drawList, yOffset, targetServerId, skillchainEnabled, activeCombo);
+                          leftShowPressed, rightShowPressed, animOpacity, drawList, yOffset, targetServerId, skillchainEnabled, activeCombo, magicBurstEnabled)
+    DrawLeftSide(leftMode, leftGroupX, leftGroupY, slotSize, settings, leftActive, pressedSlot, leftShowPressed, animOpacity, drawList, yOffset, targetServerId, skillchainEnabled, activeCombo, magicBurstEnabled);
+    DrawRightSide(rightMode, rightGroupX, rightGroupY, slotSize, settings, rightActive, pressedSlot, rightShowPressed, animOpacity, drawList, yOffset, targetServerId, skillchainEnabled, activeCombo, magicBurstEnabled);
 end
 
 -- ============================================
 -- Double-Tap Preview Windows
 -- ============================================
+-- Reference floating windows that mirror the L2x2 / R2x2 bars at user-configurable scale
+-- and opacity. Rendered as independent ImGui windows AFTER the main crossbar so they have
+-- their own position/draw list (no shared primitives, no z-fighting). Drawn non-interactive
+-- (suppressActionOnClick) — the previews are visual reference only; actual slot activation
+-- still routes through the main bar's controller path.
 
--- Return a shallow copy of settings with all layout-affecting fields scaled.
+-- Return a shallow copy of settings with all layout-affecting fields scaled. Preserves the
+-- caller's settings unchanged so the main bar keeps its own layout numbers.
+--
+-- Result is cached on a (settings ref, scale, layout-key signature) tuple — the full
+-- shallow-copy is the dominant cost when the preview is on (8 slots × 2 windows × scaled
+-- settings every frame). Invalidates only when the caller passes a new settings table OR
+-- changes one of the geometry/scale inputs. This avoids the per-frame table-copy churn
+-- without going stale on slider drags (signature changes immediately).
+local previewSettingsCache = {
+    settingsRef = nil,
+    scale       = nil,
+    signature   = nil,
+    result      = nil,
+};
+
 local function MakePreviewSettings(settings, scale)
+    -- Cheap signature: only the fields MakePreviewSettings actually reads. Keep this in
+    -- sync with the scaled fields below — additions need a sig entry or the cache goes stale.
+    local sig = string.format('%s|%s|%s|%s|%s|%s|%s|%s|%s',
+        tostring(settings.slotSize), tostring(settings.slotGapV), tostring(settings.slotGapH),
+        tostring(settings.diamondSpacing), tostring(settings.groupSpacing),
+        tostring(settings.buttonIconSize), tostring(settings.buttonIconGapH), tostring(settings.buttonIconGapV),
+        tostring(settings.triggerIconScale));
+
+    if previewSettingsCache.settingsRef == settings
+        and previewSettingsCache.scale == scale
+        and previewSettingsCache.signature == sig then
+        return previewSettingsCache.result;
+    end
+
     local s = {};
     for k, v in pairs(settings) do s[k] = v; end
-    s.slotSize       = math.max(8,  math.floor((settings.slotSize       or 40) * scale));
-    s.slotGapV       = math.max(1,  math.floor((settings.slotGapV       or 2)  * scale));
-    s.slotGapH       = math.max(1,  math.floor((settings.slotGapH       or 2)  * scale));
-    s.diamondSpacing = math.max(2,  math.floor((settings.diamondSpacing  or 16) * scale));
-    s.groupSpacing   = math.max(4,  math.floor((settings.groupSpacing    or 24) * scale));
-    s.buttonIconSize = math.max(4,  math.floor((settings.buttonIconSize  or 24) * scale));
-    s.buttonIconGapH = math.max(1,  math.floor((settings.buttonIconGapH  or 2)  * scale));
-    s.buttonIconGapV = math.max(1,  math.floor((settings.buttonIconGapV  or 2)  * scale));
+    s.slotSize       = math.max(8, math.floor((settings.slotSize       or 40) * scale));
+    s.slotGapV       = math.max(1, math.floor((settings.slotGapV       or 2)  * scale));
+    s.slotGapH       = math.max(1, math.floor((settings.slotGapH       or 2)  * scale));
+    s.diamondSpacing = math.max(2, math.floor((settings.diamondSpacing or 16) * scale));
+    s.groupSpacing   = math.max(4, math.floor((settings.groupSpacing   or 24) * scale));
+    s.buttonIconSize = math.max(4, math.floor((settings.buttonIconSize or 24) * scale));
+    s.buttonIconGapH = math.max(1, math.floor((settings.buttonIconGapH or 2)  * scale));
+    s.buttonIconGapV = math.max(1, math.floor((settings.buttonIconGapV or 2)  * scale));
     s.triggerIconScale = (settings.triggerIconScale or 1.0) * scale;
+
+    previewSettingsCache.settingsRef = settings;
+    previewSettingsCache.scale       = scale;
+    previewSettingsCache.signature   = sig;
+    previewSettingsCache.result      = s;
     return s;
 end
 
--- Draw one side of a double-tap preview using ImGui-only rendering (no D3D primitives, non-interactive).
--- winX/winY   : top-left of the preview ImGui window (slot grid origin).
--- side        : always 'L2' for single-group preview windows (slots start at window left).
--- mode        : crossbar storage mode string ('L2x2', 'R2x2', 'L2', 'R2', …) whose data to render.
--- baseOp      : base opacity for the slot backgrounds (NOT dimmed — keeps slot frames visible).
--- dimFactor   : 0–1 multiplier applied only to icon/text rendering (1.0 = active, dimFact = inactive).
---               Mirrors the D3D crossbar: slot.png alpha stays constant; icon RGB/alpha dims.
-local function DrawPreviewSide(winX, winY, windowKey, side, mode, ps, baseOp, dimFactor, drawList, activeCombo)
-    local slotSize    = ps.slotSize or 40;
-    local contentOp   = baseOp * dimFactor;   -- opacity for icons, cooldowns, corner text
+-- Draw one side of a double-tap preview using ImGui-only rendering (non-interactive).
+-- winX/winY    : top-left of the preview ImGui window (slot grid origin).
+-- side         : always 'L2' for single-group preview windows (slots start at window left).
+-- mode         : crossbar storage mode string ('L2x2', 'R2x2', 'L2', 'R2', etc.) whose slots to render.
+-- baseOp       : base opacity for the slot backgrounds (NOT dimmed) so frames stay visible.
+-- dimFactor    : 0-1 multiplier applied to icon/text rendering (mirrors main bar dim policy).
+-- targetServerId / skillchainEnabled / magicBurstEnabled: same per-slot SC/MB resolution
+--                inputs used by the main DrawLeftSide/DrawRightSide path. Letting the preview
+--                share them keeps the highlight calculus identical between live and preview
+--                (a slot that lights up on the live bar lights up on its preview).
+local function DrawPreviewSide(winX, winY, windowKey, side, mode, ps, baseOp, dimFactor, drawList, activeCombo, targetServerId, skillchainEnabled, magicBurstEnabled)
+    local slotSize  = ps.slotSize or 40;
+    local contentOp = baseOp * dimFactor;
 
-    -- Pre-compute slot background colour once for all 8 slots.
-    -- slotrenderer's built-in bg path requires a D3D slotPrim; we have none, so draw manually.
-    -- IMPORTANT: use baseOp (not contentOp) so the slot frames remain visible when inactive,
-    -- matching the D3D crossbar where slot.png alpha is constant while icon brightness dims.
-    local bgArgb  = ps.slotBackgroundColor or 0x55000000;  -- ARGB format (Ashita convention)
+    -- Slot background (flat rounded rect). slotrenderer's built-in bg path requires a D3D
+    -- slot primitive (we have none in preview), so paint it manually with baseOp so the
+    -- frame stays visible while icons dim with contentOp.
+    local bgArgb = ps.slotBackgroundColor or 0x55000000;
     local bgA_raw = bit.rshift(bit.band(bgArgb, 0xFF000000), 24) / 255;
-    -- Guarantee the slot BG is visible in the preview (D3D slot.png is ~opaque; boost if setting is low).
-    local bgA     = math.max(bgA_raw, 0.55) * baseOp;
-    local bgR     = bit.rshift(bit.band(bgArgb, 0x00FF0000), 16) / 255;
-    local bgG     = bit.rshift(bit.band(bgArgb, 0x0000FF00),  8) / 255;
-    local bgB     = bit.band(bgArgb, 0x000000FF) / 255;
+    local bgA = math.max(bgA_raw, 0.55) * baseOp;
+    local bgR = bit.rshift(bit.band(bgArgb, 0x00FF0000), 16) / 255;
+    local bgG = bit.rshift(bit.band(bgArgb, 0x0000FF00), 8) / 255;
+    local bgB = bit.band(bgArgb, 0x000000FF) / 255;
     local cornerR = math.max(4, math.min(10, math.floor(slotSize * 0.125 + 0.5)));
-    local bgU32   = imgui.GetColorU32({ bgR, bgG, bgB, bgA });
+    local bgU32 = imgui.GetColorU32({ bgR, bgG, bgB, bgA });
 
     for slotIndex = 1, SLOTS_PER_SIDE do
         local slotX, slotY = GetSlotPositionInWindow(side, slotIndex, winX, winY, ps);
 
-        -- 1. Slot background (flat rounded rect — always at baseOp so frames stay visible).
         if drawList then
             drawList:AddRectFilled({ slotX, slotY }, { slotX + slotSize, slotY + slotSize }, bgU32, cornerR);
         end
 
-        -- 2. Icon + cooldown overlay + corner text via ImGui (forceImGuiIcon bypasses D3D icon path).
-        --    animOpacity = contentOp so icons/text dim with dimFactor, matching D3D dimming behaviour.
         local slotData = data.GetCrossbarSlotData(mode, slotIndex);
-        local icon     = GetCachedCrossbarIcon(mode, slotIndex, slotData);
-        slotrenderer.DrawSlot({}, {
+        local icon = GetCachedCrossbarIcon(mode, slotIndex, slotData);
+
+        -- Per-slot skillchain + magic burst resolution — identical dispatch to DrawLeftSide
+        -- so a slot that highlights on the live crossbar highlights on its preview window
+        -- too. Without this the preview would silently omit both borders, hiding useful
+        -- "you could chain/MB from the other bar" cues exactly when the player is deciding
+        -- whether to commit to a double-tap.
+        local slotSkillchainName = nil;
+        if skillchainEnabled and slotData and slotData.action then
+            if slotData.actionType == 'ws' then
+                slotSkillchainName = skillchain.GetSkillchainForSlot(targetServerId, slotData.action);
+            elseif slotData.actionType == 'pet' then
+                slotSkillchainName = skillchain.GetSkillchainForBloodPact(targetServerId, slotData.action);
+            elseif slotData.actionType == 'macro' and slotData.macroText then
+                local primaryType, primaryName = macroparse.GetMacroPrimaryAndJaBadge(slotData.macroText);
+                if primaryType == 'ws' and primaryName then
+                    slotSkillchainName = skillchain.GetSkillchainForSlot(targetServerId, primaryName);
+                elseif primaryType == 'pet' and primaryName then
+                    slotSkillchainName = skillchain.GetSkillchainForBloodPact(targetServerId, primaryName);
+                end
+            end
+        end
+        local slotMagicBurstName = nil;
+        if magicBurstEnabled and slotData then
+            slotMagicBurstName = skillchain.GetMagicBurstForSlot(targetServerId, slotData);
+        end
+
+        slotrenderer.DrawSlot({
             x    = slotX,
             y    = slotY,
             size = slotSize,
             windowName = windowKey,
             bind = slotData,
             icon = icon,
-            slotBgColor  = 0x00000000,          -- fully transparent — bg already drawn above
-            slotOpacity  = 1.0,
-            dimFactor    = 1.0,
-            animOpacity  = contentOp,
-            isPressed    = false,
+            slotBgColor = 0x00000000,
+            slotOpacity = 1.0,
+            dimFactor   = 1.0,
+            animOpacity = contentOp,
+            isPressed   = false,
             iconPressScale = 1.0,
-            showMpCost       = ps.showMpCost ~= false,
-            mpCostFontSize   = ps.mpCostFontSize or 10,
-            mpCostFontColor  = ps.mpCostFontColor or 0xFFD4FF97,
-            mpCostNoMpColor  = ps.mpCostNoMpColor or 0xFFFF4444,
-            mpCostOffsetX    = ps.mpCostOffsetX or 0,
-            mpCostOffsetY    = ps.mpCostOffsetY or 0,
-            showQuantity       = ps.showQuantity ~= false,
-            quantityFontSize   = ps.quantityFontSize or 10,
-            quantityFontColor  = ps.quantityFontColor or 0xFFFFFFFF,
-            quantityOffsetX    = ps.quantityOffsetX or 0,
-            quantityOffsetY    = ps.quantityOffsetY or 0,
-            showLabel              = false,
-            recastTimerFontSize    = ps.recastTimerFontSize or 11,
-            recastTimerFontColor   = ps.recastTimerFontColor or 0xFFFFFFFF,
-            flashCooldownUnder5    = ps.flashCooldownUnder5 or false,
-            useHHMMCooldownFormat  = ps.useHHMMCooldownFormat or false,
-            buttonId               = string.format('##dtprev_%s_%s_%d', windowKey, mode, slotIndex),
-            suppressActionOnClick  = true,
-            forceImGuiIcon         = true,
+            -- MP cost + quantity are intentionally OFF on the double-tap preview regardless of
+            -- the user's main-bar settings: the preview is a transient "what's on the other
+            -- bar" overlay, not an action-resolution surface, so a player glancing at it just
+            -- wants the icon + cooldown to decide if the next press is worth it. Showing MP /
+            -- charges duplicates the info on the live bar and crowds an already-small preview.
+            -- Cooldowns are kept (recastTimer* + flashCooldownUnder5) — they ARE useful here
+            -- because the preview's whole purpose is "should I commit to this bar".
+            showMpCost = false,
+            showQuantity = false,
+            showLabel = false,
+            recastTimerFontSize   = ps.recastTimerFontSize or 11,
+            recastTimerFontColor  = ps.recastTimerFontColor or 0xFFFFFFFF,
+            flashCooldownUnder5   = ps.flashCooldownUnder5 or false,
+            useHHMMCooldownFormat = ps.useHHMMCooldownFormat or false,
+            -- Skillchain + Magic Burst highlights. Colors fall back to the live-bar defaults
+            -- so the preview matches the main bar without requiring its own settings keys.
+            skillchainName  = slotSkillchainName,
+            skillchainColor = gConfig.hotbarGlobal.skillchainHighlightColor or 0xFFD4AA44,
+            magicBurstName  = slotMagicBurstName,
+            magicBurstColor = gConfig.hotbarGlobal.magicBurstHighlightColor or 0xFF44D4FF,
+            buttonId              = string.format('##dtprev_%s_%s_%d', windowKey, mode, slotIndex),
+            suppressActionOnClick = true,
+            forceImGuiIcon        = true,
             drawCornerTextForeground = true,
         });
     end
 
-    -- 3. Centre button-label icons (dpad/face glyphs) — use contentOp so they dim with icons.
-    -- side is always 'L2' for single-group windows, so gx = winX (no offset).
     if drawList and ps.showButtonIcons and contentOp > 0.05 then
-        DrawDiamondCenterIconsImGui('dpad', winX, winY, ps, true, drawList, contentOp, activeCombo);
-        DrawDiamondCenterIconsImGui('face', winX, winY, ps, true, drawList, contentOp, activeCombo);
+        DrawDiamondCenterIconsImGui('dpad', winX, winY, ps, true, drawList, contentOp);
+        DrawDiamondCenterIconsImGui('face', winX, winY, ps, true, drawList, contentOp);
     end
 end
 
--- Draw one double-tap preview window (L2x2 or R2x2).
--- windowKey   : unique ImGui window name / position-save key
--- mode        : crossbar storage mode string for the 8 slots to display (e.g. 'L2x2', 'R2x2', 'L2', 'R2')
--- ps          : scaled settings table (from MakePreviewSettings)
--- baseOp      : base opacity (user slider × visibilityOpacity); applied to slot backgrounds always.
--- dimFactor   : 0–1 content dim (1.0 = active/undimmed, inactiveSideWhileTriggerDim = inactive).
--- activeCombo : current controller combo (COMBO_MODES.*) for centre-icon dimming
--- settings    : raw crossbar settings (for doubleTapPreviewLocked)
-local function DrawDoubleTapPreviewWindow(windowKey, mode, ps, baseOp, dimFactor, activeCombo, settings)
+-- Draw one double-tap preview window (L2x2 or R2x2 reference).
+-- windowKey : unique ImGui window name and persisted-position key.
+-- mode      : crossbar storage mode for the 8 slots displayed (e.g. 'L2x2', 'R2x2', 'L2', 'R2').
+-- ps        : scaled settings table (from MakePreviewSettings).
+-- baseOp    : base opacity (user slider * visibilityOpacity).
+-- dimFactor : 0-1 content dim (1.0 = at rest, inactiveSideWhileTriggerDim while any trigger held).
+-- settings  : raw crossbar settings (used for doubleTapPreviewLocked move-anchor gating).
+local function DrawDoubleTapPreviewWindow(windowKey, mode, ps, baseOp, dimFactor, activeCombo, settings, targetServerId, skillchainEnabled, magicBurstEnabled)
     local slotSize = ps.slotSize or 40;
-    local gw, gh   = CalculateGroupDimensions(slotSize, ps.slotGapV or 2, ps.slotGapH or 2, ps.diamondSpacing or 16);
-    -- Single group (8 slots only — L2x2 preview shows left side, R2x2 shows right side).
-    local totalW   = gw;
-    local totalH   = gh;
+    local gw, gh = CalculateGroupDimensions(slotSize, ps.slotGapV or 2, ps.slotGapH or 2, ps.diamondSpacing or 16);
+    local totalW = gw;
+    local totalH = gh;
 
-    -- Restore saved position (ImGuiCond_Always so the window doesn't drift on its own).
     local savedPos = gConfig.windowPositions and gConfig.windowPositions[windowKey];
     if savedPos then
         imgui.SetNextWindowPos({savedPos.x, savedPos.y}, ImGuiCond_Always);
@@ -1763,9 +1782,9 @@ local function DrawDoubleTapPreviewWindow(windowKey, mode, ps, baseOp, dimFactor
     end
     imgui.SetNextWindowSize({totalW, totalH}, ImGuiCond_Always);
 
-    -- Custom flags: preview windows intentionally omit NoBringToFrontOnFocus so ImGui keeps
-    -- them in front of the main crossbar window (which always has that flag set).
-    -- NoResize (not AlwaysAutoResize) so the explicit SetNextWindowSize is always honoured.
+    -- Preview windows intentionally omit NoBringToFrontOnFocus so they stay layered above the
+    -- main crossbar (which has that flag set). NoMove + the move anchor below gives us
+    -- explicit positioning control without ImGui drifting the window on focus.
     local flags = bit.bor(
         ImGuiWindowFlags_NoDecoration,
         ImGuiWindowFlags_NoResize,
@@ -1773,31 +1792,30 @@ local function DrawDoubleTapPreviewWindow(windowKey, mode, ps, baseOp, dimFactor
         ImGuiWindowFlags_NoNav,
         ImGuiWindowFlags_NoBackground,
         ImGuiWindowFlags_NoDocking,
-        ImGuiWindowFlags_NoMove       -- position managed by the move anchor below
+        ImGuiWindowFlags_NoMove
     );
 
     -- Zero window padding so the draw list clip rect matches the window bounds exactly.
-    -- Without this the default 8 px padding clips slots at the left/right edges.
+    -- Without this the default 8 px padding clips slots at the left/right edges (same fix
+    -- that landed for the main crossbar window in the previous smoke-test pass).
     imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
     local didBegin = imgui.Begin(windowKey, true, flags);
     imgui.PopStyleVar();
 
     if didBegin then
         local wX, wY = imgui.GetWindowPos();
-
-        -- Persist position whenever the window renders (anchor drag updates via DrawMoveAnchor below).
         if not gConfig.windowPositions then gConfig.windowPositions = {}; end
         if savedPos == nil then
             gConfig.windowPositions[windowKey] = {x = wX, y = wY};
         end
 
         local dl = imgui.GetWindowDrawList();
-        -- Always 'L2' side so slots start at window-left with no offset (single-group window).
-        DrawPreviewSide(wX, wY, windowKey, 'L2', mode, ps, baseOp, dimFactor, dl, activeCombo);
+        DrawPreviewSide(wX, wY, windowKey, 'L2', mode, ps, baseOp, dimFactor, dl, activeCombo, targetServerId, skillchainEnabled, magicBurstEnabled);
     end
     imgui.End();
 
-    -- Move anchor centred above the preview — uses its own lock, independent of the main crossbar.
+    -- Move anchor: independent lock so previews can be repositioned without unlocking the
+    -- main crossbar (and vice versa).
     local previewLocked = settings and settings.doubleTapPreviewLocked;
     if not previewLocked then
         local pos = gConfig.windowPositions and gConfig.windowPositions[windowKey];
@@ -1818,61 +1836,51 @@ end
 function M.DrawWindow(settings, moduleSettings)
     if not state.initialized then return; end
 
-    -- Update recast timers once per frame
-    recast.Update();
-
-    -- Ability/WS lists for IsActionAvailable (job dropdowns use same cache)
+    -- Warm playerdata caches even when keyboard hotbars are disabled. Cheap on cache hit
+    -- (signature compare against job/level/equip ids), only does the heavy ability/WS scan
+    -- when the signature changes. See the require-site comment for the user-visible bug
+    -- this prevents (all JA/WS slots reading as unavailable on crossbar-only setups).
     playerdata.RefreshCachedLists(data);
 
-    local slotSize = settings.slotSize or 48;
+    local gs = (gConfig and gConfig.globalScale) or 1.0;
+    local slotSize = (settings.slotSize or 48) * gs;
+    local slotGapV = (settings.slotGapV or 4) * gs;
+    local slotGapH = (settings.slotGapH or 4) * gs;
+    local diamondSpacing = (settings.diamondSpacing or 20) * gs;
+    local groupSpacing = (settings.groupSpacing or 40) * gs;
 
-    -- Get current combo mode and pressed slot from controller (needed for layout + visibility)
+    -- Calculate dimensions using layout functions
+    local fullWidth, height, groupWidth, groupHeight = GetCrossbarDimensions(settings);
+    local width = fullWidth;
+
+    -- Get current combo mode and pressed slot from controller. Resolved BEFORE the window
+    -- size/position calls so the useSharedExpandedBar branch can shrink the window to a single
+    -- diamond and re-center it (a chord with useSharedExp on collapses to one 8-slot strip).
     local activeCombo = controller.GetActiveCombo();
     local pressedSlot = controller.GetPressedSlot();
 
-    -- Determine visibility for activeOnly display mode
-    local leftVisible, rightVisible, crossbarVisible = GetVisibilityState(activeCombo, settings);
-
-    -- Handle visibility animation for activeOnly mode
-    local visibilityOpacity = 1.0;
-    if settings.displayMode == 'activeOnly' then
-        local wasHidden = state.visibilityAnimation.wasHidden;
-        local isNowHidden = not crossbarVisible;
-
-        -- Start fade animation on visibility change
-        if isNowHidden ~= wasHidden then
-            StartVisibilityTransition(not isNowHidden);  -- fadeIn = true when becoming visible
-            state.visibilityAnimation.wasHidden = isNowHidden;
-        end
-
-        visibilityOpacity = UpdateVisibilityAnimation(settings);
-
-        -- Early return if fully hidden and animation complete
-        if visibilityOpacity <= 0.01 and not state.visibilityAnimation.active then
-            M.SetHidden(true);
-            return;
-        end
+    -- Edit Mode: Override activeCombo to show selected bar for setup
+    local isEditMode = settings.editMode;
+    if isEditMode then
+        local editBar = settings.editModeBar or 'L2';
+        activeCombo = editBar;
+        pressedSlot = nil;  -- Don't show pressed state in edit mode
     end
 
-    -- Dim the crossbar while a game menu is open so the player can see that
-    -- controller input is paused (inventory, safe, storage, etc.).
-    -- Only applied when the Disable Crossbar While In Menu option is enabled.
-    if gamestate.IsMenuOpen() and settings.crossbarDisableInMenu ~= false then
-        visibilityOpacity = visibilityOpacity * 0.35;
-    end
-    local menuDimFactor = visibilityOpacity;
-
-    -- Determine which bar set to display based on active combo
+    -- Determine which bar set to display based on active combo. expandedSide == 'center' is
+    -- the useSharedExpandedBar branch (chord collapses both diamonds into one centered strip).
     local targetLeftMode, targetRightMode, isExpanded, expandedSide = GetDisplayModes(activeCombo, settings);
 
-    local fullWidth, height, groupWidth, groupHeight = GetCrossbarDimensions(settings);
-    local width = fullWidth;
-    -- Shared expanded bar: one diamond width, centered on screen (window matches single 8-slot group)
+    -- useSharedExpandedBar special layout: shrink window to one diamond, re-center on screen X,
+    -- skip the right group draw + center divider/scope icon (they have no meaning when there's
+    -- only one diamond visible). Outside of chord, behaves identically to the standard 2-diamond
+    -- layout. exitingChordCenter catches the FIRST frame after the user releases the chord: we
+    -- restore the stashed wide-bar X so SaveCrossbarWindowSlotTopPosition doesn't persist the
+    -- narrow centered value.
     local hideRightForSharedCenter = (isExpanded and expandedSide == 'center');
     if hideRightForSharedCenter then
         width = groupWidth;
     end
-    -- First frame after chord: wide bar again — restore stashed X so SaveWindowPosition doesn't persist narrow-centered X
     local exitingChordCenter = state.wasSharedCenterChordLayout and (not hideRightForSharedCenter);
 
     -- Window flags (dummy window for positioning, like hotbar display.lua)
@@ -1895,20 +1903,27 @@ function M.DrawWindow(settings, moduleSettings)
     -- Check if anchor is currently being dragged - if so, force position
     local anchorDragging = drawing.IsAnchorDragging(windowName);
 
+    -- state.windowX / state.windowY track the SLOT GRID origin. ImGui's window must open
+    -- CROSSBAR_WINDOW_TOP_DECOR_PAD pixels higher so the decoration above the slots
+    -- (L2/R2 triggers, combo text, R1 cpal-anchor pulse) stays inside the window's
+    -- content rect and doesn't get clipped.
     if anchorDragging then
-        -- Use state position directly during drag for immediate response (state Y = slot grid top).
+        -- Use state position directly during drag for immediate response
         imgui.SetNextWindowPos({ state.windowX, state.windowY - CROSSBAR_WINDOW_TOP_DECOR_PAD }, ImGuiCond_Always);
     elseif hideRightForSharedCenter then
-        -- Single centered strip: align window to horizontal screen center (Y from saved / last wide bar)
+        -- Shared-center chord: force X to screen-center each frame so the narrow window reads as
+        -- the FFXIV-style single 8-slot strip (Y persists from the last wide-bar position).
         local io = imgui.GetIO();
         local screenW = (io and io.DisplaySize and io.DisplaySize.x) or 1920;
         local slotY = storedCrossbarPosY();
         imgui.SetNextWindowPos({ (screenW - width) * 0.5, slotY - CROSSBAR_WINDOW_TOP_DECOR_PAD }, ImGuiCond_Always);
     elseif exitingChordCenter and state.lastWideCrossbarWindowX ~= nil then
+        -- First frame after chord release: re-anchor to the wide-bar X we stashed before the
+        -- chord, otherwise the user-visible position would briefly snap to the centered narrow X.
         local slotY = storedCrossbarPosY();
         imgui.SetNextWindowPos({ state.lastWideCrossbarWindowX, slotY - CROSSBAR_WINDOW_TOP_DECOR_PAD }, ImGuiCond_Always);
     else
-        -- Apply saved position (once) or default; saved Y is slot-grid top (see SaveCrossbarWindowSlotTopPosition).
+        -- Apply saved position (once, slot-top -> window-top offset handled inside) or default
         local hasSaved = gConfig.windowPositions and gConfig.windowPositions[windowName];
 
         if hasSaved then
@@ -1920,6 +1935,39 @@ function M.DrawWindow(settings, moduleSettings)
 
     local bottomPad = GetCrossbarWindowBottomPad(settings);
     imgui.SetNextWindowSize({ width, height + CROSSBAR_WINDOW_TOP_DECOR_PAD + bottomPad }, ImGuiCond_Always);
+
+    -- Determine visibility for activeOnly display mode
+    local leftVisible, rightVisible, crossbarVisible = GetVisibilityState(activeCombo, settings, isEditMode);
+
+    -- Handle visibility animation for activeOnly mode
+    local visibilityOpacity = 1.0;
+    if settings.displayMode == 'activeOnly' and not isEditMode then
+        local wasHidden = state.visibilityAnimation.wasHidden;
+        local isNowHidden = not crossbarVisible;
+
+        -- Start fade animation on visibility change
+        if isNowHidden ~= wasHidden then
+            StartVisibilityTransition(not isNowHidden);  -- fadeIn = true when becoming visible
+            state.visibilityAnimation.wasHidden = isNowHidden;
+        end
+
+        visibilityOpacity = UpdateVisibilityAnimation(settings);
+
+        -- Early return if fully hidden and animation complete
+        if visibilityOpacity <= 0.01 and not state.visibilityAnimation.active then
+            M.SetHidden(true);
+            return;
+        end
+    end
+
+    -- Menu-open dim: when a blocking game menu is open and the user has "Disable Crossbar
+    -- While In Menu" enabled, controller.lua already stops routing input — we additionally
+    -- dim everything the crossbar draws so it visually reads as "paused" rather than just
+    -- silently unresponsive. visibilityOpacity propagates into every slot via the per-slot
+    -- animOpacity param plus the background / border / trigger / divider alpha scales below.
+    if gamestate.IsMenuOpen() and settings.crossbarDisableInMenu ~= false then
+        visibilityOpacity = visibilityOpacity * 0.35;
+    end
 
     -- Check if animations are disabled - if so, force complete any in-progress animation
     if settings.enableTransitionAnimations == false and state.animation.active then
@@ -1951,8 +1999,6 @@ function M.DrawWindow(settings, moduleSettings)
     -- Window position will be updated by ImGui's built-in dragging
     local windowPosX, windowPosY = state.windowX, state.windowY;
 
-    local groupSpacing = settings.groupSpacing or 40;
-
     -- Calculate group positions (needed before window for proper sizing)
     local leftGroupX = state.windowX;
     local leftGroupY = state.windowY;
@@ -1964,7 +2010,7 @@ function M.DrawWindow(settings, moduleSettings)
     if isExpanded then
         -- In expanded mode, only the expanded side is active, other side is dimmed
         if expandedSide == 'center' then
-            -- useSharedExpandedBar: single Shared strip; no right column
+            -- useSharedExpandedBar: only the left column is drawn (no right group exists this frame)
             leftActive = true;
             rightActive = false;
         elseif expandedSide == 'left' then
@@ -1992,11 +2038,16 @@ function M.DrawWindow(settings, moduleSettings)
     local leftShowPressed = leftActive and activeCombo ~= COMBO_MODES.NONE;
     local rightShowPressed = rightActive and activeCombo ~= COMBO_MODES.NONE;
 
-    -- Get target server ID for skillchain prediction (cached for all slots)
+    -- Get draw list for ImGui-based rendering (behind config when open)
+    local drawList = GetUIDrawList();
+
+    -- Get target server ID for skillchain / magic burst prediction (cached for all slots).
+    -- Both features key off the same target so a single resolve+cache covers everything; the
+    -- per-slot SC and MB calls are no-ops when their respective enable flags are off.
     local targetServerId = nil;
-    local scPreview = GetCrossbarSkillchainVisualsFromGlobal();
-    local skillchainEnabled = scPreview.enabled;
-    if skillchainEnabled then
+    local skillchainEnabled = gConfig.hotbarGlobal.skillchainHighlightEnabled ~= false;
+    local magicBurstEnabled = gConfig.hotbarGlobal.magicBurstHighlightEnabled ~= false;
+    if skillchainEnabled or magicBurstEnabled then
         local mainTargetIdx = targetLib.GetTargets();
         if mainTargetIdx and mainTargetIdx ~= 0 then
             local targetEntity = GetEntity(mainTargetIdx);
@@ -2006,35 +2057,17 @@ function M.DrawWindow(settings, moduleSettings)
         end
     end
 
-    -- Hide all slot and icon primitives first (we'll show the ones we need)
-    local modesToReset = GetModesToResetForFrame(settings, targetLeftMode, targetRightMode);
-    for _, mode in ipairs(modesToReset) do
-        for slotIndex = 1, SLOTS_PER_SIDE do
-            local slotPrim = state.slotPrims[mode] and state.slotPrims[mode][slotIndex];
-            if slotPrim then slotPrim.visible = false; end
-            local iconPrim = state.iconPrims[mode] and state.iconPrims[mode][slotIndex];
-            if iconPrim then iconPrim.visible = false; end
-        end
-    end
-
-    -- Hide all GDI fonts for all modes (we'll show the ones we need during DrawSlot)
-    for _, mode in ipairs(modesToReset) do
-        for slotIndex = 1, SLOTS_PER_SIDE do
-            local labelFont = state.labelFonts[mode] and state.labelFonts[mode][slotIndex];
-            if labelFont then labelFont:set_visible(false); end
-            local timerFont = state.timerFonts[mode] and state.timerFonts[mode][slotIndex];
-            if timerFont then timerFont:set_visible(false); end
-            local mpCostFont = state.mpCostFonts[mode] and state.mpCostFonts[mode][slotIndex];
-            if mpCostFont then mpCostFont:set_visible(false); end
-            local quantityFont = state.quantityFonts[mode] and state.quantityFonts[mode][slotIndex];
-            if quantityFont then quantityFont:set_visible(false); end
-        end
-    end
-
+    -- Zero out WindowPadding so the leftmost and rightmost diamond slots (which sit flush
+    -- against the window's content rect) aren't clipped by ImGui's default 8px padding.
+    -- Without this the left/right slots of each diamond render partially off-window and
+    -- their button hitboxes get pushed inward (slot interactions become unreliable).
+    imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, { 0, 0 });
     -- Begin ImGui window - ALL slot rendering happens inside to enable interactions
     if imgui.Begin('Crossbar', true, windowFlags) then
-        -- Save position if moved (profile support). While shared expanded chord is up, X is forced
-        -- screen-centered each frame — only persist Y so wide-bar X isn't overwritten by the narrow window.
+        -- Save SLOT-TOP position if moved (decor-pad-aware; profile coordinate stays the
+        -- slot grid top so the saved value is meaningful even if decor pad changes later).
+        -- During the shared-center chord the X is force-centered each frame, so we MUST NOT
+        -- let SaveCrossbarWindowSlotTopPosition persist that narrow centered X — only sync Y.
         if hideRightForSharedCenter then
             if gConfig.windowPositions and gConfig.windowPositions[windowName] then
                 local wx, wy = imgui.GetWindowPos();
@@ -2043,6 +2076,7 @@ function M.DrawWindow(settings, moduleSettings)
                 if s.y ~= slotTopY then
                     s.y = slotTopY;
                 end
+                -- Track the centered window X for free (used by lastWideCrossbarWindowX restore)
                 if s.x ~= wx then
                     s.x = wx;
                 end
@@ -2052,12 +2086,19 @@ function M.DrawWindow(settings, moduleSettings)
         end
         windowPosX, windowPosY = imgui.GetWindowPos();
 
-        -- Slot grid top (logical position); ImGui window top is `windowPosY` (higher on screen).
+        -- Update stored position. state.windowY = slot grid top (window top + decor pad);
+        -- the rest of the layout code references state.windowY as the slot origin.
         state.windowX = windowPosX;
         state.windowY = windowPosY + CROSSBAR_WINDOW_TOP_DECOR_PAD;
+
+        -- Stash the wide-bar X so that when the user releases the chord we can restore it
+        -- (otherwise the narrow centered X from this frame would be the "last" saved X).
         if not hideRightForSharedCenter then
             state.lastWideCrossbarWindowX = windowPosX;
         end
+        -- Remember the layout for the NEXT frame so exitingChordCenter (above) can detect
+        -- the chord-release transition and re-anchor X.
+        state.wasSharedCenterChordLayout = hideRightForSharedCenter;
 
         -- Recalculate group positions with updated window position
         leftGroupX = state.windowX;
@@ -2065,13 +2106,29 @@ function M.DrawWindow(settings, moduleSettings)
         rightGroupX = state.windowX + groupWidth + groupSpacing;
         rightGroupY = state.windowY;
 
-        -- Window draw list: keeps L2/R2, divider, palette scope, diamond center icons, and slot overlays
-        -- in the Crossbar window layer (below other ImGui addon windows). Foreground was drawing on top of everything.
-        local winDrawList = imgui.GetWindowDrawList();
-
         -- Draw bar sets based on animation state and display mode
         -- NOTE: DrawSlot calls must be inside imgui.Begin/End for interactions to work
-        local isActiveOnlyMode = settings.displayMode == 'activeOnly';
+        local isActiveOnlyMode = settings.displayMode == 'activeOnly' and not isEditMode;
+
+        -- Draw window background FIRST so it sits beneath all slot content on the draw list.
+        -- In activeOnly mode, apply visibility opacity to background.
+        do
+            local bgOpacity = settings.backgroundOpacity;
+            local borderOpacity = settings.borderOpacity;
+            if isActiveOnlyMode then
+                bgOpacity = bgOpacity * visibilityOpacity;
+                borderOpacity = borderOpacity * visibilityOpacity;
+            end
+            windowBg.Draw(GetUIDrawList(), state.windowX, state.windowY, width, height, {
+                theme = settings.backgroundTheme,
+                bgScale = settings.bgScale,
+                borderScale = settings.borderScale,
+                bgOpacity = bgOpacity,
+                borderOpacity = borderOpacity,
+                bgColor = settings.bgColor,
+                borderColor = settings.borderColor,
+            });
+        end
 
         if state.animation.active then
             -- Get animation values for outgoing and incoming elements
@@ -2087,120 +2144,82 @@ function M.DrawWindow(settings, moduleSettings)
             local fromLeftActive = fromExpanded or state.animation.fromLeftMode == 'L2';
             local fromRightActive = fromExpanded or state.animation.fromRightMode == 'R2';
 
+            -- Draw LEFT side (skip in activeOnly mode if not visible)
             if not isActiveOnlyMode or leftVisible then
                 if state.animation.leftChanged then
+                    -- Left side changed - animate it
                     if outOpacity > 0.01 then
-                        DrawSide('L2', state.animation.fromLeftMode, leftGroupX, leftGroupY, slotSize, settings,
-                            fromLeftActive, pressedSlot, false, outOpacity, winDrawList, outYOffset, targetServerId, skillchainEnabled, activeCombo);
+                        DrawLeftSide(state.animation.fromLeftMode, leftGroupX, leftGroupY, slotSize, settings,
+                            fromLeftActive, pressedSlot, false, outOpacity, drawList, outYOffset, targetServerId, skillchainEnabled, activeCombo, magicBurstEnabled);
                     end
                     if inOpacity > 0.01 then
-                        DrawSide('L2', state.animation.toLeftMode, leftGroupX, leftGroupY, slotSize, settings,
-                            leftActive, pressedSlot, leftShowPressed, inOpacity, winDrawList, inYOffset, targetServerId, skillchainEnabled, activeCombo);
+                        DrawLeftSide(state.animation.toLeftMode, leftGroupX, leftGroupY, slotSize, settings,
+                            leftActive, pressedSlot, leftShowPressed, inOpacity, drawList, inYOffset, targetServerId, skillchainEnabled, activeCombo, magicBurstEnabled);
                     end
                 else
-                    DrawSide('L2', state.animation.toLeftMode, leftGroupX, leftGroupY, slotSize, settings,
-                        leftActive, pressedSlot, leftShowPressed, visibilityOpacity, winDrawList, 0, targetServerId, skillchainEnabled, activeCombo);
+                    -- Left side didn't change - draw at full opacity (with visibility fade)
+                    DrawLeftSide(state.animation.toLeftMode, leftGroupX, leftGroupY, slotSize, settings,
+                        leftActive, pressedSlot, leftShowPressed, visibilityOpacity, drawList, 0, targetServerId, skillchainEnabled, activeCombo, magicBurstEnabled);
                 end
             end
 
+            -- Draw RIGHT side (skip in activeOnly mode if not visible, or whenever the chord
+            -- collapsed both groups into a single centered strip — there is no right group).
             if (not hideRightForSharedCenter) and (not isActiveOnlyMode or rightVisible) then
                 if state.animation.rightChanged then
+                    -- Right side changed - animate it
                     if outOpacity > 0.01 then
-                        DrawSide('R2', state.animation.fromRightMode, rightGroupX, rightGroupY, slotSize, settings,
-                            fromRightActive, pressedSlot, false, outOpacity, winDrawList, outYOffset, targetServerId, skillchainEnabled, activeCombo);
+                        DrawRightSide(state.animation.fromRightMode, rightGroupX, rightGroupY, slotSize, settings,
+                            fromRightActive, pressedSlot, false, outOpacity, drawList, outYOffset, targetServerId, skillchainEnabled, activeCombo, magicBurstEnabled);
                     end
                     if inOpacity > 0.01 then
-                        DrawSide('R2', state.animation.toRightMode, rightGroupX, rightGroupY, slotSize, settings,
-                            rightActive, pressedSlot, rightShowPressed, inOpacity, winDrawList, inYOffset, targetServerId, skillchainEnabled, activeCombo);
+                        DrawRightSide(state.animation.toRightMode, rightGroupX, rightGroupY, slotSize, settings,
+                            rightActive, pressedSlot, rightShowPressed, inOpacity, drawList, inYOffset, targetServerId, skillchainEnabled, activeCombo, magicBurstEnabled);
                     end
                 else
-                    DrawSide('R2', state.animation.toRightMode, rightGroupX, rightGroupY, slotSize, settings,
-                        rightActive, pressedSlot, rightShowPressed, visibilityOpacity, winDrawList, 0, targetServerId, skillchainEnabled, activeCombo);
+                    -- Right side didn't change - draw at full opacity (with visibility fade)
+                    DrawRightSide(state.animation.toRightMode, rightGroupX, rightGroupY, slotSize, settings,
+                        rightActive, pressedSlot, rightShowPressed, visibilityOpacity, drawList, 0, targetServerId, skillchainEnabled, activeCombo, magicBurstEnabled);
                 end
             end
         else
+            -- No bar transition animation
             if isActiveOnlyMode then
+                -- ActiveOnly mode: draw only visible sides with visibility fade
                 if leftVisible then
-                    DrawSide('L2', state.currentLeftMode, leftGroupX, leftGroupY, slotSize, settings,
-                        leftActive, pressedSlot, leftShowPressed, visibilityOpacity, winDrawList, 0, targetServerId, skillchainEnabled, activeCombo);
+                    DrawLeftSide(state.currentLeftMode, leftGroupX, leftGroupY, slotSize, settings,
+                        leftActive, pressedSlot, leftShowPressed, visibilityOpacity, drawList, 0, targetServerId, skillchainEnabled, activeCombo, magicBurstEnabled);
                 end
                 if (not hideRightForSharedCenter) and rightVisible then
-                    DrawSide('R2', state.currentRightMode, rightGroupX, rightGroupY, slotSize, settings,
-                        rightActive, pressedSlot, rightShowPressed, visibilityOpacity, winDrawList, 0, targetServerId, skillchainEnabled, activeCombo);
+                    DrawRightSide(state.currentRightMode, rightGroupX, rightGroupY, slotSize, settings,
+                        rightActive, pressedSlot, rightShowPressed, visibilityOpacity, drawList, 0, targetServerId, skillchainEnabled, activeCombo, magicBurstEnabled);
                 end
             elseif hideRightForSharedCenter then
-                DrawSide('L2', state.currentLeftMode, leftGroupX, leftGroupY, slotSize, settings,
-                    leftActive, pressedSlot, leftShowPressed, menuDimFactor, winDrawList, 0, targetServerId, skillchainEnabled, activeCombo);
+                -- Shared-center chord: render only the (now-Shared) left column as one centered strip.
+                DrawLeftSide(state.currentLeftMode, leftGroupX, leftGroupY, slotSize, settings,
+                    leftActive, pressedSlot, leftShowPressed, visibilityOpacity, drawList, 0, targetServerId, skillchainEnabled, activeCombo, magicBurstEnabled);
             else
-                -- Normal mode: draw both sides (menuDimFactor = 1.0 normally, <1 when menu open)
+                -- Normal mode: draw both sides at full opacity
                 DrawBarSet(
                     state.currentLeftMode, state.currentRightMode,
                     leftGroupX, leftGroupY, rightGroupX, rightGroupY,
                     slotSize, settings,
                     leftActive, rightActive,
                     pressedSlot, leftShowPressed, rightShowPressed,
-                    menuDimFactor, winDrawList, 0, targetServerId, skillchainEnabled, activeCombo
+                    1.0, drawList, 0, targetServerId, skillchainEnabled, activeCombo, magicBurstEnabled
                 );
-            end
-        end
-
-        -- Center divider + palette scope + L2/R2 + refresh: window draw list (below other addon windows).
-        -- CROSSBAR_WINDOW_TOP_DECOR_PAD expands the window upward so art above the slot grid is not clipped.
-        local showCenterDecor = settings.displayMode ~= 'activeOnly';
-        local centerXDecor = state.windowX + width * 0.5;
-        local dividerTopYDecor = state.windowY + 10;
-        if settings.showDivider and winDrawList and showCenterDecor and (not hideRightForSharedCenter) then
-            local dividerY2 = state.windowY + height - 10;
-            winDrawList:AddLine(
-                { centerXDecor, dividerTopYDecor },
-                { centerXDecor, dividerY2 },
-                imgui.GetColorU32({ 1, 1, 1, 0.3 }),
-                2
-            );
-        end
-        if showCenterDecor and winDrawList then
-            DrawPaletteScopeIconAboveDivider(centerXDecor, dividerTopYDecor, settings, winDrawList);
-        end
-        local topYDecor = state.windowY - 4;
-        if showCenterDecor then
-            DrawComboText(activeCombo, centerXDecor, topYDecor, settings);
-        end
-        local bottomYDecor = state.windowY + height + 4;
-        if showCenterDecor then
-            DrawPaletteName(centerXDecor, bottomYDecor, settings);
-        end
-        if winDrawList and showCenterDecor then
-            if hideRightForSharedCenter then
-                DrawTriggerIconsSharedExpandedCenter(activeCombo, leftGroupX, leftGroupY, groupWidth, settings, winDrawList);
-            else
-                DrawTriggerIcons(activeCombo, leftGroupX, rightGroupX, leftGroupY, groupWidth, settings, winDrawList);
-            end
-        end
-        if state.windowX and actions.IsPaletteModifierHeld() then
-            local refreshTexture = textures:Get('ui_refresh');
-            if refreshTexture and refreshTexture.image and winDrawList then
-                local iconSize = 18;
-                local iconX = centerXDecor - (iconSize / 2);
-                local iconY = state.windowY - 24;
-                local pulseAlpha = 0.7 + 0.3 * math.sin(os.clock() * 6);
-                local iconColor = imgui.GetColorU32({ 1.0, 1.0, 1.0, pulseAlpha });
-                local iconPtr = tonumber(ffi.cast('uint32_t', refreshTexture.image));
-                if iconPtr then
-                    winDrawList:AddImage(
-                        iconPtr,
-                        { iconX, iconY },
-                        { iconX + iconSize, iconY + iconSize },
-                        { 0, 0 }, { 1, 1 },
-                        iconColor
-                    );
-                end
             end
         end
 
         imgui.End();
     end
+    -- Pop the WindowPadding style we pushed before Begin. Has to be unconditional (must match
+    -- the push even when Begin returns false / window is collapsed).
+    imgui.PopStyleVar();
 
-    -- Draw move anchor (only visible when config is open)
+    -- Draw move anchor (only visible when config is open).
+    -- Uses the crossbar-specific lock so Hotbar's lock toggle doesn't accidentally freeze
+    -- the crossbar (fixes the issue where Lock Crossbar was tied to Hotbar's setting).
     local crossbarLocked = gConfig and gConfig.crossbarLockMovement;
     if not crossbarLocked then
         -- Use same window name as ImGui window so positions are shared
@@ -2208,80 +2227,130 @@ function M.DrawWindow(settings, moduleSettings)
         if anchorNewX ~= nil then
             state.windowX = anchorNewX;
             state.windowY = anchorNewY;
-            state.lastWideCrossbarWindowX = anchorNewX;
-
+            
             -- Update config immediately so next frame's positioning logic picks it up
             if not gConfig.windowPositions then gConfig.windowPositions = {}; end
             gConfig.windowPositions['Crossbar'] = { x = anchorNewX, y = anchorNewY };
         end
     end
 
-    local isActiveOnlyMode = settings.displayMode == 'activeOnly';
+    -- Determine if we should show center elements (hidden in activeOnly mode)
+    local isActiveOnlyMode = settings.displayMode == 'activeOnly' and not isEditMode;
+    local showCenterElements = not isActiveOnlyMode;
 
-    -- Update window background (can happen after window closes)
-    -- In activeOnly mode, apply visibility opacity to background
-    if state.bgHandle then
-        local bgOpacity = settings.backgroundOpacity;
-        local borderOpacity = settings.borderOpacity;
-        if isActiveOnlyMode then
-            bgOpacity = bgOpacity * visibilityOpacity;
-            borderOpacity = borderOpacity * visibilityOpacity;
-        end
-        windowBg.update(state.bgHandle, state.windowX, state.windowY, width, height, {
-            theme = settings.backgroundTheme,
-            bgScale = settings.bgScale,
-            borderScale = settings.borderScale,
-            bgOpacity = bgOpacity,
-            borderOpacity = borderOpacity,
-            bgColor = settings.bgColor,
-            borderColor = settings.borderColor,
-        });
+    -- Center decor (divider line, scope icon, combo text, palette name): all hidden in
+    -- activeOnly mode since that layout collapses to a single side and the divider has no meaning.
+    -- Shared-center chord layout: centerX is the middle of the (now single-diamond) window so the
+    -- scope icon / combo text / palette name still sit over the visible bar. The DIVIDER itself
+    -- is suppressed in chord since there's no longer a left/right split to divide.
+    local centerX;
+    if hideRightForSharedCenter then
+        centerX = state.windowX + width * 0.5;
+    else
+        centerX = state.windowX + groupWidth + (groupSpacing / 2);
+    end
+    local dividerTopY = state.windowY + 10;
+
+    if settings.showDivider and drawList and showCenterElements and (not hideRightForSharedCenter) then
+        local dividerY2 = state.windowY + height - 10;
+        drawList:AddLine(
+            { centerX, dividerTopY },
+            { centerX, dividerY2 },
+            imgui.GetColorU32({ 1, 1, 1, 0.3 }),
+            2
+        );
     end
 
-    state.wasSharedCenterChordLayout = hideRightForSharedCenter;
+    -- Palette scope icon (infinity for Global / job icon for job-scoped) — drawn above the
+    -- divider's top endpoint. Same drawList as the divider so z-order is consistent.
+    if showCenterElements and drawList then
+        DrawPaletteScopeIconAboveDivider(centerX, dividerTopY, settings, drawList);
+    end
 
-    -- ── Double-tap preview windows ──────────────────────────────────────────
-    -- Drawn as separate ImGui windows after the main crossbar End() so they
-    -- are independent (own position, own draw list, no shared primitives).
+    -- Draw combo text in center for complex combos (hidden in activeOnly mode)
+    local topY = state.windowY - 4;  -- Above the window
+    if showCenterElements then
+        DrawComboText(activeCombo, centerX, topY, settings);
+    end
+
+    -- Draw palette name below the crossbar
+    local bottomY = state.windowY + height + 4;
+    if showCenterElements then
+        DrawPaletteName(centerX, bottomY, settings);
+    end
+
+    -- Draw L2/R2 trigger icons above the groups (hidden in activeOnly mode). The shared-center
+    -- chord uses a different glyph (L2 + R2 chord centred on the single visible diamond) since
+    -- there's no left-vs-right group to position labels against.
+    if drawList and showCenterElements then
+        if hideRightForSharedCenter then
+            DrawTriggerIconsSharedExpandedCenter(activeCombo, leftGroupX, leftGroupY, groupWidth, settings, drawList);
+        else
+            DrawTriggerIcons(activeCombo, leftGroupX, rightGroupX, leftGroupY, groupWidth, settings, drawList);
+        end
+    end
+
+    -- Draw palette modifier indicator (refresh icon when modifier key is held)
+    if state.windowX and actions.IsPaletteModifierHeld() then
+        local refreshTexture = textures:Get('ui_refresh');
+        if refreshTexture and refreshTexture.image then
+            local iconSize = 18;
+            -- Position centered above the crossbar
+            local iconX = centerX - (iconSize / 2);
+            local iconY = state.windowY - 24;
+            local fgDrawList = GetUIDrawList();
+
+            -- Draw with a pulsing effect for visibility
+            local pulseAlpha = 0.7 + 0.3 * math.sin(os.clock() * 6);
+            local iconColor = imgui.GetColorU32({1.0, 1.0, 1.0, pulseAlpha});
+            local iconPtr = tonumber(ffi.cast("uint32_t", refreshTexture.image));
+
+            if iconPtr then
+                fgDrawList:AddImage(
+                    iconPtr,
+                    {iconX, iconY},
+                    {iconX + iconSize, iconY + iconSize},
+                    {0, 0}, {1, 1},
+                    iconColor
+                );
+            end
+        end
+    end
+
+    -- Double-tap preview windows. Drawn AFTER the main crossbar so they end up in
+    -- separate ImGui windows with their own draw list / position, layered above the main
+    -- bar. Gated on both `enableDoubleTap` (the L2x2/R2x2 modes have to be enabled at all)
+    -- and `showDoubleTapPreview` (the per-feature visibility toggle). When the active combo
+    -- IS the matching double-tap, the preview swaps to the BASE L2/R2 slots as a reference
+    -- — the main bar is already showing the double-tap content.
     if settings.enableDoubleTap and settings.showDoubleTapPreview then
-        local scale   = settings.doubleTapPreviewScale  or 0.60;
-        local baseOp  = (settings.doubleTapPreviewOpacity or 1.0) * visibilityOpacity;
+        local scale  = settings.doubleTapPreviewScale  or 0.60;
+        local baseOp = (settings.doubleTapPreviewOpacity or 1.0) * visibilityOpacity;
+        -- Skip the preview render path entirely when nothing would be visible (menu dim or
+        -- activeOnly hide). Saves the 16-slot DrawSlot + ImGui begin/end overhead per frame.
+        if baseOp <= 0.02 then return; end
         local dimFact = settings.inactiveSideWhileTriggerDim;
         if dimFact == nil then dimFact = 0.15; end
-        local ps      = MakePreviewSettings(settings, scale);
+        local ps = MakePreviewSettings(settings, scale);
 
-        -- A preview is "live" only when its own double-tap combo is active.
         local isL2xActive = (activeCombo == COMBO_MODES.L2_DOUBLE);
         local isR2xActive = (activeCombo == COMBO_MODES.R2_DOUBLE);
-
-        -- Any trigger held at all (single, double-tap, or chord)?
         local anyTriggerHeld = (activeCombo ~= COMBO_MODES.NONE);
-
-        -- dimFactor for content (icons/text/cooldowns): 1.0 at rest, dimFact whenever any
-        -- trigger is held. The previews are never "the active section" — the main crossbar is —
-        -- so both previews dim equally regardless of which double-tap is live.
-        -- Slot backgrounds always render at baseOp (not dimmed) so the slot frames stay visible.
         local previewDim = anyTriggerHeld and dimFact or 1.0;
-        local l2xDim = previewDim;
-        local r2xDim = previewDim;
 
-        -- Swap: while L2_DOUBLE is active the main bar already shows L2x2, so the preview
-        -- switches to showing the base L2/R2 slots as a reference.
-
-        -- L2x2 preview: shows left-side L2x2 slots; swaps to base L2 while L2_DOUBLE is active.
         DrawDoubleTapPreviewWindow(
             'CrossbarPreviewL2x2',
             isL2xActive and 'L2' or 'L2x2',
-            ps, baseOp, l2xDim, activeCombo, settings
+            ps, baseOp, previewDim, activeCombo, settings,
+            targetServerId, skillchainEnabled, magicBurstEnabled
         );
-        -- R2x2 preview: shows right-side R2x2 slots; swaps to base R2 while R2_DOUBLE is active.
         DrawDoubleTapPreviewWindow(
             'CrossbarPreviewR2x2',
             isR2xActive and 'R2' or 'R2x2',
-            ps, baseOp, r2xDim, activeCombo, settings
+            ps, baseOp, previewDim, activeCombo, settings,
+            targetServerId, skillchainEnabled, magicBurstEnabled
         );
     end
-    -- ────────────────────────────────────────────────────────────────────────
 end
 
 -- ============================================
@@ -2289,70 +2358,6 @@ end
 -- ============================================
 
 function M.SetHidden(hidden)
-    -- Hide window background
-    if state.bgHandle then
-        if hidden then
-            windowBg.hide(state.bgHandle);
-        end
-        -- Note: Don't show bgHandle here - DrawWindow handles showing it after positioning
-    end
-
-    -- Only HIDE primitives when hidden=true
-    -- DrawWindow is responsible for showing them at the correct positions
-    -- Setting visible=true here would show them at (0,0) before they're positioned
-    if hidden then
-        for _, comboMode in ipairs(ALL_COMBO_MODES) do
-            for slotIndex = 1, SLOTS_PER_SIDE do
-                local slotPrim = state.slotPrims[comboMode] and state.slotPrims[comboMode][slotIndex];
-                if slotPrim then slotPrim.visible = false; end
-
-                local iconPrim = state.iconPrims[comboMode] and state.iconPrims[comboMode][slotIndex];
-                if iconPrim then iconPrim.visible = false; end
-
-                local timerFont = state.timerFonts[comboMode] and state.timerFonts[comboMode][slotIndex];
-                if timerFont then timerFont:set_visible(false); end
-
-                local mpCostFont = state.mpCostFonts[comboMode] and state.mpCostFonts[comboMode][slotIndex];
-                if mpCostFont then mpCostFont:set_visible(false); end
-
-                local quantityFont = state.quantityFonts[comboMode] and state.quantityFonts[comboMode][slotIndex];
-                if quantityFont then quantityFont:set_visible(false); end
-
-                local labelFont = state.labelFonts[comboMode] and state.labelFonts[comboMode][slotIndex];
-                if labelFont then labelFont:set_visible(false); end
-                local abbrFont = state.abbreviationFonts[comboMode] and state.abbreviationFonts[comboMode][slotIndex];
-                if abbrFont then abbrFont:set_visible(false); end
-            end
-
-            -- Hide center icon primitives
-            for _, diamondType in ipairs({'dpad', 'face'}) do
-                local centerPrims = state.centerIconPrims[comboMode] and state.centerIconPrims[comboMode][diamondType];
-                if centerPrims then
-                    for iconIdx = 1, 4 do
-                        if centerPrims[iconIdx] then
-                            centerPrims[iconIdx].visible = false;
-                        end
-                    end
-                end
-            end
-        end
-
-        -- Hide trigger label
-        if state.triggerLabelFont then
-            state.triggerLabelFont:set_visible(false);
-        end
-
-        -- Hide combo text
-        if state.comboTextFont then
-            state.comboTextFont:set_visible(false);
-        end
-
-        -- Hide palette name
-        if state.paletteNameFont then
-            state.paletteNameFont:set_visible(false);
-        end
-    end
-    -- When hidden=false, don't do anything - DrawWindow will handle visibility
 end
 
 -- ============================================
@@ -2362,63 +2367,14 @@ end
 function M.UpdateVisuals(settings, moduleSettings)
     if not state.initialized then return; end
 
-    -- Update theme if changed
-    if settings.backgroundTheme ~= state.loadedBgTheme then
-        if state.bgHandle then
-            windowBg.setTheme(state.bgHandle, settings.backgroundTheme, settings.bgScale, settings.borderScale);
-        end
-        state.loadedBgTheme = settings.backgroundTheme;
-    end
+    -- Reset imtext so it reloads fonts on next draw
+    imtext.Reset();
 
-    for _, comboMode in ipairs(ALL_COMBO_MODES) do
-        for slotIndex = 1, SLOTS_PER_SIDE do
-            -- Recreate label font
-            local labelFont = state.labelFonts[comboMode] and state.labelFonts[comboMode][slotIndex];
-            local labelSettings = moduleSettings and moduleSettings.label_font_settings or {};
-            if labelFont then
-                state.labelFonts[comboMode][slotIndex] = FontManager.recreate(labelFont, labelSettings);
-            end
-
-            -- Recreate abbreviation font
-            local abbrFont = state.abbreviationFonts[comboMode] and state.abbreviationFonts[comboMode][slotIndex];
-            if abbrFont then
-                local abbrSettings = moduleSettings and deep_copy_table(moduleSettings.label_font_settings) or {};
-                abbrSettings.font_height = 12;
-                abbrSettings.font_alignment = 1;  -- Center
-                abbrSettings.font_color = 0xFFF4DA97;  -- Gold
-                abbrSettings.outline_color = 0xFF000000;
-                abbrSettings.outline_width = 2;
-                state.abbreviationFonts[comboMode][slotIndex] = FontManager.recreate(abbrFont, abbrSettings);
-            end
-        end
-    end
-
-    -- Recreate trigger label font
-    if state.triggerLabelFont then
-        local triggerSettings = moduleSettings and moduleSettings.trigger_font_settings or {};
-        state.triggerLabelFont = FontManager.recreate(state.triggerLabelFont, triggerSettings);
-    end
-
-    -- Recreate combo text font
-    if state.comboTextFont then
-        local comboTextSettings = moduleSettings and deep_copy_table(moduleSettings.trigger_font_settings) or {};
-        comboTextSettings.font_height = settings.comboTextFontSize or 10;
-        comboTextSettings.font_color = 0xFFFFFFFF;  -- White
-        comboTextSettings.font_alignment = 1;  -- Center alignment
-        state.comboTextFont = FontManager.recreate(state.comboTextFont, comboTextSettings);
-    end
-
-    -- Recreate palette name font
-    if state.paletteNameFont then
-        local paletteNameSettings = moduleSettings and deep_copy_table(moduleSettings.trigger_font_settings) or {};
-        paletteNameSettings.font_height = settings.paletteNameFontSize or 10;
-        paletteNameSettings.font_color = 0xFFFFFFFF;
-        paletteNameSettings.font_alignment = 1;  -- Center alignment
-        state.paletteNameFont = FontManager.recreate(state.paletteNameFont, paletteNameSettings);
-    end
-
-    -- Clear slot cache since fonts were recreated (cache tracks font text state)
+    -- Clear slot cache so text re-renders with new settings
     slotrenderer.ClearAllCache();
+
+    -- Drop cached abbreviation widths (depend on the active font) so they re-measure.
+    ClearCrossbarIconCache();
 end
 
 -- ============================================
@@ -2428,79 +2384,11 @@ end
 function M.Cleanup()
     if not state.initialized then return; end
 
-    -- Destroy window background
-    if state.bgHandle then
-        windowBg.destroy(state.bgHandle);
-        state.bgHandle = nil;
-    end
-
-    for _, comboMode in ipairs(ALL_COMBO_MODES) do
-        -- Destroy slot primitives, icon primitives, and fonts
-        for slotIndex = 1, SLOTS_PER_SIDE do
-            local slotPrim = state.slotPrims[comboMode] and state.slotPrims[comboMode][slotIndex];
-            if slotPrim then slotPrim:destroy(); end
-
-            local iconPrim = state.iconPrims[comboMode] and state.iconPrims[comboMode][slotIndex];
-            if iconPrim then iconPrim:destroy(); end
-
-            local timerFont = state.timerFonts[comboMode] and state.timerFonts[comboMode][slotIndex];
-            if timerFont then FontManager.destroy(timerFont); end
-
-            local mpCostFont = state.mpCostFonts[comboMode] and state.mpCostFonts[comboMode][slotIndex];
-            if mpCostFont then FontManager.destroy(mpCostFont); end
-
-            local quantityFont = state.quantityFonts[comboMode] and state.quantityFonts[comboMode][slotIndex];
-            if quantityFont then FontManager.destroy(quantityFont); end
-
-            local labelFont = state.labelFonts[comboMode] and state.labelFonts[comboMode][slotIndex];
-            if labelFont then FontManager.destroy(labelFont); end
-
-            local abbrFont = state.abbreviationFonts[comboMode] and state.abbreviationFonts[comboMode][slotIndex];
-            if abbrFont then FontManager.destroy(abbrFont); end
-        end
-
-        -- Destroy center icon primitives
-        for _, diamondType in ipairs({'dpad', 'face'}) do
-            local centerPrims = state.centerIconPrims[comboMode] and state.centerIconPrims[comboMode][diamondType];
-            if centerPrims then
-                for iconIdx = 1, 4 do
-                    if centerPrims[iconIdx] then
-                        centerPrims[iconIdx]:destroy();
-                    end
-                end
-            end
-        end
-
-        state.slotPrims[comboMode] = nil;
-        state.iconPrims[comboMode] = nil;
-        state.timerFonts[comboMode] = nil;
-        state.mpCostFonts[comboMode] = nil;
-        state.quantityFonts[comboMode] = nil;
-        state.centerIconPrims[comboMode] = nil;
-        state.labelFonts[comboMode] = nil;
-        state.abbreviationFonts[comboMode] = nil;
-    end
-
-    -- Destroy trigger label font
-    if state.triggerLabelFont then
-        FontManager.destroy(state.triggerLabelFont);
-        state.triggerLabelFont = nil;
-    end
-
-    -- Destroy combo text font
-    if state.comboTextFont then
-        FontManager.destroy(state.comboTextFont);
-        state.comboTextFont = nil;
-    end
-
-    -- Destroy palette name font
-    if state.paletteNameFont then
-        FontManager.destroy(state.paletteNameFont);
-        state.paletteNameFont = nil;
-    end
-
     -- Clear icon cache
     ClearCrossbarIconCache();
+
+    -- Clear pre-created closures so they're recreated on reinit
+    cbInteraction = {};
 
     -- Clear slotrenderer cache
     slotrenderer.ClearAllCache();
@@ -2549,6 +2437,11 @@ end
 -- Clear icon cache (call when job changes)
 function M.ClearIconCache()
     ClearCrossbarIconCache();
+    -- Mirror the wipe to actions.lua's negative-result cache so "no icon" decisions
+    -- pinned from a previous state don't survive into the new job/palette context.
+    if actions and actions.ClearNoIconCache then
+        actions.ClearNoIconCache();
+    end
 end
 
 -- Clear icon cache for a specific slot (call on targeted slot updates)
@@ -2563,7 +2456,6 @@ function M.ResetPositions()
     local defaultX, defaultY = GetDefaultPosition(settings);
     state.windowX = defaultX;
     state.windowY = defaultY;
-    state.lastWideCrossbarWindowX = defaultX;
     if gConfig.windowPositions then
         gConfig.windowPositions['Crossbar'] = { x = defaultX, y = defaultY };
     end
@@ -2573,16 +2465,25 @@ function M.ResetPositions()
 end
 
 -- ============================================
--- Edit Full Palette (same DrawSlot path as gameplay; requires data.BeginCrossbarPaletteEditSession)
+-- Edit Full Palette (called from config/palettemanager.lua's ImGui window)
 -- ============================================
+-- The editor draws a static representation of a crossbar row using the SAME DrawSlot path
+-- as the live HUD, so layout (diamond geometry, slot size, label position, MP/quantity)
+-- always matches what the user actually plays with. The editor differs from the HUD in:
+--   * Slot data is read from the draft layer (data.GetDraftSlotData) not the live binding.
+--   * MP / quantity / cooldown text are suppressed (showMpCost=false, showQuantity=false).
+--   * The action name renders ON the slot (labelForeground + editorMinimalView).
+--   * Drop zones use 'paled_*' IDs with dropPriority=10 so they win against the HUD zones
+--     underneath when the editor window overlaps the live crossbar.
+--   * Optional editorClipRect culls slots scrolled off the editor panel.
+-- These are all set by the local DrawSlot wrapper above; the public functions here just
+-- iterate the 8 slots of each diamond and call DrawSlot once per slot.
 
--- Shared palette-editor slot row. Either or both of modeLeft (L2 group) and modeRight (R2 group) may be set.
--- When only one is set, the other trigger half is omitted (Pets tab filter).
+-- Shared palette-editor slot row. Either or both of modeLeft (L2 group) and modeRight
+-- (R2 group) may be set; pass nil on a side to omit it (Pets tab filter renders single-sided rows).
 local function DrawPaletteEditorRow(screenOriginX, screenOriginY, settings, modeLeft, modeRight, clipMinX, clipMinY, clipMaxX, clipMaxY)
     if not state.initialized then return; end
-    if not modeLeft and not modeRight then
-        return;
-    end
+    if not modeLeft and not modeRight then return; end
     local editorClipRect;
     if clipMinX and clipMinY and clipMaxX and clipMaxY then
         editorClipRect = { clipMinX, clipMinY, clipMaxX, clipMaxY };
@@ -2608,11 +2509,12 @@ function M.DrawPaletteEditorSingleRow(screenOriginX, screenOriginY, settings, mo
     DrawPaletteEditorRow(screenOriginX, screenOriginY, settings, modeOnly, nil, clipMinX, clipMinY, clipMaxX, clipMaxY);
 end
 
--- Edit Full Palette trigger glyphs (raised above slot cluster). glyphMode:
---   'primary'    — L2 | R2 (one glyph per side, gap between d-pad and face).
---   'doubleTap'  — L2 + "×2", R2 + "×2".
---   'chordCombo' — Left: L2 + R2, Right: R2 + L2 (images with + between).
--- Optional 5th: sides = { l = bool, r = bool } (default both true) — hide L2 and/or R2 trigger art when the row is one-sided.
+-- Trigger glyphs raised above the editor's slot cluster. glyphMode:
+--   'primary'     — L2 | R2 (one glyph per side, gap between d-pad and face).
+--   'doubleTap'   — L2 + "x2", R2 + "x2".
+--   'chordCombo'  — Left: L2+R2, Right: R2+L2 (with text "+" between).
+--   'sharedChord' — Single L2+R2 glyph centred over the shared diamond.
+-- Optional sides = { l=bool, r=bool } (default both true) — used by Pets-tab single-sided rows.
 function M.DrawPaletteEditorL2R2TriggerGlyphs(screenOriginX, screenOriginY, settings, glyphMode, sides)
     local dl = imgui.GetWindowDrawList();
     if not dl then return; end
@@ -2629,10 +2531,7 @@ function M.DrawPaletteEditorL2R2TriggerGlyphs(screenOriginX, screenOriginY, sett
     local cy = screenOriginY + ghgt * 0.5 - yLift;
     local tint = imgui.GetColorU32({ 1, 1, 1, 0.88 });
     local textCol = imgui.GetColorU32({ 0.92, 0.86, 0.65, 0.95 });
-    local gap = math.max(3, 4 * scale);
-    -- Tight spacing around '+' for L2+R2 / R2+L2 chord glyphs
     local chordTight = math.max(0.5, 0.65 * scale);
-    -- Minimal space between trigger image and ×2 (double-tap row)
     local doubleTapImgGap = math.max(1, 2 * scale);
 
     local function plusSize()
@@ -2675,12 +2574,8 @@ function M.DrawPaletteEditorL2R2TriggerGlyphs(screenOriginX, screenOriginY, sett
     if glyphMode == 'chordCombo' then
         local l2cx = screenOriginX + groupW * 0.5;
         local r2cx = screenOriginX + groupW + gs + groupW * 0.5;
-        if sl then
-            drawComboAtCenter(l2cx, 'L2', 'R2');
-        end
-        if sr then
-            drawComboAtCenter(r2cx, 'R2', 'L2');
-        end
+        if sl then drawComboAtCenter(l2cx, 'L2', 'R2'); end
+        if sr then drawComboAtCenter(r2cx, 'R2', 'L2'); end
         return;
     end
 
@@ -2694,7 +2589,6 @@ function M.DrawPaletteEditorL2R2TriggerGlyphs(screenOriginX, screenOriginY, sett
                 th = ts[2] or ts.y or th;
             end
         end
-        -- Center the trigger image on the gap; x2 follows to the right (do not center icon+text as one unit).
         local l2cx = screenOriginX + groupW * 0.5;
         local r2cx = screenOriginX + groupW + gs + groupW * 0.5;
         if sl then
@@ -2727,63 +2621,28 @@ function M.DrawPaletteEditorL2R2TriggerGlyphs(screenOriginX, screenOriginY, sett
     -- primary
     local l2cx = screenOriginX + groupW * 0.5;
     local r2cx = screenOriginX + groupW + gs + groupW * 0.5;
-    if sl then
-        drawImage('L2', l2cx - iw * 0.5, cy - ih * 0.5);
-    end
-    if sr then
-        drawImage('R2', r2cx - iw * 0.5, cy - ih * 0.5);
-    end
+    if sl then drawImage('L2', l2cx - iw * 0.5, cy - ih * 0.5); end
+    if sr then drawImage('R2', r2cx - iw * 0.5, cy - ih * 0.5); end
 end
 
--- Shared expanded bar row: delegates to the main glyph function with 'sharedChord' mode.
+-- Convenience wrapper used by the Shared (chord-fallback) row.
 function M.DrawPaletteEditorSharedChordTriggerGlyphs(screenOriginX, screenOriginY, settings)
     M.DrawPaletteEditorL2R2TriggerGlyphs(screenOriginX, screenOriginY, settings, 'sharedChord');
 end
 
+-- Exposed so palettemanager.lua can size the editor row to match the live HUD dimensions
+-- without duplicating the math (slot size, gaps, diamond spacing, etc. all flow through here).
 function M.GetEditorCrossbarRowDimensions(settings)
     return GetCrossbarDimensions(settings);
 end
 
--- Hide all PalEd_* D3D/GDI resources (call when Edit Full Palette ImGui window is not drawing).
+-- Legacy GDI hook (kept as a no-op for API compatibility with `palettemanager.lua`).
+-- Pre-1.8.0 this hid the persistent D3D/GDI primitives backing the editor's slot row when
+-- the editor window was not currently drawing. Under 1.8.0's imtext architecture there are
+-- no persistent objects to hide — un-emitted draw calls simply don't render. The function
+-- is retained so callers don't break and so the contract is documented; consider removing
+-- once palettemanager.lua's six call sites are updated.
 function M.HidePaletteEditorPrimitives()
-    if not state.initialized then return; end
-    for _, mode in ipairs(ALL_COMBO_MODES) do
-        local pk = PAL_ED_PREFIX .. mode;
-        if state.slotPrims[pk] then
-            for i = 1, SLOTS_PER_SIDE do
-                local sp = state.slotPrims[pk][i];
-                local ip = state.iconPrims[pk][i];
-                if sp then sp.visible = false; end
-                if ip then ip.visible = false; end
-                if state.timerFonts[pk] and state.timerFonts[pk][i] then
-                    state.timerFonts[pk][i]:set_visible(false);
-                end
-                if state.mpCostFonts[pk] and state.mpCostFonts[pk][i] then
-                    state.mpCostFonts[pk][i]:set_visible(false);
-                end
-                if state.quantityFonts[pk] and state.quantityFonts[pk][i] then
-                    state.quantityFonts[pk][i]:set_visible(false);
-                end
-                if state.labelFonts[pk] and state.labelFonts[pk][i] then
-                    state.labelFonts[pk][i]:set_visible(false);
-                end
-                if state.abbreviationFonts[pk] and state.abbreviationFonts[pk][i] then
-                    state.abbreviationFonts[pk][i]:set_visible(false);
-                end
-            end
-        end
-        local cip = state.centerIconPrims[pk];
-        if cip then
-            for _, d in pairs({ 'dpad', 'face' }) do
-                local t = cip[d];
-                if t then
-                    for j = 1, 4 do
-                        if t[j] then t[j].visible = false; end
-                    end
-                end
-            end
-        end
-    end
 end
 
 return M;

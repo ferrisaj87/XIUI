@@ -36,10 +36,8 @@
 require('common');
 require('handlers.helpers');
 local gameState = require('core.gamestate');
-local gdi = require('submodules.gdifonts.include');
-local primitives = require('primitives');
-local windowBg = require('libs.windowbackground');
 local dragdrop = require('libs.dragdrop');
+local imtext = require('libs.imtext');
 
 local data = require('modules.hotbar.data');
 local display = require('modules.hotbar.display');
@@ -56,12 +54,6 @@ local macrosLib = require('libs.ffxi.macros');
 
 local M = {};
 
--- Crossbar controller macro blocking uses the same flag as Hotbar → Disable XI Macros (hotbarGlobal.disableMacroBars).
-local function GetCrossbarDisableXiMacrosEffective()
-    local hg = gConfig and gConfig.hotbarGlobal;
-    return hg and hg.disableMacroBars == true;
-end
-
 -- ============================================
 -- State
 -- ============================================
@@ -74,10 +66,6 @@ local texturesInitialized = false;
 
 local crossbarInitialized = false;
 
--- SetActivePalette / SetActivePaletteForCombo fire one callback per bar (1-6) or per combo mode (6x).
--- Without deduping, display/slot cache clears run 6x per logical palette change (severe lag).
-local lastPaletteVisualRefreshSig = nil;
-
 -- ============================================
 -- Module State
 -- ============================================
@@ -87,6 +75,39 @@ M.visible = true;
 
 -- Track hotbar enable/disable state for transitions
 local wasHotbarEnabled = nil;
+
+-- Crossbar controller "Disable XI Macros" is shared with Hotbar -> Disable XI Macros (hotbarGlobal.disableMacroBars).
+-- Wrapper exists so the call sites read as crossbar-specific intent.
+local function GetCrossbarDisableXiMacrosEffective()
+    local hg = gConfig and gConfig.hotbarGlobal;
+    return hg and hg.disableMacroBars == true;
+end
+
+-- Palette change dedup: SetActivePalette / SetActivePaletteForCombo fire one callback per bar (1-6)
+-- or per combo mode (6x). Without deduping, display/slot cache clears run 6x per logical palette change.
+local lastPaletteVisualRefreshSig = nil;
+
+-- True if any hotbar bar or crossbar combo-mode has petAware enabled.
+-- Used to short-circuit the pet-change callback's cache wipes when no
+-- bar would actually rebind its slots in response.
+local function AnyBarIsPetAware()
+    for barIndex = 1, data.NUM_BARS do
+        local barSettings = data.GetBarSettings(barIndex);
+        if barSettings and barSettings.petAware then
+            return true;
+        end
+    end
+    local crossbarConfig = gConfig and gConfig.hotbarCrossbar;
+    local modeSettings = crossbarConfig and crossbarConfig.comboModeSettings;
+    if modeSettings then
+        for _, mode in pairs(modeSettings) do
+            if mode and mode.petAware then
+                return true;
+            end
+        end
+    end
+    return false;
+end
 
 -- ============================================
 -- Module Lifecycle
@@ -104,7 +125,10 @@ function M.Initialize(settings)
 
     -- Initialize data module (sets player job)
     data.Initialize();
-    data.MigratePetAwareSlotStorageKeys();
+    -- Migrate any legacy non-pet-aware storage keys + invalidate cache after migration.
+    if data.MigratePetAwareSlotStorageKeys then
+        data.MigratePetAwareSlotStorageKeys();
+    end
     data.InvalidateStorageKeyCache();
 
     -- Validate palettes on reload (not just on job change packets)
@@ -114,12 +138,18 @@ function M.Initialize(settings)
         local maxAttempts = 20;
 
         if data.SetPlayerJob() then
+            -- Honor pending "profile loaded before job was readable" (char select / logout)
+            -- so the default crossbar palette scope applies on first job-ready frame.
+            local pending = palette.ConsumePendingApplyDefaultCrossbarScopeFromProfile
+                and palette.ConsumePendingApplyDefaultCrossbarScopeFromProfile()
+                or nil;
             palette.ValidatePalettesForJob(data.jobId, data.subjobId, {
-                applyDefaultCrossbarScope = palette.ConsumePendingApplyDefaultCrossbarScopeFromProfile(),
+                applyDefaultCrossbarScope = pending,
             });
             macropalette.SyncToCurrentJob();
             display.ClearIconCache();
             slotrenderer.ClearAllCache();
+            actions.ClearNoIconCache();
             if crossbarInitialized then
                 crossbar.ClearIconCache();
             end
@@ -132,8 +162,11 @@ function M.Initialize(settings)
     end
 
     if data.jobId then
+        local pending = palette.ConsumePendingApplyDefaultCrossbarScopeFromProfile
+            and palette.ConsumePendingApplyDefaultCrossbarScopeFromProfile()
+            or nil;
         palette.ValidatePalettesForJob(data.jobId, data.subjobId, {
-            applyDefaultCrossbarScope = palette.ConsumePendingApplyDefaultCrossbarScopeFromProfile(),
+            applyDefaultCrossbarScope = pending,
         });
     else
         -- Job not ready yet, start retry loop
@@ -142,194 +175,30 @@ function M.Initialize(settings)
         end);
     end
 
-    -- Validate font settings
-    local fontSettings = settings and settings.font_settings;
-    local keybindFontSettings = settings and settings.keybind_font_settings;
-    local labelFontSettings = settings and settings.label_font_settings;
-
-    if not fontSettings then
-        print('[XIUI hotbar] Warning: Invalid font settings, using defaults');
-        fontSettings = {
-            font_family = 'Consolas',
-            font_height = 10,
-            font_color = 0xFFFFFFFF,
-            font_flags = 0,
-            outline_color = 0xFF000000,
-            outline_width = 2,
-        };
-    end
-
-    -- Use keybind/label specific settings or fall back to base font settings
-    keybindFontSettings = keybindFontSettings or fontSettings;
-    labelFontSettings = labelFontSettings or fontSettings;
-
-    -- Primitive base data
-    local primData = {
-        visible = false,
-        can_focus = false,
-        locked = true,
-        width = 100,
-        height = 100,
-    };
-
-    -- Create resources for each bar
-    data.allFonts = {};
-
-    for barIndex = 1, data.NUM_BARS do
-        -- Get per-bar settings
-        local barSettings = data.GetBarSettings(barIndex);
-        local bgTheme = barSettings.backgroundTheme or '-None-';
-        local bgScale = barSettings.bgScale or 1.0;
-        local borderScale = barSettings.borderScale or 1.0;
-        local slotCount = data.GetBarSlotCount(barIndex);
-
-        -- 1. Create background primitive (renders at bottom)
-        data.bgHandles[barIndex] = windowBg.create(primData, bgTheme, bgScale, borderScale);
-
-        -- 2. Create slot primitives (render above background) - up to MAX_SLOTS_PER_BAR
-        data.slotPrims[barIndex] = {};
-        for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-            local prim = primitives.new(primData);
-            prim.visible = false;
-            prim.can_focus = false;
-            data.slotPrims[barIndex][slotIndex] = prim;
-        end
-
-        -- 3. Create icon primitives (render above slot backgrounds)
-        data.iconPrims[barIndex] = {};
-        for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-            local prim = primitives.new(primData);
-            prim.visible = false;
-            prim.can_focus = false;
-            data.iconPrims[barIndex][slotIndex] = prim;
-        end
-
-        -- 4. Create cooldown overlay primitives (render above icons)
-        data.cooldownPrims[barIndex] = {};
-        for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-            local prim = primitives.new(primData);
-            prim.visible = false;
-            prim.can_focus = false;
-            data.cooldownPrims[barIndex][slotIndex] = prim;
-        end
-
-        -- 5. Create frame overlay primitives (render above cooldown overlays)
-        data.framePrims[barIndex] = {};
-        for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-            local prim = primitives.new(primData);
-            prim.visible = false;
-            prim.can_focus = false;
-            data.framePrims[barIndex][slotIndex] = prim;
-        end
-
-        -- Get per-bar font sizes
-        local kbFontSize = barSettings.keybindFontSize or 10;
-        local lblFontSize = barSettings.labelFontSize or 10;
-
-        -- 5. Create keybind fonts for each slot - up to MAX_SLOTS_PER_BAR
-        data.keybindFonts[barIndex] = {};
-        for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-            local kbSettings = deep_copy_table(keybindFontSettings);
-            kbSettings.font_height = kbFontSize;
-            local font = FontManager.create(kbSettings);
-            font:set_visible(false);
-            data.keybindFonts[barIndex][slotIndex] = font;
-        end
-
-        -- 6. Create label fonts for each slot (centered alignment for labels below slots)
-        data.labelFonts[barIndex] = {};
-        for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-            local lblSettings = deep_copy_table(labelFontSettings);
-            lblSettings.font_height = lblFontSize;
-            lblSettings.font_alignment = gdi.Alignment.Center;
-            local font = FontManager.create(lblSettings);
-            font:set_visible(false);
-            data.labelFonts[barIndex][slotIndex] = font;
-        end
-
-        -- 7. Create cooldown timer fonts (centered over slot)
-        local recastTimerFontSize = barSettings.recastTimerFontSize or 11;
-        local recastTimerFontColor = barSettings.recastTimerFontColor or 0xFFFFFFFF;
-        data.timerFonts[barIndex] = {};
-        for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-            local timerSettings = deep_copy_table(fontSettings);
-            timerSettings.font_height = recastTimerFontSize;
-            timerSettings.font_alignment = gdi.Alignment.Center;
-            timerSettings.font_color = recastTimerFontColor;
-            timerSettings.outline_color = 0xFF000000;
-            timerSettings.outline_width = 2;
-            local font = FontManager.create(timerSettings);
-            font:set_visible(false);
-            data.timerFonts[barIndex][slotIndex] = font;
-        end
-
-        -- 8. Create MP cost fonts (right-aligned at top-right corner)
-        local mpCostFontSize = barSettings.mpCostFontSize or 10;
-        local mpCostFontColor = barSettings.mpCostFontColor or 0xFFD4FF97;
-        data.mpCostFonts[barIndex] = {};
-        for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-            local mpSettings = deep_copy_table(fontSettings);
-            mpSettings.font_height = mpCostFontSize;
-            mpSettings.font_alignment = gdi.Alignment.Right;
-            mpSettings.font_color = mpCostFontColor;
-            mpSettings.outline_color = 0xFF000000;
-            mpSettings.outline_width = 2;
-            local font = FontManager.create(mpSettings);
-            font:set_visible(false);
-            data.mpCostFonts[barIndex][slotIndex] = font;
-        end
-
-        -- 9. Create item quantity fonts (right-aligned at bottom-right corner)
-        local quantityFontSize = barSettings.quantityFontSize or 10;
-        local quantityFontColor = barSettings.quantityFontColor or 0xFFFFFFFF;
-        data.quantityFonts[barIndex] = {};
-        for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-            local qtySettings = deep_copy_table(fontSettings);
-            qtySettings.font_height = quantityFontSize;
-            qtySettings.font_alignment = gdi.Alignment.Right;
-            qtySettings.font_color = quantityFontColor;
-            qtySettings.outline_color = 0xFF000000;
-            qtySettings.outline_width = 2;
-            local font = FontManager.create(qtySettings);
-            font:set_visible(false);
-            data.quantityFonts[barIndex][slotIndex] = font;
-        end
-
-        -- 10. Create abbreviation fonts (centered, gold color for icon-less actions)
-        data.abbreviationFonts[barIndex] = {};
-        for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-            local abbrSettings = deep_copy_table(fontSettings);
-            abbrSettings.font_height = 12;
-            abbrSettings.font_alignment = gdi.Alignment.Center;
-            abbrSettings.font_color = 0xFFF4DA97;  -- Gold color
-            abbrSettings.outline_color = 0xFF000000;
-            abbrSettings.outline_width = 2;
-            local font = FontManager.create(abbrSettings);
-            font:set_visible(false);
-            data.abbreviationFonts[barIndex][slotIndex] = font;
-        end
-
-        -- 11. Create hotbar number font
-        local numSettings = deep_copy_table(fontSettings);
-        numSettings.font_height = 12;
-        data.hotbarNumberFonts[barIndex] = FontManager.create(numSettings);
-        data.hotbarNumberFonts[barIndex]:set_visible(false);
-    end
-
-    -- Build the flattened font list for batch visibility operations.
-    -- (Must be rebuilt after any recreate() calls, too.)
-    data.RebuildAllFonts();
-
     -- Initialize display layer
     display.Initialize(settings);
 
-    -- Register pet change callback to clear slot caches
+    -- Register pet change callback to clear slot caches.
+    --
+    -- The wipes here are global (every hotbar slot, every crossbar slot,
+    -- macro palette pet commands). They're only meaningful for bars that
+    -- actually swap content on pet change — i.e. bars with petAware set.
+    -- If nothing on screen consumes pet state, summoning/releasing a pet
+    -- has no visible effect, and rebuilding every cache afterwards is pure
+    -- waste. The cost shows up most when another addon is also reacting
+    -- to combat traffic and the frame budget is tight.
     petpalette.OnPetChanged(function(oldPetKey, newPetKey)
-        -- Invalidate storage key cache (pet change affects storage keys)
+        -- Storage key cache is cheap to flip and is the only invalidation
+        -- whose absence could leave a bar showing pet-keyed slots after the
+        -- user toggled petAware off mid-pet. Always run it.
         data.InvalidateStorageKeyCache();
+
+        if not AnyBarIsPetAware() then return; end
+
         -- Clear ALL caches when pet changes to force full refresh
         slotrenderer.ClearAllCache();
         display.ClearIconCache();
+        actions.ClearNoIconCache();
         if crossbarInitialized then
             crossbar.ClearIconCache();
         end
@@ -337,11 +206,13 @@ function M.Initialize(settings)
         macropalette.ClearPetCommandsCache();
     end);
 
-    -- Register palette change callback to clear caches
+    -- Register palette change callback to clear caches.
+    -- Dedupe identical logical palette switches: SetActivePalette / SetActivePaletteForCombo
+    -- fire one callback per bar (1-6) or per combo mode (6x), so a single user palette change
+    -- triggers 6+ identical cache flushes if unguarded.
+    -- For no-op refreshes (same name -> same name, e.g. JSON import) include barIdentifier so
+    -- every bar/combo still runs; otherwise only the first callback fires and the UI stays blank.
     palette.OnPaletteChanged(function(barIdentifier, oldPaletteName, newPaletteName)
-        -- Dedupe identical logical palette switches (one refresh for all hotbar bars). For no-op
-        -- refreshes (same name -> same name, e.g. JSON import under one palette), include barIdentifier
-        -- so every bar/combo mode still runs; otherwise only the first callback ran and the UI stayed blank.
         local sig;
         if oldPaletteName == newPaletteName then
             sig = tostring(barIdentifier) .. '\0' .. tostring(oldPaletteName) .. '\0' .. tostring(newPaletteName);
@@ -374,8 +245,8 @@ function M.Initialize(settings)
     end
     -- If checkbox is OFF, macrofix is already applied by initialize_patches()
 
-    -- Initialize crossbar when enabled in settings
-    -- Defensive: validate gConfig.hotbarCrossbar is a table before accessing
+    -- Initialize crossbar when enabled (independent flag, not mode-based).
+    -- Defensive: validate gConfig.hotbarCrossbar is a table before accessing.
     local crossbarConfig = gConfig and type(gConfig.hotbarCrossbar) == 'table' and gConfig.hotbarCrossbar or nil;
     local crossbarNeeded = gConfig and gConfig.crossbarEnabled ~= false;
     if crossbarNeeded and crossbarConfig then
@@ -400,7 +271,7 @@ function M.Initialize(settings)
         controller.SetSlotActivateCallback(function(comboMode, slotIndex)
             crossbar.ActivateSlot(comboMode, slotIndex);
         end);
-        -- Set controller blocking enabled state (crossbar-specific; independent hotbar setting)
+        -- Set controller blocking enabled state (crossbar-specific; shares the hotbar flag).
         controller.SetBlockingEnabled(GetCrossbarDisableXiMacrosEffective());
         crossbarInitialized = true;
     end
@@ -420,64 +291,14 @@ end
 function M.UpdateVisuals(settings)
     if not M.initialized then return; end
 
-    local fontSettings = settings and settings.font_settings;
-    local keybindFontSettings = settings and settings.keybind_font_settings or fontSettings;
-    local labelFontSettings = settings and settings.label_font_settings or fontSettings;
-
-    if not fontSettings then return; end
-
-    -- Recreate fonts for each bar
-    for barIndex = 1, data.NUM_BARS do
-        -- Get per-bar font sizes
-        local barSettings = data.GetBarSettings(barIndex);
-        local kbFontSize = barSettings.keybindFontSize or 10;
-        local lblFontSize = barSettings.labelFontSize or 10;
-
-        -- Keybind fonts
-        if data.keybindFonts[barIndex] then
-            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-                if data.keybindFonts[barIndex][slotIndex] then
-                    local kbSettings = deep_copy_table(keybindFontSettings);
-                    kbSettings.font_height = kbFontSize;
-                    data.keybindFonts[barIndex][slotIndex] = FontManager.recreate(
-                        data.keybindFonts[barIndex][slotIndex], kbSettings
-                    );
-                end
-            end
-        end
-
-        -- Label fonts
-        if data.labelFonts[barIndex] then
-            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-                if data.labelFonts[barIndex][slotIndex] then
-                    local lblSettings = deep_copy_table(labelFontSettings);
-                    lblSettings.font_height = lblFontSize;
-                    lblSettings.font_alignment = gdi.Alignment.Center;
-                    data.labelFonts[barIndex][slotIndex] = FontManager.recreate(
-                        data.labelFonts[barIndex][slotIndex], lblSettings
-                    );
-                end
-            end
-        end
-
-        -- Hotbar number font
-        if data.hotbarNumberFonts[barIndex] then
-            local numSettings = deep_copy_table(fontSettings);
-            numSettings.font_height = 12;
-            data.hotbarNumberFonts[barIndex] = FontManager.recreate(
-                data.hotbarNumberFonts[barIndex], numSettings
-            );
-        end
-    end
-
-    -- IMPORTANT: recreate() changes object references; rebuild the batch list so hiding works reliably.
-    data.RebuildAllFonts();
-
-    -- Clear slot cache since fonts were recreated (cache tracks font text state)
+    -- Clear slot cache since settings changed
     slotrenderer.ClearAllCache();
 
     -- Update display layer (handles theme changes)
     display.UpdateVisuals(settings);
+
+    -- Reset imtext font cache so new settings take effect
+    imtext.Reset();
 
     -- Apply correct macro bar mode based on setting
     local disableMacroBars = gConfig and gConfig.hotbarGlobal and gConfig.hotbarGlobal.disableMacroBars or false;
@@ -490,7 +311,7 @@ function M.UpdateVisuals(settings)
         macrosLib.set_controller_hold_to_show(holdToShow);
     end
 
-    -- Handle crossbar enable/disable (independent from keyboard hotbars)
+    -- Handle crossbar enable/disable (independent flag, not mode-based)
     local crossbarNeeded = gConfig and gConfig.crossbarEnabled ~= false;
 
     if crossbarNeeded and not crossbarInitialized then
@@ -508,7 +329,7 @@ function M.UpdateVisuals(settings)
         controller.SetSlotActivateCallback(function(comboMode, slotIndex)
             crossbar.ActivateSlot(comboMode, slotIndex);
         end);
-        -- Set controller blocking enabled state (crossbar-specific)
+        -- Set controller blocking enabled state (crossbar-specific; shares the hotbar flag).
         controller.SetBlockingEnabled(GetCrossbarDisableXiMacrosEffective());
         crossbarInitialized = true;
     elseif not crossbarNeeded and crossbarInitialized then
@@ -530,7 +351,7 @@ function M.UpdateVisuals(settings)
             customMapping = gConfig.hotbarCrossbar.customControllerMappings.dinput;
         end
         controller.SetControllerScheme(gConfig.hotbarCrossbar.controllerScheme, customMapping);
-        -- Update controller blocking state (crossbar-specific)
+        -- Update controller blocking state (crossbar-specific; shares the hotbar flag).
         controller.SetBlockingEnabled(GetCrossbarDisableXiMacrosEffective());
     end
 
@@ -543,6 +364,11 @@ function M.DrawWindow(settings)
     if not M.initialized then return; end
     if not M.visible then return; end
 
+    imtext.SetConfigFromSettings(settings and settings.font_settings);
+
+    -- Reset deferred tooltip state for this frame
+    slotrenderer.BeginFrame(settings and settings.font_settings);
+
     -- Update drag/drop state (must be called every frame, before drop zones)
     dragdrop.Update();
 
@@ -552,8 +378,9 @@ function M.DrawWindow(settings)
         texturesInitialized = true;
     end
 
-    -- Hotbar and crossbar are independent; either, both, or neither can be on.
-    -- Menu-hide is evaluated here (not module registry) so keyboard vs crossbar can differ.
+    -- Hotbar and crossbar are independent; either, both, or neither can be on. Menu-hide
+    -- is evaluated here per-system so keyboard hotbars and the crossbar can have different
+    -- hideOnMenuFocus behaviors (they previously shared `hotbarHideOnMenuFocus`).
     local menuOpen = gameState.IsMenuOpen();
     local hideKbOnMenu = gConfig.hotbarHideOnMenuFocus == true;
     local hideXbOnMenu = gConfig.hotbarCrossbar and gConfig.hotbarCrossbar.crossbarHideOnMenuFocus == true;
@@ -578,34 +405,42 @@ function M.DrawWindow(settings)
         crossbar.SetHidden(true);
     end
 
-    -- Always draw macro palette and keybind modal (regardless of mode)
+    -- Always draw macro palette and keybind modal (regardless of enabled state)
     macropalette.DrawPalette();
     hotbarConfig.DrawKeybindModal();
 
-    -- Drop previews / deferred overlaps happen in FinalizeFrame(): FlushDeferredDrops then Render (XIUI.lua calls FinalizeFrame after palettemanager.Draw).
+    -- Drop previews / deferred overlaps happen in M.FinalizeFrame() — XIUI.lua calls it
+    -- after palettemanager.Draw so the floating palette can win when its DropZone overlaps
+    -- the HUD crossbar / Edit Full Palette preview.
 end
 
+-- Called by XIUI.lua at the very end of d3d_present, after palettemanager.Draw().
+-- Resolves overlapping DropZone hits via FlushDeferredDrops (highest dropPriority wins)
+-- and then renders the drag preview overlay.
 function M.FinalizeFrame()
     if not M.initialized then return; end
 
-    -- Overlapping DropZones (HUD vs Edit Full Palette): defer execution then pick highest dropPriority (libs/dragdrop.lua).
+    -- Resolve overlapping DropZones (HUD crossbar vs. Edit Full Palette preview, etc.)
     dragdrop.FlushDeferredDrops();
     dragdrop.Render();
 
+    -- Handle slot dragged outside (remove the action)
     if dragdrop.WasDroppedOutside() then
         local lastPayload = dragdrop.GetLastPayload();
         if lastPayload then
             if lastPayload.type == 'slot' then
+                -- Standard hotbar slot was dragged outside - clear it
                 macropalette.ClearSlot(lastPayload.barIndex, lastPayload.slotIndex);
             elseif lastPayload.type == 'crossbar_slot' then
-                if lastPayload.paletteEditStorageKey then
+                -- Crossbar slot dragged outside: distinguish a draft slot (Edit Full Palette
+                -- editing buffer) from a live HUD slot so we don't blow away the wrong store.
+                if lastPayload.paletteEditStorageKey and data.ClearDraftSlotData then
                     data.ClearDraftSlotData(lastPayload.comboMode, lastPayload.slotIndex);
                 else
                     data.ClearCrossbarSlotData(lastPayload.comboMode, lastPayload.slotIndex);
                 end
                 if crossbarInitialized then
                     crossbar.ClearIconCacheForSlot(lastPayload.comboMode, lastPayload.slotIndex);
-                    slotrenderer.InvalidateSlotByKey(lastPayload.comboMode .. ':' .. lastPayload.slotIndex);
                 end
             end
         end
@@ -615,14 +450,6 @@ end
 -- Set module visibility
 function M.SetHidden(hidden)
     M.visible = not hidden;
-    if hidden then
-        data.SetAllFontsVisible(false);
-        for barIndex = 1, data.NUM_BARS do
-            if data.bgHandles[barIndex] then
-                windowBg.hide(data.bgHandles[barIndex]);
-            end
-        end
-    end
     display.SetHidden(hidden);
     if crossbarInitialized then
         crossbar.SetHidden(hidden);
@@ -635,109 +462,6 @@ function M.Cleanup()
 
     -- Flush any pending slot saves before cleanup
     macropalette.FlushPendingSave();
-
-    -- Destroy fonts for each bar
-    for barIndex = 1, data.NUM_BARS do
-        -- Keybind fonts
-        if data.keybindFonts[barIndex] then
-            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-                if data.keybindFonts[barIndex][slotIndex] then
-                    FontManager.destroy(data.keybindFonts[barIndex][slotIndex]);
-                end
-            end
-        end
-
-        -- Label fonts
-        if data.labelFonts[barIndex] then
-            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-                if data.labelFonts[barIndex][slotIndex] then
-                    FontManager.destroy(data.labelFonts[barIndex][slotIndex]);
-                end
-            end
-        end
-
-        -- Timer fonts
-        if data.timerFonts[barIndex] then
-            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-                if data.timerFonts[barIndex][slotIndex] then
-                    FontManager.destroy(data.timerFonts[barIndex][slotIndex]);
-                end
-            end
-        end
-
-        -- MP cost fonts
-        if data.mpCostFonts[barIndex] then
-            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-                if data.mpCostFonts[barIndex][slotIndex] then
-                    FontManager.destroy(data.mpCostFonts[barIndex][slotIndex]);
-                end
-            end
-        end
-
-        -- Item quantity fonts
-        if data.quantityFonts[barIndex] then
-            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-                if data.quantityFonts[barIndex][slotIndex] then
-                    FontManager.destroy(data.quantityFonts[barIndex][slotIndex]);
-                end
-            end
-        end
-
-        -- Abbreviation fonts
-        if data.abbreviationFonts[barIndex] then
-            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-                if data.abbreviationFonts[barIndex][slotIndex] then
-                    FontManager.destroy(data.abbreviationFonts[barIndex][slotIndex]);
-                end
-            end
-        end
-
-        -- Hotbar number font
-        if data.hotbarNumberFonts[barIndex] then
-            FontManager.destroy(data.hotbarNumberFonts[barIndex]);
-        end
-
-        -- Destroy background
-        if data.bgHandles[barIndex] then
-            windowBg.destroy(data.bgHandles[barIndex]);
-        end
-
-        -- Destroy slot primitives
-        if data.slotPrims[barIndex] then
-            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-                if data.slotPrims[barIndex][slotIndex] then
-                    data.slotPrims[barIndex][slotIndex]:destroy();
-                end
-            end
-        end
-
-        -- Destroy icon primitives
-        if data.iconPrims[barIndex] then
-            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-                if data.iconPrims[barIndex][slotIndex] then
-                    data.iconPrims[barIndex][slotIndex]:destroy();
-                end
-            end
-        end
-
-        -- Destroy cooldown primitives
-        if data.cooldownPrims[barIndex] then
-            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-                if data.cooldownPrims[barIndex][slotIndex] then
-                    data.cooldownPrims[barIndex][slotIndex]:destroy();
-                end
-            end
-        end
-
-        -- Destroy frame primitives
-        if data.framePrims[barIndex] then
-            for slotIndex = 1, data.MAX_SLOTS_PER_BAR do
-                if data.framePrims[barIndex][slotIndex] then
-                    data.framePrims[barIndex][slotIndex]:destroy();
-                end
-            end
-        end
-    end
 
     -- Cleanup display and data layers
     display.Cleanup();
@@ -768,6 +492,8 @@ function M.HandleZonePacket()
     petpalette.ClearPetState();
     -- Clear availability cache since player state is invalid during zone
     slotrenderer.ClearAvailabilityCache();
+    -- Universal 2hr glow state can hold a stale subtarget arm across zones.
+    -- Defensive require: module may not be merged yet in intermediate states.
     local okU, uth = pcall(require, 'modules.hotbar.universal_two_hour');
     if okU and uth and uth.ResetUniversalTwoHourSubtargetGlowArm then
         uth.ResetUniversalTwoHourSubtargetGlowArm();
@@ -780,22 +506,28 @@ function M.HandleJobChangePacket(e)
         local maxAttempts = 20;
 
         if data.SetPlayerJob() then
-            -- Job successfully read - proceed with refresh
+            -- Job successfully read - proceed with refresh.
+            -- Reset universal 2hr subtarget glow arm; it can carry stale state across job change.
             local okU, uth = pcall(require, 'modules.hotbar.universal_two_hour');
             if okU and uth and uth.ResetUniversalTwoHourSubtargetGlowArm then
                 uth.ResetUniversalTwoHourSubtargetGlowArm();
             end
             macropalette.SyncToCurrentJob();
+            -- Universal 2hr global row mirrors the current job's 2hr ability; resync after job change.
             local okMg, macroGlobalDefaults = pcall(require, 'modules.hotbar.macro_global_defaults');
             if okMg and macroGlobalDefaults and macroGlobalDefaults.SyncUniversalTwoHourGlobalRow and gConfig then
                 macroGlobalDefaults.SyncUniversalTwoHourGlobalRow(gConfig);
             end
             -- Honor pending "profile loaded before job was readable" (char select / logout) so
-            -- Default Palette Type on Profile Load applies on first zone-in or job packet.
+            -- Default Palette Type on Profile Load applies on first job-ready frame.
+            local pending = palette.ConsumePendingApplyDefaultCrossbarScopeFromProfile
+                and palette.ConsumePendingApplyDefaultCrossbarScopeFromProfile()
+                or nil;
             palette.ValidatePalettesForJob(data.jobId, data.subjobId, {
-                applyDefaultCrossbarScope = palette.ConsumePendingApplyDefaultCrossbarScopeFromProfile(),
+                applyDefaultCrossbarScope = pending,
             });
             display.ClearIconCache();
+            actions.ClearNoIconCache();
             if crossbarInitialized then
                 crossbar.ClearIconCache();
             end
@@ -870,6 +602,7 @@ function M.HandleKey(event)
 end
 
 function M.HandleXInputState(e)
+    -- Controller events go through crossbar regardless of keyboard hotbar enable state.
     if not crossbarInitialized then return; end
     controller.HandleXInputState(e);
 end

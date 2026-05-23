@@ -30,6 +30,11 @@ local EQUIP_SIGNATURE_POLL_INTERVAL = 0.6;
 local equipmentWs = require('modules.hotbar.equipment_ws');
 local horizonRetailOnlyJa = require('modules.hotbar.database.horizon_retail_only_job_abilities');
 local universalTwoHour = require('modules.hotbar.universal_two_hour');
+-- Pre-existing name->id hashmap module (built lazily, session-cached). Replaces several
+-- per-call O(1024) `for abilityId = 1, 1024 do ... resMgr:GetAbilityById(...)` scans for
+-- name-based lookups. Audit pass: both 1.8.0 and Ferris kept this module but neither
+-- propagated it into playerdata.lua's scans.
+local actiondb = require('modules.hotbar.actiondb');
 
 -- ============================================
 -- Container Definitions
@@ -211,14 +216,39 @@ function M.GetPlayerSpells()
     return spells;
 end
 
--- Ability Type constants (from IAbility.Type & 7)
--- Type 3: Weapon Skill
-local ABILITY_TYPE_WEAPON_SKILL = 3;
+-- Ability Type constants — IAbility.Type is a plain uint8 enum (NOT a bitfield).
+-- Authoritative source: ai/references/Ashita-v4beta/plugins/sdk/ffxi/enums.h `AbilityType`.
+local ABILITY_TYPE = {
+    General           = 0,
+    JobAbility        = 1,
+    PetCommand        = 2,
+    WeaponSkill       = 3,
+    Trait             = 4,
+    BloodPactRage     = 6,
+    CorsairRoll       = 8,
+    CorsairShot       = 9,
+    BloodPactWard     = 10,
+    DancerSamba       = 11,
+    DancerWaltz       = 12,
+    DancerStep        = 13,
+    DancerFlourish1   = 14,
+    ScholarStratagem  = 15,
+    DancerJig         = 16,
+    DancerFlourish2   = 17,
+    BeastmasterSic    = 18,
+    DancerFlourish3   = 19,
+    MonsterSkill      = 20,
+    RuneEnhancement   = 21,
+    RuneWard          = 22,
+    RuneEffusion      = 23,
+};
+-- Backward-compat alias for Ferris's existing code paths.
+local ABILITY_TYPE_WEAPON_SKILL = ABILITY_TYPE.WeaponSkill;
 
 -- Pet commands shown under Pet Command in the macro UI — excluded from the Job Ability dropdown only.
 -- Players may still macro these as `/ja "Name"` in-game; IsAbilityInCache() accepts them when HasAbility is true.
+-- Note: 'Assault' (BST pet) intentionally OMITTED — confusable with the Treasures of Aht Urhgan in-game system.
 local PET_COMMAND_NAMES = {
-    ['Assault'] = true,
     ['Retreat'] = true,
     ['Stay'] = true,
     ['Heel'] = true,
@@ -233,6 +263,19 @@ local PET_COMMAND_NAMES = {
     ['Retrieve'] = true,
     ['Activate'] = true,
     ['Deactivate'] = true,
+};
+
+-- FFXI macro-maker subcategory headers ("Sambas", "Waltzes", etc.) are present as ability
+-- entries in the resource manager and HasAbility() returns true for them, but they aren't
+-- executable. Filter them out of the JA dropdown and IsAbilityInCache.
+local CATEGORY_PLACEHOLDER_NAMES = {
+    ['Sambas']         = true,
+    ['Waltzes']        = true,
+    ['Steps']          = true,
+    ['Jigs']           = true,
+    ['Flourishes I']   = true,
+    ['Flourishes II']  = true,
+    ['Flourishes III'] = true,
 };
 
 local function sortRankFamiliarFirst(name)
@@ -260,15 +303,16 @@ local function playerHasLearnedNonWsAbilityByName(abilityName)
     if not resMgr then
         return false;
     end
-    for abilityId = 1, 1024 do
-        if player:HasAbility(abilityId) then
-            local ability = resMgr:GetAbilityById(abilityId);
-            if ability and ability.Name and ability.Name[1] == abilityName then
-                local abilityType = ability.Type and bit.band(ability.Type, 7) or 0;
-                if abilityType ~= ABILITY_TYPE_WEAPON_SKILL then
-                    return true;
-                end
-            end
+    -- Audit win: O(1) name->id via actiondb (session-cached lazy hashmap) replaces the
+    -- O(1024) scan that was here. Same semantics: confirm player has learned it AND it
+    -- is not a weapon-skill type. Falls back to scan if actiondb returns nil (e.g. before
+    -- the lookup table is populated for some edge resource-manager state).
+    local id = actiondb.GetAbilityId(abilityName);
+    if id and id > 0 and player:HasAbility(id) then
+        local ability = resMgr:GetAbilityById(id);
+        if ability and ability.Name and ability.Name[1] == abilityName then
+            local abilityType = ability.Type or 0;
+            return abilityType ~= ABILITY_TYPE_WEAPON_SKILL;
         end
     end
     return false;
@@ -295,12 +339,17 @@ function M.GetPlayerAbilities()
         if player:HasAbility(abilityId) then
             local ability = resMgr:GetAbilityById(abilityId);
             if ability and ability.Name and ability.Name[1] and ability.Name[1] ~= '' then
-                local abilityType = ability.Type and bit.band(ability.Type, 7) or 0;
+                local abilityType = ability.Type or 0;
 
                 local abilityName = ability.Name[1];
+                -- Exclude: weapon skills (separate dropdown), passive traits (not macroable),
+                -- pet commands (separate section), Horizon retail-only entries, and FFXI's
+                -- subcategory header placeholders ("Sambas", "Waltzes", etc.).
                 if not horizonRetailOnlyJa[abilityName]
-                    and abilityType ~= ABILITY_TYPE_WEAPON_SKILL
-                    and not PET_COMMAND_NAMES[abilityName] then
+                    and abilityType ~= ABILITY_TYPE.WeaponSkill
+                    and abilityType ~= ABILITY_TYPE.Trait
+                    and not PET_COMMAND_NAMES[abilityName]
+                    and not CATEGORY_PLACEHOLDER_NAMES[abilityName] then
 
                     if not addedAbilities[abilityId] then
                         local source = 'main';
@@ -368,28 +417,30 @@ function M.GetPlayerWeaponskills()
     local weaponskills = {};
     local addedWeaponskills = {};
 
-    for abilityId = 1, 1024 do
+    -- Audit win: iterate the static WS-ability-ID list from actiondb instead of scanning
+    -- all 1024 ability slots. The Type==3 filter is moved into the one-time list build,
+    -- so the per-call loop only has to check HasAbility + dedup.
+    local wsIds = actiondb.GetWeaponSkillAbilityIds();
+    for i = 1, #wsIds do
+        local abilityId = wsIds[i];
         if player:HasAbility(abilityId) then
             local ability = resMgr:GetAbilityById(abilityId);
             if ability and ability.Name and ability.Name[1] and ability.Name[1] ~= '' then
-                local abilityType = ability.Type and bit.band(ability.Type, 7) or 0;
-                if abilityType == ABILITY_TYPE_WEAPON_SKILL then
-                    local wsName = ability.Name[1];
-                    if not addedWeaponskills[wsName] then
-                        local info = wsDb[wsName];
-                        local reqStr = nil;
-                        if info then
-                            reqStr = info.relic and 'Relic Weapon' or ('Skill ' .. tostring(info.skill));
-                        end
-                        table.insert(weaponskills, {
-                            id = abilityId,
-                            name = wsName,
-                            reqStr = reqStr,
-                            skill = info and info.skill or 0,
-                            relic = info and info.relic or false,
-                        });
-                        addedWeaponskills[wsName] = true;
+                local wsName = ability.Name[1];
+                if not addedWeaponskills[wsName] then
+                    local info = wsDb[wsName];
+                    local reqStr = nil;
+                    if info then
+                        reqStr = info.relic and 'Relic Weapon' or ('Skill ' .. tostring(info.skill));
                     end
+                    table.insert(weaponskills, {
+                        id = abilityId,
+                        name = wsName,
+                        reqStr = reqStr,
+                        skill = info and info.skill or 0,
+                        relic = info and info.relic or false,
+                    });
+                    addedWeaponskills[wsName] = true;
                 end
             end
         end
@@ -410,12 +461,12 @@ local function countLearnedWeaponSkillAbilities(player)
     local resMgr = AshitaCore:GetResourceManager();
     if not resMgr then return 0; end
     local c = 0;
-    for abilityId = 1, 1024 do
-        if player:HasAbility(abilityId) then
-            local ability = resMgr:GetAbilityById(abilityId);
-            if ability and ability.Type and bit.band(ability.Type, 7) == ABILITY_TYPE_WEAPON_SKILL then
-                c = c + 1;
-            end
+    -- Audit win: same actiondb-driven optimization. The WS-id list already filters by Type == 3
+    -- so the per-call body just needs HasAbility check + counter increment.
+    local wsIds = actiondb.GetWeaponSkillAbilityIds();
+    for i = 1, #wsIds do
+        if player:HasAbility(wsIds[i]) then
+            c = c + 1;
         end
     end
     return c;
@@ -684,17 +735,17 @@ function M.DiscoverNewWeaponskills()
     local resMgr = AshitaCore:GetResourceManager();
     local found = false;
 
-    for abilityId = 1, 1024 do
+    -- Audit win: same actiondb-driven optimization as GetPlayerWeaponskills.
+    local wsIds = actiondb.GetWeaponSkillAbilityIds();
+    for i = 1, #wsIds do
+        local abilityId = wsIds[i];
         if player:HasAbility(abilityId) then
             local ability = resMgr:GetAbilityById(abilityId);
             if ability and ability.Name and ability.Name[1] and ability.Name[1] ~= '' then
-                local abilityType = ability.Type and bit.band(ability.Type, 7) or 0;
-                if abilityType == ABILITY_TYPE_WEAPON_SKILL then
-                    local wsName = ability.Name[1];
-                    if not knownWeaponskills[wsName] then
-                        knownWeaponskills[wsName] = true;
-                        found = true;
-                    end
+                local wsName = ability.Name[1];
+                if not knownWeaponskills[wsName] then
+                    knownWeaponskills[wsName] = true;
+                    found = true;
                 end
             end
         end
@@ -867,25 +918,17 @@ function M.GetAllAbilitiesForCurrentJob(filterJobId)
 
     local horizonAbilities = require('modules.hotbar.database.horizon_abilities');
 
-    -- Build a name->abilityId lookup from the resource manager (for icon resolution)
-    local nameToId = {};
-    for abilityId = 1, 1024 do
-        local ability = resMgr:GetAbilityById(abilityId);
-        if ability and ability.Name and ability.Name[1] and ability.Name[1] ~= '' then
-            if not nameToId[ability.Name[1]] then
-                nameToId[ability.Name[1]] = abilityId;
-            end
-        end
-    end
-
-    -- Build a set of abilities the player currently has
+    -- Audit win: previously this function did TWO O(1024) resource-manager scans per
+    -- cache miss (one to build name->id, one to populate playerHas). Both are now driven
+    -- by `actiondb` (lazy session-cached name->id hashmap) + iterating the ~80-entry
+    -- horizon_abilities table instead. Net: ~4096 resource calls collapses to ~160 on
+    -- a cache miss (job change / profile load), with actiondb's one-time hashmap build
+    -- amortized across all callers.
     local playerHas = {};
-    for abilityId = 1, 1024 do
-        if player:HasAbility(abilityId) then
-            local ability = resMgr:GetAbilityById(abilityId);
-            if ability and ability.Name and ability.Name[1] and ability.Name[1] ~= '' then
-                playerHas[ability.Name[1]] = true;
-            end
+    for abilityName, _ in pairs(horizonAbilities) do
+        local id = actiondb.GetAbilityId(abilityName);
+        if id and id > 0 and player:HasAbility(id) then
+            playerHas[abilityName] = true;
         end
     end
 
@@ -929,7 +972,7 @@ function M.GetAllAbilitiesForCurrentJob(filterJobId)
 
         local hj = info.job;
         table.insert(abilities, {
-            id = nameToId[abilityName] or 0,
+            id = actiondb.GetAbilityId(abilityName) or 0,
             name = abilityName,
             level = info.level,
             jobId = hj,

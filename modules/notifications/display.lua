@@ -1,7 +1,7 @@
 --[[
 * XIUI Notifications - Display Module
 * Handles all rendering for notification system
-* Uses primitives for backgrounds, GDI fonts for text (following petbar pattern)
+* Uses primitives for backgrounds and imtext for text rendering
 ]]--
 
 require('common');
@@ -13,13 +13,9 @@ local progressbar = require('libs.progressbar');
 local TextureManager = require('libs.texturemanager');
 local windowBg = require('libs.windowbackground');
 local defaultPositions = require('libs.defaultpositions');
+local imtext = require('libs.imtext');
 
 local M = {};
-
--- Position save/restore state
-local hasAppliedSavedPosition = false;
-local forcePositionReset = false;
-local lastSavedPosX, lastSavedPosY = nil, nil;
 
 -- Global slot counter for notification rendering
 -- Reset at start of DrawWindow, incremented for each notification drawn
@@ -34,30 +30,22 @@ local currentSlot = 0;
 -- Value: {text = original_text, maxWidth = width, fontHeight = height, truncated = result}
 local truncatedTextCache = {};
 
--- Truncates text to fit within maxWidth using binary search for optimal performance
-local function TruncateTextToFit(fontObj, text, maxWidth)
+-- Truncates text to fit within maxWidth using binary search with imtext.Measure
+local function TruncateTextToFit(text, maxWidth, fontSize)
     -- First check if text fits without truncation
-    fontObj:set_text(text);
-    local width, height = fontObj:get_text_size();
-
-    if (width <= maxWidth) then
-        return text;
-    end
+    local width, _ = imtext.Measure(text, fontSize);
+    if width <= maxWidth then return text; end
 
     -- Text is too long, use binary search to find optimal truncation point
     local ellipsis = "...";
-    local maxLength = #text;
-
     -- Binary search for the longest substring that fits with ellipsis
-    local left, right = 1, maxLength;
+    local left, right = 1, #text;
     local bestLength = 0;
 
     while left <= right do
         local mid = math.floor((left + right) / 2);
         local truncated = text:sub(1, mid) .. ellipsis;
-        fontObj:set_text(truncated);
-        width, height = fontObj:get_text_size();
-
+        width, _ = imtext.Measure(truncated, fontSize);
         if width <= maxWidth then
             -- This length fits, try a longer one
             bestLength = mid;
@@ -68,28 +56,25 @@ local function TruncateTextToFit(fontObj, text, maxWidth)
         end
     end
 
-    if bestLength > 0 then
-        return text:sub(1, bestLength) .. ellipsis;
-    end
-
+    if bestLength > 0 then return text:sub(1, bestLength) .. ellipsis; end
     -- Fallback: just ellipsis
     return ellipsis;
 end
 
 -- Get truncated text with caching
-local function GetTruncatedText(fontObj, text, maxWidth, fontHeight, cacheKey)
+local function GetTruncatedText(text, maxWidth, fontSize, cacheKey)
     local cached = truncatedTextCache[cacheKey];
-    if cached and cached.text == text and cached.maxWidth == maxWidth and cached.fontHeight == fontHeight then
+    if cached and cached.text == text and cached.maxWidth == maxWidth and cached.fontHeight == fontSize then
         -- Cache hit - reuse truncated text
         return cached.truncated;
     end
 
     -- Cache miss - compute and store
-    local truncated = TruncateTextToFit(fontObj, text, maxWidth);
+    local truncated = TruncateTextToFit(text, maxWidth, fontSize);
     truncatedTextCache[cacheKey] = {
         text = text,
         maxWidth = maxWidth,
-        fontHeight = fontHeight,
+        fontHeight = fontSize,
         truncated = truncated
     };
     return truncated;
@@ -189,7 +174,7 @@ end
 -- Notification Rendering
 -- ============================================
 
--- Draw a single notification using primitives, GDI fonts, and progress bar
+-- Draw a single notification using primitives, imtext, and progress bar
 local function drawNotification(slot, notification, x, y, width, height, settings, drawList)
     -- Apply animation state
     local alpha = notification.alpha or 1;
@@ -199,14 +184,9 @@ local function drawNotification(slot, notification, x, y, width, height, setting
         return;
     end
 
-    -- Get primitive and fonts for this slot
-    local bgPrim = notificationData.bgPrims[slot];
-    local titleFont = notificationData.titleFonts[slot];
-    local subtitleFont = notificationData.subtitleFonts[slot];
+    -- Global UI scale (multiplied into raw gConfig.notifications* dimensional reads).
+    local gs = gConfig.globalScale or 1.0;
 
-    if not bgPrim or not titleFont or not subtitleFont then
-        return;
-    end
     local containerOffsetX = notification.containerOffsetX or 0;
     local iconOffsetX = notification.iconOffsetX or 0;
     local textOffsetY = notification.textOffsetY or 0;
@@ -221,8 +201,8 @@ local function drawNotification(slot, notification, x, y, width, height, setting
     -- Update background using windowbackground library
     -- Get background settings from config
     local bgTheme = gConfig.notificationsBackgroundTheme or 'Plain';
-    local bgScale = gConfig.notificationsBgScale or 1.0;
-    local borderScale = gConfig.notificationsBorderScale or 1.0;
+    local bgScale = (gConfig.notificationsBgScale or 1.0) * gs;
+    local borderScale = (gConfig.notificationsBorderScale or 1.0) * gs;
     local configBgOpacity = gConfig.notificationsBgOpacity or 0.87;
     local configBorderOpacity = gConfig.notificationsBorderOpacity or 1.0;
 
@@ -230,7 +210,7 @@ local function drawNotification(slot, notification, x, y, width, height, setting
     local bgOpacity = alpha * configBgOpacity;
     local borderOpacity = alpha * configBorderOpacity;
 
-    windowBg.update(bgPrim, x, y, scaledWidth, scaledHeight, {
+    windowBg.Draw(drawList, x, y, scaledWidth, scaledHeight, {
         theme = bgTheme,
         padding = 0,
         bgScale = bgScale,
@@ -262,9 +242,9 @@ local function drawNotification(slot, notification, x, y, width, height, setting
             dotColorTable = {1.0, 0.65, 0.0, finalPulseAlpha};  -- #FFA500
         end
 
-        -- Draw pulsing dot on right side
-        local dotRadius = 4;
-        local dotX = x + scaledWidth - 10;
+        -- Draw pulsing dot on right side (scaled by gs to match scaled background)
+        local dotRadius = 4 * gs;
+        local dotX = x + scaledWidth - 10 * gs;
         local dotY = y + (scaledHeight / 2);
         local dotU32 = imgui.GetColorU32(dotColorTable);
         drawList:AddCircleFilled({dotX, dotY}, dotRadius, dotU32, 12);
@@ -276,11 +256,11 @@ local function drawNotification(slot, notification, x, y, width, height, setting
     local minifyProgress = notificationData.GetMinifyProgress(notification);
 
     -- Content padding from config (countdown bar excluded)
-    local contentPadding = gConfig.notificationsPadding or 8;
+    local contentPadding = (gConfig.notificationsPadding or 8) * gs;
 
-    -- Interpolate icon size (32px -> 16px) during minify
-    local normalIconSize = 32;
-    local minifiedIconSize = 16;
+    -- Interpolate icon size (32px -> 16px) during minify (both scaled by gs)
+    local normalIconSize = 32 * gs;
+    local minifiedIconSize = 16 * gs;
 
     local iconSize;
     if isMinifying then
@@ -301,12 +281,12 @@ local function drawNotification(slot, notification, x, y, width, height, setting
     local icon = getNotificationIcon(notification);
 
     -- Get font sizes from config (user-adjustable) with fallback to settings
-    -- No scaling - fonts fade in/out with opacity instead
-    local titleFontHeight = gConfig.notificationsTitleFontSize or (settings.title_font_settings and settings.title_font_settings.font_height) or 14;
-    local subtitleFontHeight = gConfig.notificationsSubtitleFontSize or (settings.font_settings and settings.font_settings.font_height) or 12;
+    -- All paths are raw values; multiply by gs for global scale.
+    local titleFontHeight = (gConfig.notificationsTitleFontSize or (settings.title_font_settings and settings.title_font_settings.font_height) or 14) * gs;
+    local subtitleFontHeight = (gConfig.notificationsSubtitleFontSize or (settings.font_settings and settings.font_settings.font_height) or 12) * gs;
 
     -- Calculate text position (shifts right if icon exists)
-    local iconTextGap = 6;  -- Gap between icon and text
+    local iconTextGap = 6 * gs;  -- Gap between icon and text
     local textX = x + contentPadding;
     if icon then
         textX = x + contentPadding + iconSize + iconTextGap;  -- Shift right past icon (use base x, not iconX with offset)
@@ -318,15 +298,16 @@ local function drawNotification(slot, notification, x, y, width, height, setting
         -- Minified: center single line of text (subtract 1px for visual alignment)
         baseTextY = y + math.floor((contentHeight - subtitleFontHeight) / 2) - 1;
     else
-        -- Normal: center text block (title + 2px gap + subtitle)
-        local textBlockHeight = titleFontHeight + 2 + subtitleFontHeight;
+        -- Normal: center text block (title + scaled 2px gap + subtitle)
+        local textBlockHeight = titleFontHeight + 2 * gs + subtitleFontHeight;
         baseTextY = y + math.floor((contentHeight - textBlockHeight) / 2);
     end
     local textY = baseTextY + textOffsetY;
 
-    -- Draw icon if we have one and have a draw list
+    -- Draw icon on the same drawList as bg/text so call order (bg -> icon -> text)
+    -- determines z-order. Using a separate (lower) drawList would put the icon
+    -- behind the bg now that bg lives on this drawList too.
     if icon and icon.image and drawList then
-        -- Convert alpha to icon color with alpha
         local iconAlphaByte = math.floor(alpha * 255);
         local iconColor = bit.bor(bit.lshift(iconAlphaByte, 24), 0x00FFFFFF);  -- White with alpha
 
@@ -345,43 +326,25 @@ local function drawNotification(slot, notification, x, y, width, height, setting
     -- Calculate max text width for truncation (from textX to right edge with padding)
     local maxTextWidth = (x + scaledWidth - contentPadding) - textX;
 
-    -- Pre-calculate alpha byte for font/outline fading
+    -- Pre-calculate alpha byte for color fading
     local alphaByte = math.floor(alpha * 255);
 
     -- Get base colors from settings
     local baseTitleColor = settings.title_font_settings and settings.title_font_settings.font_color or 0xFFFFFFFF;
     local baseSubtitleColor = settings.font_settings and settings.font_settings.font_color or 0xFFFFFFFF;
-    local baseTitleOutline = settings.title_font_settings and settings.title_font_settings.outline_color or 0xFF000000;
-    local baseSubtitleOutline = settings.font_settings and settings.font_settings.outline_color or 0xFF000000;
 
-    -- Calculate faded colors (both text and outline need to fade together)
+    -- Calculate faded colors
     local fadedTitleColor = bit.bor(bit.lshift(alphaByte, 24), bit.band(baseTitleColor, 0x00FFFFFF));
     local fadedSubtitleColor = bit.bor(bit.lshift(alphaByte, 24), bit.band(baseSubtitleColor, 0x00FFFFFF));
-    local fadedTitleOutline = bit.bor(bit.lshift(alphaByte, 24), bit.band(baseTitleOutline, 0x00FFFFFF));
-    local fadedSubtitleOutline = bit.bor(bit.lshift(alphaByte, 24), bit.band(baseSubtitleOutline, 0x00FFFFFF));
 
     if isMinified then
         -- Minified mode: only show player name (no title)
-        titleFont:set_visible(false);
-
-        -- For minified invites, show only player name
         local playerName = notification.data.playerName or 'Unknown';
-
-        subtitleFont:set_font_height(subtitleFontHeight);
-        subtitleFont:set_position_x(textX);
-        subtitleFont:set_position_y(textY);
-        -- Only set colors if changed (expensive D3D calls)
-        -- Key by slot (not notification.id) since fonts are per-slot
-        if notificationData.lastSubtitleColors[slot] ~= fadedSubtitleColor then
-            subtitleFont:set_font_color(fadedSubtitleColor);
-            subtitleFont:set_outline_color(fadedSubtitleOutline);
-            notificationData.lastSubtitleColors[slot] = fadedSubtitleColor;
-        end
-        -- Truncate if needed
         local subtitleCacheKey = notification.id .. "_minified";
-        local displayName = GetTruncatedText(subtitleFont, playerName, maxTextWidth, subtitleFontHeight, subtitleCacheKey);
-        subtitleFont:set_text(displayName);
-        subtitleFont:set_visible(alpha > 0.01);
+        local displayName = GetTruncatedText(playerName, maxTextWidth, subtitleFontHeight, subtitleCacheKey);
+        if drawList and alpha > 0.01 then
+            imtext.Draw(drawList, displayName, textX, textY, fadedSubtitleColor, subtitleFontHeight);
+        end
     elseif isMinifying then
         -- Minifying animation: fade out title, move subtitle up
         local title = getNotificationTitle(notification);
@@ -391,82 +354,43 @@ local function drawNotification(slot, notification, x, y, width, height, setting
         local titleAlpha = 1.0 - minifyProgress;
         local titleAlphaByte = math.floor(titleAlpha * 255);
         local minifyTitleColor = bit.bor(bit.lshift(titleAlphaByte, 24), bit.band(baseTitleColor, 0x00FFFFFF));
-        local minifyTitleOutline = bit.bor(bit.lshift(titleAlphaByte, 24), bit.band(baseTitleOutline, 0x00FFFFFF));
 
-        titleFont:set_font_height(titleFontHeight);
-        titleFont:set_position_x(textX);
-        titleFont:set_position_y(textY);
-        -- Only set colors if changed (expensive D3D calls)
-        -- Key by slot (not notification.id) since fonts are per-slot
-        if notificationData.lastTitleColors[slot] ~= minifyTitleColor then
-            titleFont:set_font_color(minifyTitleColor);
-            titleFont:set_outline_color(minifyTitleOutline);
-            notificationData.lastTitleColors[slot] = minifyTitleColor;
-        end
         local titleCacheKey = notification.id .. "_title";
-        local displayTitle = GetTruncatedText(titleFont, title, maxTextWidth, titleFontHeight, titleCacheKey);
-        titleFont:set_text(displayTitle);
-        titleFont:set_visible(titleAlpha > 0.01);
+        local displayTitle = GetTruncatedText(title, maxTextWidth, titleFontHeight, titleCacheKey);
+        if drawList and titleAlpha > 0.01 then
+            imtext.Draw(drawList, displayTitle, textX, textY, minifyTitleColor, titleFontHeight);
+        end
 
         -- Subtitle moves from normal position to centered position
-        local normalSubtitleY = textY + titleFontHeight + 2;  -- Small gap between title and subtitle
+        local normalSubtitleY = textY + titleFontHeight + 2 * gs;  -- Small gap between title and subtitle
         local minifiedSubtitleY = y + math.floor((scaledHeight - subtitleFontHeight) / 2);
         local interpolatedSubtitleY = normalSubtitleY + (minifyProgress * (minifiedSubtitleY - normalSubtitleY));
 
         -- Subtitle stays fully visible during minify (alpha = 1.0)
-        subtitleFont:set_font_height(subtitleFontHeight);
-        subtitleFont:set_position_x(textX);
-        subtitleFont:set_position_y(interpolatedSubtitleY);
-        -- Only set colors if changed (expensive D3D calls)
-        -- Key by slot (not notification.id) since fonts are per-slot
-        if notificationData.lastSubtitleColors[slot] ~= baseSubtitleColor then
-            subtitleFont:set_font_color(baseSubtitleColor);
-            subtitleFont:set_outline_color(baseSubtitleOutline);
-            notificationData.lastSubtitleColors[slot] = baseSubtitleColor;
-        end
         -- Use player name during minify animation
         local subtitleCacheKey = notification.id .. "_minifying";
-        local displayName = GetTruncatedText(subtitleFont, playerName, maxTextWidth, subtitleFontHeight, subtitleCacheKey);
-        subtitleFont:set_text(displayName);
-        subtitleFont:set_visible(true);
+        local displayName = GetTruncatedText(playerName, maxTextWidth, subtitleFontHeight, subtitleCacheKey);
+        if drawList then
+            imtext.Draw(drawList, displayName, textX, interpolatedSubtitleY, baseSubtitleColor, subtitleFontHeight);
+        end
     else
         -- Normal mode: show title and subtitle
         local title = getNotificationTitle(notification);
         local subtitle = getNotificationSubtitle(notification);
 
-        -- Update title font (using pre-calculated faded colors)
-        titleFont:set_font_height(titleFontHeight);
-        titleFont:set_position_x(textX);
-        titleFont:set_position_y(textY);
-        -- Only set colors if changed (expensive D3D calls)
-        -- Key by slot (not notification.id) since fonts are per-slot
-        if notificationData.lastTitleColors[slot] ~= fadedTitleColor then
-            titleFont:set_font_color(fadedTitleColor);
-            titleFont:set_outline_color(fadedTitleOutline);
-            notificationData.lastTitleColors[slot] = fadedTitleColor;
-        end
         -- Truncate title if needed (use notification id for cache key)
         local titleCacheKey = notification.id .. "_title";
-        local displayTitle = GetTruncatedText(titleFont, title, maxTextWidth, titleFontHeight, titleCacheKey);
-        titleFont:set_text(displayTitle);
-        titleFont:set_visible(alpha > 0.01);
-
-        -- Update subtitle font (using pre-calculated faded colors)
-        subtitleFont:set_font_height(subtitleFontHeight);
-        subtitleFont:set_position_x(textX);
-        subtitleFont:set_position_y(textY + titleFontHeight + 2);  -- Small gap between title and subtitle
-        -- Only set colors if changed (expensive D3D calls)
-        -- Key by slot (not notification.id) since fonts are per-slot
-        if notificationData.lastSubtitleColors[slot] ~= fadedSubtitleColor then
-            subtitleFont:set_font_color(fadedSubtitleColor);
-            subtitleFont:set_outline_color(fadedSubtitleOutline);
-            notificationData.lastSubtitleColors[slot] = fadedSubtitleColor;
+        local displayTitle = GetTruncatedText(title, maxTextWidth, titleFontHeight, titleCacheKey);
+        if drawList and alpha > 0.01 then
+            imtext.Draw(drawList, displayTitle, textX, textY, fadedTitleColor, titleFontHeight);
         end
+
         -- Truncate subtitle if needed (use notification id for cache key)
         local subtitleCacheKey = notification.id .. "_subtitle";
-        local displaySubtitle = GetTruncatedText(subtitleFont, subtitle, maxTextWidth, subtitleFontHeight, subtitleCacheKey);
-        subtitleFont:set_text(displaySubtitle);
-        subtitleFont:set_visible(alpha > 0.01);
+        local displaySubtitle = GetTruncatedText(subtitle, maxTextWidth, subtitleFontHeight, subtitleCacheKey);
+        if drawList and alpha > 0.01 then
+            imtext.Draw(drawList, displaySubtitle, textX, textY + titleFontHeight + 2 * gs, fadedSubtitleColor, subtitleFontHeight);
+        end
     end
 
     -- Draw duration progress bar at bottom
@@ -499,7 +423,7 @@ local function drawNotification(slot, notification, x, y, width, height, setting
 
         -- Progress bar settings
         -- Use direct coordinates (not bgPrim.bg) to avoid any offset from windowbackground library
-        local barScaleY = gConfig.notificationsProgressBarScaleY or 1.0;
+        local barScaleY = (gConfig.notificationsProgressBarScaleY or 1.0) * gs;
         local barHeight = math.floor(4 * barScaleY);
         local barX = x;
         local barWidth = scaledWidth;
@@ -604,20 +528,22 @@ local function drawNotificationWindow(windowName, notifications, settings, split
 
     -- Build window flags
     local windowFlags = notificationData.getBaseWindowFlags();
-    if gConfig.lockPositions and not configOpen then
+    if gConfig.lockPositions then
         windowFlags = bit.bor(windowFlags, ImGuiWindowFlags_NoMove);
     end
 
     -- Calculate notification dimensions using separate X/Y scale
-    local scaleX = gConfig.notificationsScaleX or 1.0;
-    local scaleY = gConfig.notificationsScaleY or 1.0;
+    -- Global UI scale multiplied into raw gConfig.notifications* dimensions.
+    local gs = gConfig.globalScale or 1.0;
+    local scaleX = (gConfig.notificationsScaleX or 1.0) * gs;
+    local scaleY = (gConfig.notificationsScaleY or 1.0) * gs;
     local contentPadding = gConfig.notificationsPadding or 8;
     local notificationWidth = math.floor((settings.width or 280) * scaleX);
     -- Normal height: padding + icon(32) + padding + progress bar(4)
     local normalHeight = math.floor((contentPadding * 2 + 32 + 4) * scaleY);
     -- Minified height: padding + minified icon(16) + padding (no progress bar)
     local minifiedHeight = math.floor((contentPadding * 2 + 16) * scaleY);
-    local spacing = gConfig.notificationsSpacing or 8;
+    local spacing = (gConfig.notificationsSpacing or 8) * gs;
 
     -- Calculate total content height
     local totalHeight = 0;
@@ -626,7 +552,7 @@ local function drawNotificationWindow(windowName, notifications, settings, split
     -- Apply saved window position (if any) from profile
     -- This runs once per profile load/reset to restore position
     -- For "Stack Up" mode, this sets the initial position which anchors are derived from
-    ApplyWindowPosition(windowName);
+    local positionJustApplied = ApplyWindowPosition(windowName);
 
     -- Helper to calculate notification height
     local function getNotificationHeight(notification)
@@ -682,54 +608,34 @@ local function drawNotificationWindow(windowName, notifications, settings, split
     end
 
     -- Handle bottom-anchoring for "stack up" mode
-    ApplyWindowPosition(windowName);
     if stackUp then
-        -- Get or initialize bottom anchor for this window
-        local anchorKey = 'bottomAnchor_' .. windowName;
-        local bottomAnchor = notificationData.windowAnchors[anchorKey];
-        local isDragging = notificationData.windowAnchors[anchorKey .. '_dragging'];
+        if positionJustApplied then
+            -- Position was just force-applied; clear stale anchor
+            local anchorKey = 'bottomAnchor_' .. windowName;
+            notificationData.windowAnchors[anchorKey] = nil;
+            notificationData.windowAnchors[anchorKey .. '_x'] = nil;
+            notificationData.windowAnchors[anchorKey .. '_dragging'] = nil;
+        else
+            -- Get or initialize bottom anchor for this window
+            local anchorKey = 'bottomAnchor_' .. windowName;
+            local bottomAnchor = notificationData.windowAnchors[anchorKey];
+            local isDragging = notificationData.windowAnchors[anchorKey .. '_dragging'];
 
-        if bottomAnchor and not isDragging then
-            -- Position window so bottom edge stays at anchor (only when not dragging)
-            local newY = bottomAnchor - totalHeight;
-            imgui.SetNextWindowPos({notificationData.windowAnchors[anchorKey .. '_x'] or 0, newY});
-        end
-    end
-
-    -- Handle position reset or restore (main notifications window only)
-    if splitKey == nil then
-        if forcePositionReset then
-            local defX, defY = defaultPositions.GetNotificationsPosition();
-            imgui.SetNextWindowPos({defX, defY}, ImGuiCond_Always);
-            forcePositionReset = false;
-            hasAppliedSavedPosition = true;
-            lastSavedPosX, lastSavedPosY = defX, defY;
-        elseif not hasAppliedSavedPosition and gConfig.notificationsWindowPosX ~= nil then
-            imgui.SetNextWindowPos({gConfig.notificationsWindowPosX, gConfig.notificationsWindowPosY}, ImGuiCond_Once);
-            hasAppliedSavedPosition = true;
-            lastSavedPosX = gConfig.notificationsWindowPosX;
-            lastSavedPosY = gConfig.notificationsWindowPosY;
+            if bottomAnchor and not isDragging then
+                -- Position window so bottom edge stays at anchor (only when not dragging)
+                local newY = bottomAnchor - totalHeight;
+                imgui.SetNextWindowPos({notificationData.windowAnchors[anchorKey .. '_x'] or 0, newY});
+            end
         end
     end
 
     -- Create ImGui window
     if imgui.Begin(windowName, true, windowFlags) then
+        SaveWindowPosition(windowName);
         -- Wrap rendering in pcall to ensure End() is always called even if an error occurs
         local renderSuccess, renderErr = pcall(function()
             local windowPosX, windowPosY = imgui.GetWindowPos();
             local drawList = imgui.GetWindowDrawList();
-
-            -- Save position if moved (main notifications window only, with change detection to avoid spam)
-            if splitKey == nil and not gConfig.lockPositions then
-                if lastSavedPosX == nil or
-                   math.abs(windowPosX - lastSavedPosX) > 1 or
-                   math.abs(windowPosY - lastSavedPosY) > 1 then
-                    gConfig.notificationsWindowPosX = windowPosX;
-                    gConfig.notificationsWindowPosY = windowPosY;
-                    lastSavedPosX = windowPosX;
-                    lastSavedPosY = windowPosY;
-                end
-            end
 
             -- Set window size
             imgui.Dummy({notificationWidth, totalHeight});
@@ -850,41 +756,26 @@ local function drawNotificationWindow(windowName, notifications, settings, split
                 end
             elseif configOpen then
                 -- Show placeholder when config is open
-                local placeholderPadding = gConfig.notificationsPadding or 8;
-                local titleHeight = gConfig.notificationsTitleFontSize or 14;
-                local subtitleHeight = gConfig.notificationsSubtitleFontSize or 12;
+                local placeholderPadding = (gConfig.notificationsPadding or 8) * gs;
+                local titleHeight = (gConfig.notificationsTitleFontSize or 14) * gs;
+                local subtitleHeight = (gConfig.notificationsSubtitleFontSize or 12) * gs;
 
-                -- Get fonts and primitives based on window type
-                local bgPrim, titleFont, subtitleFont;
-                if splitKey == nil then
-                    -- Main window: use slot 1 primitives/fonts
-                    -- Only show if no other notifications are using slot 1 (currentSlot == 0)
-                    if currentSlot > 0 then
-                        -- Skip placeholder - slot 1 is in use by split window notifications
-                        -- Note: return from pcall, End() will be called below
-                        return;
-                    end
-                    bgPrim = notificationData.bgPrims[1];
-                    titleFont = notificationData.titleFonts[1];
-                    subtitleFont = notificationData.subtitleFonts[1];
-                else
-                    -- Split window: use dedicated split window primitives/fonts
-                    bgPrim = notificationData.splitBgPrims[splitKey];
-                    titleFont = notificationData.splitTitleFonts[splitKey];
-                    subtitleFont = notificationData.splitSubtitleFonts[splitKey];
+                if splitKey == nil and currentSlot > 0 then
+                    -- Skip placeholder - slot 1 is in use by split window notifications
+                    -- Note: return from pcall, End() will be called below
+                    return;
                 end
 
-                -- Draw background using windowbackground library
-                if bgPrim then
+                do
                     local bgTheme = gConfig.notificationsBackgroundTheme or 'Plain';
-                    local bgScale = gConfig.notificationsBgScale or 1.0;
-                    local borderScale = gConfig.notificationsBorderScale or 1.0;
+                    local bgScale = (gConfig.notificationsBgScale or 1.0) * gs;
+                    local borderScale = (gConfig.notificationsBorderScale or 1.0) * gs;
                     local configBgOpacity = gConfig.notificationsBgOpacity or 0.87;
                     local configBorderOpacity = gConfig.notificationsBorderOpacity or 1.0;
 
                     -- Placeholder uses reduced opacity (approximately 30% of normal)
                     local placeholderOpacity = 0.3;
-                    windowBg.update(bgPrim, windowPosX, windowPosY, notificationWidth, normalHeight, {
+                    windowBg.Draw(drawList, windowPosX, windowPosY, notificationWidth, normalHeight, {
                         theme = bgTheme,
                         padding = 0,
                         bgScale = bgScale,
@@ -896,26 +787,16 @@ local function drawNotificationWindow(windowName, notifications, settings, split
                     });
                 end
 
-                -- Draw title font
-                if titleFont then
-                    titleFont:set_font_height(titleHeight);
-                    titleFont:set_position_x(windowPosX + placeholderPadding);
-                    titleFont:set_position_y(windowPosY + placeholderPadding);
-                    titleFont:set_text(placeholderTitle or 'Notification Area');
-                    titleFont:set_font_color(0xFFFFFFFF);  -- Reset to full opacity
-                    titleFont:set_outline_color(0xFF000000);
-                    titleFont:set_visible(true);
-                end
-
-                -- Draw subtitle font
-                if subtitleFont then
-                    subtitleFont:set_font_height(subtitleHeight);
-                    subtitleFont:set_position_x(windowPosX + placeholderPadding);
-                    subtitleFont:set_position_y(windowPosY + placeholderPadding + titleHeight + 2);
-                    subtitleFont:set_text(placeholderSubtitle or 'Drag to reposition');
-                    subtitleFont:set_font_color(0xFFCCCCCC);  -- Reset to full opacity (slightly dimmer)
-                    subtitleFont:set_outline_color(0xFF000000);
-                    subtitleFont:set_visible(true);
+                -- Draw placeholder text, truncated to fit the placeholder width
+                if drawList then
+                    local placeholderMaxTextWidth = math.max(1, notificationWidth - 2 * placeholderPadding);
+                    local title = placeholderTitle or 'Notification Area';
+                    local subtitle = placeholderSubtitle or 'Drag to reposition';
+                    local placeholderKey = (splitKey or 'split') .. '_placeholder';
+                    local displayTitle = GetTruncatedText(title, placeholderMaxTextWidth, titleHeight, placeholderKey .. '_title');
+                    local displaySubtitle = GetTruncatedText(subtitle, placeholderMaxTextWidth, subtitleHeight, placeholderKey .. '_subtitle');
+                    imtext.Draw(drawList, displayTitle, windowPosX + placeholderPadding, windowPosY + placeholderPadding, 0xFFFFFFFF, titleHeight);
+                    imtext.Draw(drawList, displaySubtitle, windowPosX + placeholderPadding, windowPosY + placeholderPadding + titleHeight + 2 * gs, 0xFFCCCCCC, subtitleHeight);
                 end
             end
         end);
@@ -937,7 +818,7 @@ local function drawSplitWindow(splitKey, settings)
     local title = SPLIT_WINDOW_TITLES[splitKey] or splitKey;
     local placeholder = SPLIT_WINDOW_PLACEHOLDERS[splitKey] or 'Drag to reposition';
 
-    -- Pass splitKey for split windows (uses dedicated GDI fonts/primitives)
+    -- Pass splitKey for split windows (uses dedicated primitives)
     drawNotificationWindow(windowName, notifications, settings, splitKey, title, placeholder);
 end
 
@@ -975,14 +856,8 @@ local function drawNotificationForGroup(groupNum, slot, notification, x, y, widt
         return;
     end
 
-    -- Get primitive and fonts for this group/slot
-    local bgPrim = notificationData.groupBgPrims[groupNum] and notificationData.groupBgPrims[groupNum][slot];
-    local titleFont = notificationData.groupTitleFonts[groupNum] and notificationData.groupTitleFonts[groupNum][slot];
-    local subtitleFont = notificationData.groupSubtitleFonts[groupNum] and notificationData.groupSubtitleFonts[groupNum][slot];
-
-    if not bgPrim or not titleFont or not subtitleFont then
-        return;
-    end
+    -- Global UI scale multiplied into raw groupSettings/gConfig dimensional reads.
+    local gs = gConfig.globalScale or 1.0;
 
     local containerOffsetX = notification.containerOffsetX or 0;
     local iconOffsetX = notification.iconOffsetX or 0;
@@ -996,8 +871,8 @@ local function drawNotificationForGroup(groupNum, slot, notification, x, y, widt
 
     -- Get background settings from group settings
     local bgTheme = groupSettings.backgroundTheme or 'Plain';
-    local bgScale = groupSettings.bgScale or 1.0;
-    local borderScale = groupSettings.borderScale or 1.0;
+    local bgScale = (groupSettings.bgScale or 1.0) * gs;
+    local borderScale = (groupSettings.borderScale or 1.0) * gs;
     local configBgOpacity = groupSettings.bgOpacity or 0.87;
     local configBorderOpacity = groupSettings.borderOpacity or 1.0;
 
@@ -1005,7 +880,7 @@ local function drawNotificationForGroup(groupNum, slot, notification, x, y, widt
     local bgOpacity = alpha * configBgOpacity;
     local borderOpacity = alpha * configBorderOpacity;
 
-    windowBg.update(bgPrim, x, y, scaledWidth, scaledHeight, {
+    windowBg.Draw(drawList, x, y, scaledWidth, scaledHeight, {
         theme = bgTheme,
         padding = 0,
         bgScale = bgScale,
@@ -1031,8 +906,8 @@ local function drawNotificationForGroup(groupNum, slot, notification, x, y, widt
             dotColorTable = {1.0, 0.65, 0.0, finalPulseAlpha};
         end
 
-        local dotRadius = 4;
-        local dotX = x + scaledWidth - 10;
+        local dotRadius = 4 * gs;
+        local dotX = x + scaledWidth - 10 * gs;
         local dotY = y + (scaledHeight / 2);
         local dotU32 = imgui.GetColorU32(dotColorTable);
         drawList:AddCircleFilled({dotX, dotY}, dotRadius, dotU32, 12);
@@ -1042,11 +917,11 @@ local function drawNotificationForGroup(groupNum, slot, notification, x, y, widt
     local isMinifying = notificationData.IsMinifying(notification);
     local minifyProgress = notificationData.GetMinifyProgress(notification);
 
-    local contentPadding = groupSettings.padding or 8;
+    local contentPadding = (groupSettings.padding or 8) * gs;
 
-    -- Icon size interpolation
-    local normalIconSize = 32;
-    local minifiedIconSize = 16;
+    -- Icon size interpolation (both scaled by gs)
+    local normalIconSize = 32 * gs;
+    local minifiedIconSize = 16 * gs;
     local iconSize;
     if isMinifying then
         iconSize = math.floor(normalIconSize - (minifyProgress * (normalIconSize - minifiedIconSize)));
@@ -1060,11 +935,11 @@ local function drawNotificationForGroup(groupNum, slot, notification, x, y, widt
 
     local icon = getNotificationIcon(notification);
 
-    local titleFontHeight = groupSettings.titleFontSize or 14;
-    local subtitleFontHeight = groupSettings.subtitleFontSize or 12;
+    local titleFontHeight = (groupSettings.titleFontSize or 14) * gs;
+    local subtitleFontHeight = (groupSettings.subtitleFontSize or 12) * gs;
 
     -- Calculate text position
-    local iconTextGap = 6;
+    local iconTextGap = 6 * gs;
     local textX = x + contentPadding;
     if icon then
         textX = x + contentPadding + iconSize + iconTextGap;
@@ -1074,12 +949,12 @@ local function drawNotificationForGroup(groupNum, slot, notification, x, y, widt
     if isMinified then
         baseTextY = y + math.floor((contentHeight - subtitleFontHeight) / 2) - 1;
     else
-        local textBlockHeight = titleFontHeight + 2 + subtitleFontHeight;
+        local textBlockHeight = titleFontHeight + 2 * gs + subtitleFontHeight;
         baseTextY = y + math.floor((contentHeight - textBlockHeight) / 2);
     end
     local textY = baseTextY + textOffsetY;
 
-    -- Draw icon
+    -- Draw icon on the same drawList as bg/text (bg -> icon -> text via code order).
     if icon and icon.image and drawList then
         local iconAlphaByte = math.floor(alpha * 255);
         local iconColor = bit.bor(bit.lshift(iconAlphaByte, 24), 0x00FFFFFF);
@@ -1101,38 +976,17 @@ local function drawNotificationForGroup(groupNum, slot, notification, x, y, widt
 
     local baseTitleColor = settings.title_font_settings and settings.title_font_settings.font_color or 0xFFFFFFFF;
     local baseSubtitleColor = settings.font_settings and settings.font_settings.font_color or 0xFFFFFFFF;
-    local baseTitleOutline = settings.title_font_settings and settings.title_font_settings.outline_color or 0xFF000000;
-    local baseSubtitleOutline = settings.font_settings and settings.font_settings.outline_color or 0xFF000000;
 
     local fadedTitleColor = bit.bor(bit.lshift(alphaByte, 24), bit.band(baseTitleColor, 0x00FFFFFF));
     local fadedSubtitleColor = bit.bor(bit.lshift(alphaByte, 24), bit.band(baseSubtitleColor, 0x00FFFFFF));
-    local fadedTitleOutline = bit.bor(bit.lshift(alphaByte, 24), bit.band(baseTitleOutline, 0x00FFFFFF));
-    local fadedSubtitleOutline = bit.bor(bit.lshift(alphaByte, 24), bit.band(baseSubtitleOutline, 0x00FFFFFF));
-
-    -- Initialize per-group color caches if needed
-    if not notificationData.groupTitleColors[groupNum] then
-        notificationData.groupTitleColors[groupNum] = {};
-    end
-    if not notificationData.groupSubtitleColors[groupNum] then
-        notificationData.groupSubtitleColors[groupNum] = {};
-    end
 
     if isMinified then
-        titleFont:set_visible(false);
         local playerName = notification.data.playerName or 'Unknown';
-
-        subtitleFont:set_font_height(subtitleFontHeight);
-        subtitleFont:set_position_x(textX);
-        subtitleFont:set_position_y(textY);
-        if notificationData.groupSubtitleColors[groupNum][slot] ~= fadedSubtitleColor then
-            subtitleFont:set_font_color(fadedSubtitleColor);
-            subtitleFont:set_outline_color(fadedSubtitleOutline);
-            notificationData.groupSubtitleColors[groupNum][slot] = fadedSubtitleColor;
-        end
         local subtitleCacheKey = 'g' .. groupNum .. '_' .. notification.id .. "_minified";
-        local displayName = GetTruncatedText(subtitleFont, playerName, maxTextWidth, subtitleFontHeight, subtitleCacheKey);
-        subtitleFont:set_text(displayName);
-        subtitleFont:set_visible(alpha > 0.01);
+        local displayName = GetTruncatedText(playerName, maxTextWidth, subtitleFontHeight, subtitleCacheKey);
+        if drawList and alpha > 0.01 then
+            imtext.Draw(drawList, displayName, textX, textY, fadedSubtitleColor, subtitleFontHeight);
+        end
     elseif isMinifying then
         local title = getNotificationTitle(notification);
         local playerName = notification.data.playerName or 'Unknown';
@@ -1140,74 +994,45 @@ local function drawNotificationForGroup(groupNum, slot, notification, x, y, widt
         local titleAlpha = 1.0 - minifyProgress;
         local titleAlphaByte = math.floor(titleAlpha * 255);
         local minifyTitleColor = bit.bor(bit.lshift(titleAlphaByte, 24), bit.band(baseTitleColor, 0x00FFFFFF));
-        local minifyTitleOutline = bit.bor(bit.lshift(titleAlphaByte, 24), bit.band(baseTitleOutline, 0x00FFFFFF));
 
-        titleFont:set_font_height(titleFontHeight);
-        titleFont:set_position_x(textX);
-        titleFont:set_position_y(textY);
-        if notificationData.groupTitleColors[groupNum][slot] ~= minifyTitleColor then
-            titleFont:set_font_color(minifyTitleColor);
-            titleFont:set_outline_color(minifyTitleOutline);
-            notificationData.groupTitleColors[groupNum][slot] = minifyTitleColor;
-        end
         local titleCacheKey = 'g' .. groupNum .. '_' .. notification.id .. "_title";
-        local displayTitle = GetTruncatedText(titleFont, title, maxTextWidth, titleFontHeight, titleCacheKey);
-        titleFont:set_text(displayTitle);
-        titleFont:set_visible(titleAlpha > 0.01);
+        local displayTitle = GetTruncatedText(title, maxTextWidth, titleFontHeight, titleCacheKey);
+        if drawList and titleAlpha > 0.01 then
+            imtext.Draw(drawList, displayTitle, textX, textY, minifyTitleColor, titleFontHeight);
+        end
 
-        local subtitleY = textY + titleFontHeight + 2;
+        local subtitleY = textY + titleFontHeight + 2 * gs;
         local targetSubtitleY = y + math.floor((contentHeight - subtitleFontHeight) / 2) - 1;
         local currentSubtitleY = subtitleY + ((targetSubtitleY - subtitleY) * minifyProgress);
 
-        subtitleFont:set_font_height(subtitleFontHeight);
-        subtitleFont:set_position_x(textX);
-        subtitleFont:set_position_y(currentSubtitleY);
-        if notificationData.groupSubtitleColors[groupNum][slot] ~= fadedSubtitleColor then
-            subtitleFont:set_font_color(fadedSubtitleColor);
-            subtitleFont:set_outline_color(fadedSubtitleOutline);
-            notificationData.groupSubtitleColors[groupNum][slot] = fadedSubtitleColor;
-        end
         local subtitleCacheKey = 'g' .. groupNum .. '_' .. notification.id .. "_subtitle";
-        local displayName = GetTruncatedText(subtitleFont, playerName, maxTextWidth, subtitleFontHeight, subtitleCacheKey);
-        subtitleFont:set_text(displayName);
-        subtitleFont:set_visible(alpha > 0.01);
+        local displayName = GetTruncatedText(playerName, maxTextWidth, subtitleFontHeight, subtitleCacheKey);
+        if drawList and alpha > 0.01 then
+            imtext.Draw(drawList, displayName, textX, currentSubtitleY, fadedSubtitleColor, subtitleFontHeight);
+        end
     else
         -- Normal mode
         local title = getNotificationTitle(notification);
         local subtitle = getNotificationSubtitle(notification);
 
-        titleFont:set_font_height(titleFontHeight);
-        titleFont:set_position_x(textX);
-        titleFont:set_position_y(textY);
-        if notificationData.groupTitleColors[groupNum][slot] ~= fadedTitleColor then
-            titleFont:set_font_color(fadedTitleColor);
-            titleFont:set_outline_color(fadedTitleOutline);
-            notificationData.groupTitleColors[groupNum][slot] = fadedTitleColor;
-        end
         local titleCacheKey = 'g' .. groupNum .. '_' .. notification.id .. "_title";
-        local displayTitle = GetTruncatedText(titleFont, title, maxTextWidth, titleFontHeight, titleCacheKey);
-        titleFont:set_text(displayTitle);
-        titleFont:set_visible(alpha > 0.01);
-
-        subtitleFont:set_font_height(subtitleFontHeight);
-        subtitleFont:set_position_x(textX);
-        subtitleFont:set_position_y(textY + titleFontHeight + 2);
-        if notificationData.groupSubtitleColors[groupNum][slot] ~= fadedSubtitleColor then
-            subtitleFont:set_font_color(fadedSubtitleColor);
-            subtitleFont:set_outline_color(fadedSubtitleOutline);
-            notificationData.groupSubtitleColors[groupNum][slot] = fadedSubtitleColor;
+        local displayTitle = GetTruncatedText(title, maxTextWidth, titleFontHeight, titleCacheKey);
+        if drawList and alpha > 0.01 then
+            imtext.Draw(drawList, displayTitle, textX, textY, fadedTitleColor, titleFontHeight);
         end
+
         local subtitleCacheKey = 'g' .. groupNum .. '_' .. notification.id .. "_subtitle";
-        local displaySubtitle = GetTruncatedText(subtitleFont, subtitle, maxTextWidth, subtitleFontHeight, subtitleCacheKey);
-        subtitleFont:set_text(displaySubtitle);
-        subtitleFont:set_visible(alpha > 0.01);
+        local displaySubtitle = GetTruncatedText(subtitle, maxTextWidth, subtitleFontHeight, subtitleCacheKey);
+        if drawList and alpha > 0.01 then
+            imtext.Draw(drawList, displaySubtitle, textX, textY + titleFontHeight + 2 * gs, fadedSubtitleColor, subtitleFontHeight);
+        end
     end
 
     -- Draw progress bar (only in normal mode, not minified, not exiting)
     local isExiting = notification.state == notificationData.STATE.EXITING;
     local isEntering = notification.state == notificationData.STATE.ENTERING;
     if not isMinified and not isMinifying and not isExiting and drawList then
-        local progressBarHeight = math.floor(4 * (groupSettings.progressBarScaleY or 1.0));
+        local progressBarHeight = math.floor(4 * (groupSettings.progressBarScaleY or 1.0) * gs);
         local progressBarY = y + scaledHeight - progressBarHeight;
         local progressBarWidth = scaledWidth;
 
@@ -1295,18 +1120,19 @@ local function drawGroupWindow(groupNum, settings)
 
     -- Build window flags
     local windowFlags = notificationData.getBaseWindowFlags();
-    if gConfig.lockPositions and not configOpen then
+    if gConfig.lockPositions then
         windowFlags = bit.bor(windowFlags, ImGuiWindowFlags_NoMove);
     end
 
-    -- Get group-specific settings
-    local scaleX = groupSettings.scaleX or 1.0;
-    local scaleY = groupSettings.scaleY or 1.0;
+    -- Get group-specific settings (gs scales every dimension proportionally)
+    local gs = gConfig.globalScale or 1.0;
+    local scaleX = (groupSettings.scaleX or 1.0) * gs;
+    local scaleY = (groupSettings.scaleY or 1.0) * gs;
     local contentPadding = groupSettings.padding or 8;
     local notificationWidth = math.floor((settings.width or 280) * scaleX);
     local normalHeight = math.floor((contentPadding * 2 + 32 + 4) * scaleY);
     local minifiedHeight = math.floor((contentPadding * 2 + 16) * scaleY);
-    local spacing = groupSettings.spacing or 8;
+    local spacing = (groupSettings.spacing or 8) * gs;
     local maxVisible = groupSettings.maxVisible or 5;
     local stackUp = groupSettings.direction == 'up';
 
@@ -1338,14 +1164,19 @@ local function drawGroupWindow(groupNum, settings)
     end
 
     -- Handle bottom-anchoring for "stack up" mode
-    ApplyWindowPosition(windowName);
+    local positionJustApplied = ApplyWindowPosition(windowName);
     if stackUp then
-        local anchor = notificationData.groupWindowAnchors[groupNum];
-        local isDragging = anchor and anchor.dragging;
+        if positionJustApplied then
+            -- Position was just force-applied (e.g., Restore UI Positions); clear stale anchor
+            notificationData.groupWindowAnchors[groupNum] = nil;
+        else
+            local anchor = notificationData.groupWindowAnchors[groupNum];
+            local isDragging = anchor and anchor.dragging;
 
-        if anchor and anchor.y and not isDragging then
-            local newY = anchor.y - totalHeight;
-            imgui.SetNextWindowPos({anchor.x or 0, newY});
+            if anchor and anchor.y and not isDragging then
+                local newY = anchor.y - totalHeight;
+                imgui.SetNextWindowPos({anchor.x or 0, newY});
+            end
         end
     end
 
@@ -1411,38 +1242,30 @@ local function drawGroupWindow(groupNum, settings)
                 end
             elseif configOpen then
                 -- Draw placeholder
-                local bgPrim = notificationData.groupBgPrims[groupNum] and notificationData.groupBgPrims[groupNum][1];
-                local titleFont = notificationData.groupTitleFonts[groupNum] and notificationData.groupTitleFonts[groupNum][1];
-                local subtitleFont = notificationData.groupSubtitleFonts[groupNum] and notificationData.groupSubtitleFonts[groupNum][1];
+                windowBg.Draw(drawList, windowPosX, windowPosY, notificationWidth, normalHeight, {
+                    theme = groupSettings.backgroundTheme or 'Plain',
+                    padding = 0,
+                    bgScale = groupSettings.bgScale or 1.0,
+                    borderScale = groupSettings.borderScale or 1.0,
+                    bgOpacity = 0.5,
+                    borderOpacity = 0.5,
+                    bgColor = 0xFF1A1A1A,
+                    borderColor = 0xFFFFFFFF,
+                });
 
-                if bgPrim and titleFont and subtitleFont then
-                    windowBg.update(bgPrim, windowPosX, windowPosY, notificationWidth, normalHeight, {
-                        theme = groupSettings.backgroundTheme or 'Plain',
-                        padding = 0,
-                        bgScale = groupSettings.bgScale or 1.0,
-                        borderScale = groupSettings.borderScale or 1.0,
-                        bgOpacity = 0.5,
-                        borderOpacity = 0.5,
-                        bgColor = 0xFF1A1A1A,
-                        borderColor = 0xFFFFFFFF,
-                    });
-
+                if drawList then
                     local textX = windowPosX + contentPadding;
                     local titleY = windowPosY + contentPadding;
-
-                    titleFont:set_font_height(groupSettings.titleFontSize or 14);
-                    titleFont:set_position_x(textX);
-                    titleFont:set_position_y(titleY);
-                    titleFont:set_font_color(0x80FFFFFF);
-                    titleFont:set_text(GROUP_TITLES[groupNum] or ('Group ' .. groupNum));
-                    titleFont:set_visible(true);
-
-                    subtitleFont:set_font_height(groupSettings.subtitleFontSize or 12);
-                    subtitleFont:set_position_x(textX);
-                    subtitleFont:set_position_y(titleY + (groupSettings.titleFontSize or 14) + 2);
-                    subtitleFont:set_font_color(0x80AAAAAA);
-                    subtitleFont:set_text(GROUP_PLACEHOLDERS[groupNum] or 'Drag to reposition');
-                    subtitleFont:set_visible(true);
+                    local titleFs = groupSettings.titleFontSize or 14;
+                    local subtitleFs = groupSettings.subtitleFontSize or 12;
+                    local placeholderMaxTextWidth = math.max(1, notificationWidth - 2 * contentPadding);
+                    local title = GROUP_TITLES[groupNum] or ('Group ' .. groupNum);
+                    local subtitle = GROUP_PLACEHOLDERS[groupNum] or 'Drag to reposition';
+                    local placeholderKey = 'group' .. groupNum .. '_placeholder';
+                    local displayTitle = GetTruncatedText(title, placeholderMaxTextWidth, titleFs, placeholderKey .. '_title');
+                    local displaySubtitle = GetTruncatedText(subtitle, placeholderMaxTextWidth, subtitleFs, placeholderKey .. '_subtitle');
+                    imtext.Draw(drawList, displayTitle, textX, titleY, 0x80FFFFFF, titleFs);
+                    imtext.Draw(drawList, displaySubtitle, textX, titleY + titleFs + 2, 0x80AAAAAA, subtitleFs);
                 end
             end
         end);
@@ -1460,32 +1283,18 @@ end
 -- Module Functions
 -- ============================================
 
--- Initialize display module (called after fonts/prims created in init.lua)
+-- Initialize display module (called after prims created in init.lua)
 function M.Initialize(settings)
     -- Type icons are loaded on-demand via TextureManager
 end
 
--- Update visuals (called after fonts recreated in init.lua)
+-- Update visuals
 function M.UpdateVisuals(settings)
     -- Nothing to do here - fonts are managed by init.lua
 end
 
 -- Main draw function
 function M.DrawWindow(settings, activeNotifications, pinnedNotifications)
-    -- Safety check - ensure group fonts are initialized
-    if not notificationData.groupTitleFonts or not next(notificationData.groupTitleFonts) then
-        return;
-    end
-
-    -- Hide all group resources initially
-    notificationData.HideAllGroupResources();
-
-    -- Check per-group themes for changes
-    local maxGroups = gConfig.notificationGroupCount or 2;
-    for groupNum = 1, maxGroups do
-        notificationData.CheckAndUpdateGroupTheme(groupNum);
-    end
-
     -- Check if player exists and is not zoning
     local player = GetPlayerSafe();
     if not player or player.isZoning then
@@ -1496,6 +1305,7 @@ function M.DrawWindow(settings, activeNotifications, pinnedNotifications)
     notificationData.UpdateTreasurePool(os.clock());
 
     -- Draw notification groups
+    local maxGroups = gConfig.notificationGroupCount or 2;
     for groupNum = 1, maxGroups do
         drawGroupWindow(groupNum, settings);
     end
@@ -1503,9 +1313,6 @@ end
 
 -- Set visibility
 function M.SetHidden(hidden)
-    if hidden then
-        notificationData.HideAllGroupResources();
-    end
 end
 
 -- Cleanup
@@ -1537,10 +1344,6 @@ M.ResetPositions = function()
         -- Clear bottom anchor for stack-up mode
         notificationData.groupWindowAnchors[groupNum] = nil;
     end
-
-    -- Legacy: also reset old main window flags
-    forcePositionReset = true;
-    hasAppliedSavedPosition = false;
 end
 
 return M;

@@ -99,18 +99,20 @@ local typeToNotifType = {
 -- Track which group we're currently drawing (for unique widget IDs)
 local currentDrawingGroup = 1;
 
--- Draw group-specific slider (saves to notificationGroupN table)
+-- Draw group-specific slider (saves to notificationGroupN table).
+-- AlwaysClamp matches the slider policy used in config/components.lua; without it,
+-- double-click-to-type accepts out-of-range values that would break the notification math.
 local function DrawGroupSlider(groupSettings, label, configKey, min, max, format, callback)
     local value = { groupSettings[configKey] };
     local changed = false;
     local uniqueLabel = label .. '##group' .. currentDrawingGroup .. '_' .. configKey;
 
     if format ~= nil then
-        changed = imgui.SliderFloat(uniqueLabel, value, min, max, format);
+        changed = imgui.SliderFloat(uniqueLabel, value, min, max, format, ImGuiSliderFlags_AlwaysClamp);
     elseif type(groupSettings[configKey]) == 'number' and math.floor(groupSettings[configKey]) == groupSettings[configKey] then
-        changed = imgui.SliderInt(uniqueLabel, value, min, max);
+        changed = imgui.SliderInt(uniqueLabel, value, min, max, '%d', ImGuiSliderFlags_AlwaysClamp);
     else
-        changed = imgui.SliderFloat(uniqueLabel, value, min, max, '%.2f');
+        changed = imgui.SliderFloat(uniqueLabel, value, min, max, '%.2f', ImGuiSliderFlags_AlwaysClamp);
     end
 
     if changed then
@@ -225,9 +227,10 @@ function M.DrawSettings()
     imgui.ShowHelp('Hide this module when a game menu is open (equipment, map, etc.).');
     components.DrawCheckbox('Hide During Events', 'notificationsHideDuringEvents');
 
-    -- Group count slider (outside collapsible sections)
+    -- Group count slider (outside collapsible sections). AlwaysClamp prevents typed
+    -- values outside [MIN_GROUPS, MAX_GROUPS] from creating phantom groups.
     local groupCountValue = { gConfig.notificationGroupCount or 2 };
-    if imgui.SliderInt('Number of Groups', groupCountValue, notificationData.MIN_GROUPS, notificationData.MAX_GROUPS) then
+    if imgui.SliderInt('Number of Groups', groupCountValue, notificationData.MIN_GROUPS, notificationData.MAX_GROUPS, '%d', ImGuiSliderFlags_AlwaysClamp) then
         local oldCount = gConfig.notificationGroupCount or 2;
         local newCount = groupCountValue[1];
         gConfig.notificationGroupCount = newCount;

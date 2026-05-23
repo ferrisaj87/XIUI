@@ -64,14 +64,18 @@ local modalState = {
 local STATUS_ICON_SIZE = 18;
 local STATUS_COL_W     = 32;
 local COPY_COL_W       = 52;
-local statusIconCheck  = nil;  -- lazy-loaded checkmark texture
-local statusIconX      = nil;  -- lazy-loaded X texture
+-- Status icons (Active/Inactive palette indicators) live at the addon's `assets/` root:
+-- `<addon>/assets/checkmark.png` and `<addon>/assets/x.png`. Loaded via getFileTexture so
+-- `loadTextureFromFile` resolves them under `assets/` and auto-appends the .png extension.
+-- Lazy-cached on first draw and held in module locals so the lookup happens once per session.
+local statusIconCheck  = nil;
+local statusIconX      = nil;
 
 local function DrawStatusIcon(isActive)
     if isActive then
-        statusIconCheck = statusIconCheck or TextureManager.getCustomIcon('checkmark.png');
+        statusIconCheck = statusIconCheck or TextureManager.getFileTexture('checkmark');
     else
-        statusIconX = statusIconX or TextureManager.getCustomIcon('x.png');
+        statusIconX = statusIconX or TextureManager.getFileTexture('x');
     end
     local tex = isActive and statusIconCheck or statusIconX;
     -- Center within column 0: use offset of separator 0→1 for the true pixel span.
@@ -1541,10 +1545,23 @@ local function DrawEmbeddedCrossbarComboModesPopup()
     drawEfpScrollBody();
     imgui.EndChild();
 
-    -- After slots draw: open macro editor from double-click (same frame as SetPending)
+    -- After slots draw: open macro editor from double-click (same frame as SetPending).
+    -- When the source slot was empty (slotData nil → "creating new" mode), forward the
+    -- (comboMode, slotIndex) as a bindTargetSlot so SaveMacro will auto-bind the new macro
+    -- to the slot the user actually double-clicked. Double-clicking a filled slot just
+    -- edits the existing macro in place, no bind target needed.
     local pendingEdit = data.ConsumePendingPaletteSlotEdit();
     if pendingEdit then
-        macropalette.OpenEditorForSlotData(pendingEdit.slotData);
+        local editorOpts;
+        if pendingEdit.slotData == nil and pendingEdit.comboMode and pendingEdit.slotIndex then
+            editorOpts = {
+                bindTargetSlot = {
+                    comboMode = pendingEdit.comboMode,
+                    slotIndex = pendingEdit.slotIndex,
+                },
+            };
+        end
+        macropalette.OpenEditorForSlotData(pendingEdit.slotData, editorOpts);
         -- hotbar.DrawPalette runs before paletteManager; draw editor here so it appears same frame.
         if macropalette.DrawMacroEditor then
             macropalette.DrawMacroEditor();
@@ -1809,7 +1826,7 @@ end
 local function GetCrossbarPaletteJobIconTheme()
     local c = gConfig and gConfig.hotbarCrossbar;
     local t = c and c.paletteJobIconTheme;
-    if t == 'Classic' or t == 'FFXI' or t == 'FFXIV-1' or t == 'ClassicFFXIV' then
+    if t == 'Classic' or t == 'FFXI' or t == 'FFXIV-1' then
         return t;
     end
     return 'Classic';
