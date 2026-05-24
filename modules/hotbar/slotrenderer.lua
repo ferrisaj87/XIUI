@@ -247,6 +247,25 @@ local EQUIPMENT_TYPES = { [4] = true, [5] = true };
 -- Ammo slot mask - items that ONLY equip to this slot are consumables (bolts, bullets, arrows)
 local AMMO_SLOT_MASK = 0x0008;
 
+-- Status label -> ID map for blood pact corner badge fallback (when no explicit statusCornerIcon PNG is set).
+-- IDs match Horizon conventions (see handlers/debuffhandler.lua and modules/enemylist.lua).
+local STATUS_ID_BY_LABEL = {
+    ['Sleep']        = 2,
+    ['Poison']       = 3,
+    ['Paralyze']     = 4,
+    ['Blind']        = 5,
+    ['Silence']      = 6,
+    ['Stun']         = 10,
+    ['Bind']         = 11,
+    ['Weight']       = 12,
+    ['Slow']         = 13,
+    ['Attack Down']  = 147,
+    ['Accuracy Down']= 146,
+    ['Lower Def']    = 149,
+    ['Defense Down'] = 149,
+    ['Evasion Down'] = 148,
+};
+
 -- Maps ammo item names to the status effect ID they apply
 -- Status IDs: 2=Sleep, 3=Poison, 4=Paralysis, 5=Blind, 6=Silence, 10=Stun, 147=Attack Down, 149=Defense Down
 local AMMO_STATUS_EFFECTS_BY_NAME = {
@@ -1623,6 +1642,37 @@ function M.DrawSlot(params)
 
                 imgP1[1] = iconX; imgP1[2] = iconY;
                 imgP2[1] = iconX + iconSize; imgP2[2] = iconY + iconSize;
+                drawList:AddImage(statusIconPtr, imgP1, imgP2, UV0, UV1, iconTint);
+            end
+        end
+    end
+
+    -- ========================================
+    -- 12b. Blood Pact status corner icon (bottom-left)
+    -- Shows the status effect the pact inflicts, or a custom statusCornerIcon PNG from
+    -- horizon_bloodpacts_xiui.lua. Only drawn on pet/macro binds that resolve to a blood pact.
+    -- ========================================
+    if bind and animOpacity > 0.5 then
+        local pact = actions.GetResolvedBloodPact and actions.GetResolvedBloodPact(bind) or nil;
+        if pact then
+            local cornerTex  = actions.GetBloodPactStatusCornerIcon and actions.GetBloodPactStatusCornerIcon(bind, pact) or nil;
+            local statusLabel = pact.status or nil;
+            local statusId    = (not cornerTex) and statusLabel and STATUS_ID_BY_LABEL[statusLabel] or nil;
+            local statusIconPtr = nil;
+            if cornerTex and cornerTex.image then
+                statusIconPtr = tonumber(ffi.cast('uint32_t', cornerTex.image));
+            elseif statusId then
+                statusIconPtr = statusHandler.get_icon_from_theme(gConfig.statusIconTheme, statusId);
+            end
+            if statusIconPtr and statusIconPtr ~= 0 and drawList then
+                local cornerSz  = size * 0.35;
+                local padding   = 2;
+                local iconX = x + padding;
+                local iconY = y + size - cornerSz - padding;
+                local iconAlpha = math.floor(255 * animOpacity);
+                local iconTint  = bit.bor(bit.lshift(iconAlpha, 24), 0x00FFFFFF);
+                imgP1[1] = iconX;             imgP1[2] = iconY;
+                imgP2[1] = iconX + cornerSz;  imgP2[2] = iconY + cornerSz;
                 drawList:AddImage(statusIconPtr, imgP1, imgP2, UV0, UV1, iconTint);
             end
         end
