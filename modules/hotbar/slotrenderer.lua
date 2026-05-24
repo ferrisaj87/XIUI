@@ -1174,7 +1174,7 @@ function M.DrawSlot(params)
     result.isHovered = isHovered;
 
     -- ========================================
-    -- 1. Slot Background (ImGui AddImage)
+    -- 1. Slot Background (ImGui AddImage or AddRectFilled fallback)
     -- ========================================
     -- For Crossbar windows we draw to the window draw list so all of the slot's
     -- visual layers (background -> icon -> text -> hover) stack within the window's
@@ -1182,37 +1182,49 @@ function M.DrawSlot(params)
     -- cover modals and tooltips.
     local drawList = slotOverlayDrawList();
     do
-        local slotTexPtr = GetCachedTexturePtr(GetSlotTexPath());
-        if slotTexPtr and drawList then
-            -- Calculate final color with hover darkening and dim factor
-            local finalColor = slotBgColor;
-            local hoverDim = (isHovered and not dragdrop.IsDragging()) and 0.8 or 1.0;
-            local totalDim = dimFactor * hoverDim;
+        -- Calculate final color with hover darkening and dim factor
+        local finalColor = slotBgColor;
+        local hoverDim = (isHovered and not dragdrop.IsDragging()) and 0.8 or 1.0;
+        local totalDim = dimFactor * hoverDim;
 
-            if totalDim < 1.0 then
-                local a = bit.rshift(bit.band(slotBgColor, 0xFF000000), 24);
-                local r = math.floor(bit.rshift(bit.band(slotBgColor, 0x00FF0000), 16) * totalDim);
-                local g = math.floor(bit.rshift(bit.band(slotBgColor, 0x0000FF00), 8) * totalDim);
-                local b = math.floor(bit.band(slotBgColor, 0x000000FF) * totalDim);
-                finalColor = bit.bor(bit.lshift(a, 24), bit.lshift(r, 16), bit.lshift(g, 8), b);
-            end
+        if totalDim < 1.0 then
+            local a = bit.rshift(bit.band(slotBgColor, 0xFF000000), 24);
+            local r = math.floor(bit.rshift(bit.band(slotBgColor, 0x00FF0000), 16) * totalDim);
+            local g = math.floor(bit.rshift(bit.band(slotBgColor, 0x0000FF00), 8) * totalDim);
+            local b = math.floor(bit.band(slotBgColor, 0x000000FF) * totalDim);
+            finalColor = bit.bor(bit.lshift(a, 24), bit.lshift(r, 16), bit.lshift(g, 8), b);
+        end
 
-            -- Apply slot opacity setting (before animation opacity)
-            local slotOpacity = params.slotOpacity or 1.0;
-            if slotOpacity < 1.0 then
-                local a = math.floor(bit.rshift(bit.band(finalColor, 0xFF000000), 24) * slotOpacity);
-                finalColor = bit.bor(bit.lshift(a, 24), bit.band(finalColor, 0x00FFFFFF));
-            end
+        -- Apply slot opacity setting (before animation opacity)
+        local slotOpacity = params.slotOpacity or 1.0;
+        if slotOpacity < 1.0 then
+            local a = math.floor(bit.rshift(bit.band(finalColor, 0xFF000000), 24) * slotOpacity);
+            finalColor = bit.bor(bit.lshift(a, 24), bit.band(finalColor, 0x00FFFFFF));
+        end
 
-            -- Apply animation opacity to alpha channel
-            if animOpacity < 1.0 then
-                local a = math.floor(bit.rshift(bit.band(finalColor, 0xFF000000), 24) * animOpacity);
-                finalColor = bit.bor(bit.lshift(a, 24), bit.band(finalColor, 0x00FFFFFF));
-            end
+        -- Apply animation opacity to alpha channel
+        if animOpacity < 1.0 then
+            local a = math.floor(bit.rshift(bit.band(finalColor, 0xFF000000), 24) * animOpacity);
+            finalColor = bit.bor(bit.lshift(a, 24), bit.band(finalColor, 0x00FFFFFF));
+        end
 
+        if drawList then
+            local slotTexPtr = GetCachedTexturePtr(GetSlotTexPath());
             imgP1[1] = x; imgP1[2] = y;
             imgP2[1] = x + size; imgP2[2] = y + size;
-            drawList:AddImage(slotTexPtr, imgP1, imgP2, UV0, UV1, finalColor);
+            if slotTexPtr then
+                -- Use the slot.png texture when available (supports custom art)
+                drawList:AddImage(slotTexPtr, imgP1, imgP2, UV0, UV1, finalColor);
+            else
+                -- Fallback: solid rect using the slot background color directly.
+                -- Converts ARGB (used internally) to ABGR (ImGui draw list expects ABGR).
+                local fa = bit.rshift(bit.band(finalColor, 0xFF000000), 24);
+                local fr = bit.rshift(bit.band(finalColor, 0x00FF0000), 16);
+                local fg = bit.rshift(bit.band(finalColor, 0x0000FF00), 8);
+                local fb = bit.band(finalColor, 0x000000FF);
+                local abgr = bit.bor(bit.lshift(fa, 24), bit.lshift(fb, 16), bit.lshift(fg, 8), fr);
+                drawList:AddRectFilled(imgP1, imgP2, abgr, 4);
+            end
         end
     end
 
@@ -1987,10 +1999,12 @@ function M.FlushTooltip()
             local tileY = my - 4;
 
             local slotPtr = GetCachedTexturePtr(GetSlotTexPath());
+            imgP1[1] = tileX;                       imgP1[2] = tileY;
+            imgP2[1] = tileX + DRAG_ABBR_TILE_SIZE; imgP2[2] = tileY + DRAG_ABBR_TILE_SIZE;
             if slotPtr then
-                imgP1[1] = tileX;                       imgP1[2] = tileY;
-                imgP2[1] = tileX + DRAG_ABBR_TILE_SIZE; imgP2[2] = tileY + DRAG_ABBR_TILE_SIZE;
                 fgList:AddImage(slotPtr, imgP1, imgP2, UV0, UV1, 0xFFFFFFFF);
+            else
+                fgList:AddRectFilled(imgP1, imgP2, 0xCC000000, 4);
             end
 
             local abbr = GetActionAbbreviation(payload.data);
