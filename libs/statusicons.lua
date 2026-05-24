@@ -256,7 +256,9 @@ function M.DrawStatusIcons(statusIds, iconSize, maxColumns, maxRows, drawBg, xOf
                     end
                     imgui.SetCursorScreenPos({resetX - ((bgSize - iconSize) / 1.5), resetY + yOffset});
                     bgIcon = statusHandler.GetBackground(isBuff);
-                    imgui.Image(bgIcon, { bgSize + 1, bgSize  / .75});
+                    if bgIcon then
+                        imgui.Image(bgIcon, { bgSize + 1, bgSize  / .75});
+                    end
                     imgui.SetCursorScreenPos({resetX, resetY});
                 end
                 -- Capture position BEFORE drawing icon to get accurate position
