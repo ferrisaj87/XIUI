@@ -279,6 +279,7 @@ function M.createUserSettingsDefaults()
         showTargetBarBookends = false,
         showTargetBarLockOnBorder = true,
         showTargetBarCastBar = true,
+        showTargetBarMpStripe = true,
         showEnemyId = false,
         showEnemyIdHex = true,
         targetBarHideDuringEvents = true,

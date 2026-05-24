@@ -74,6 +74,9 @@ local function DrawTargetBarSettingsContent()
             imgui.ShowHelp('Display the enemy cast bar under the HP bar when the target is casting.');
         end
         components.DrawCheckbox('Hide During Events', 'targetBarHideDuringEvents');
+        components.DrawCheckbox('Show MP Bar', 'showTargetBarMpStripe');
+        imgui.ShowHelp('Show a thin gradient stripe at the bottom of the HP bar when the mob has MP and can be aspired.\nCovers mobs with MP-bearing jobs (BLM, WHM, RDM, PLD, DRK, SMN, SCH, GEO)\nand aspirable families (Beetles, Elementals, Worms, Ahriman, Crabs, Colibri, etc.).\nCustomize the stripe color under Color Settings > Bar Colors > MP Bar.');
+
         components.DrawCheckbox('Show Enemy Id', 'showEnemyId');
         imgui.ShowHelp('Display the internal ID of the monster next to its name.');
         if gConfig.showEnemyId then
@@ -395,6 +398,9 @@ local function DrawTargetBarColorSettingsContent()
         end
         if (not HzLimitedMode) then
             components.DrawGradientPicker("Cast Bar", gConfig.colorCustomization.targetBar.castBarGradient, "Enemy cast bar color");
+        end
+        if gConfig.showTargetBarMpStripe then
+            components.DrawGradientPicker("MP Bar", gConfig.colorCustomization.targetBar.mpBarGradient, "Aspirable mob MP stripe color (shown at the bottom of the HP bar)");
         end
     end
 
