@@ -1936,12 +1936,20 @@ function M.DrawWindow(settings, moduleSettings)
     local bottomPad = GetCrossbarWindowBottomPad(settings);
     imgui.SetNextWindowSize({ width, height + CROSSBAR_WINDOW_TOP_DECOR_PAD + bottomPad }, ImGuiCond_Always);
 
+    -- When "Disable Crossbar While In Menu" is on, controller.lua clears the active combo
+    -- while a game menu is open. activeOnly mode would otherwise treat that as "no trigger
+    -- held" and fade the bar out completely — we keep it visible but dimmed instead.
+    local menuCrossbarDisabled = gamestate.IsMenuOpen() and settings.crossbarDisableInMenu ~= false;
+
     -- Determine visibility for activeOnly display mode
     local leftVisible, rightVisible, crossbarVisible = GetVisibilityState(activeCombo, settings, isEditMode);
+    if menuCrossbarDisabled then
+        leftVisible, rightVisible, crossbarVisible = true, true, true;
+    end
 
     -- Handle visibility animation for activeOnly mode
     local visibilityOpacity = 1.0;
-    if settings.displayMode == 'activeOnly' and not isEditMode then
+    if settings.displayMode == 'activeOnly' and not isEditMode and not menuCrossbarDisabled then
         local wasHidden = state.visibilityAnimation.wasHidden;
         local isNowHidden = not crossbarVisible;
 
@@ -1960,12 +1968,11 @@ function M.DrawWindow(settings, moduleSettings)
         end
     end
 
-    -- Menu-open dim: when a blocking game menu is open and the user has "Disable Crossbar
-    -- While In Menu" enabled, controller.lua already stops routing input — we additionally
-    -- dim everything the crossbar draws so it visually reads as "paused" rather than just
+    -- Menu-open dim: controller.lua already stops routing input — we additionally dim
+    -- everything the crossbar draws so it visually reads as "paused" rather than just
     -- silently unresponsive. visibilityOpacity propagates into every slot via the per-slot
     -- animOpacity param plus the background / border / trigger / divider alpha scales below.
-    if gamestate.IsMenuOpen() and settings.crossbarDisableInMenu ~= false then
+    if menuCrossbarDisabled then
         visibilityOpacity = visibilityOpacity * 0.35;
     end
 
@@ -2108,14 +2115,14 @@ function M.DrawWindow(settings, moduleSettings)
 
         -- Draw bar sets based on animation state and display mode
         -- NOTE: DrawSlot calls must be inside imgui.Begin/End for interactions to work
-        local isActiveOnlyMode = settings.displayMode == 'activeOnly' and not isEditMode;
+        local isActiveOnlyMode = settings.displayMode == 'activeOnly' and not isEditMode and not menuCrossbarDisabled;
 
         -- Draw window background FIRST so it sits beneath all slot content on the draw list.
-        -- In activeOnly mode, apply visibility opacity to background.
+        -- Apply visibility opacity whenever the bar is faded (activeOnly or menu dim).
         do
             local bgOpacity = settings.backgroundOpacity;
             local borderOpacity = settings.borderOpacity;
-            if isActiveOnlyMode then
+            if visibilityOpacity < 1.0 then
                 bgOpacity = bgOpacity * visibilityOpacity;
                 borderOpacity = borderOpacity * visibilityOpacity;
             end
@@ -2199,14 +2206,14 @@ function M.DrawWindow(settings, moduleSettings)
                 DrawLeftSide(state.currentLeftMode, leftGroupX, leftGroupY, slotSize, settings,
                     leftActive, pressedSlot, leftShowPressed, visibilityOpacity, drawList, 0, targetServerId, skillchainEnabled, activeCombo, magicBurstEnabled);
             else
-                -- Normal mode: draw both sides at full opacity
+                -- Normal mode: draw both sides (menu dim flows through visibilityOpacity)
                 DrawBarSet(
                     state.currentLeftMode, state.currentRightMode,
                     leftGroupX, leftGroupY, rightGroupX, rightGroupY,
                     slotSize, settings,
                     leftActive, rightActive,
                     pressedSlot, leftShowPressed, rightShowPressed,
-                    1.0, drawList, 0, targetServerId, skillchainEnabled, activeCombo, magicBurstEnabled
+                    visibilityOpacity, drawList, 0, targetServerId, skillchainEnabled, activeCombo, magicBurstEnabled
                 );
             end
         end
@@ -2234,9 +2241,9 @@ function M.DrawWindow(settings, moduleSettings)
         end
     end
 
-    -- Determine if we should show center elements (hidden in activeOnly mode)
+    -- Determine if we should show center elements (hidden in activeOnly mode unless menu-dimmed)
     local isActiveOnlyMode = settings.displayMode == 'activeOnly' and not isEditMode;
-    local showCenterElements = not isActiveOnlyMode;
+    local showCenterElements = not isActiveOnlyMode or menuCrossbarDisabled;
 
     -- Center decor (divider line, scope icon, combo text, palette name): all hidden in
     -- activeOnly mode since that layout collapses to a single side and the divider has no meaning.
