@@ -1651,19 +1651,41 @@ function M.DrawSlot(params)
     -- 12b. Blood Pact status corner icon (bottom-left)
     -- Shows the status effect the pact inflicts, or a custom statusCornerIcon PNG from
     -- horizon_bloodpacts_xiui.lua. Only drawn on pet/macro binds that resolve to a blood pact.
+    -- Priority:
+    --   1. statusCornerIcon file (custom theme PNG, if the file exists on disk)
+    --   2. Numeric ID extracted from the statusCornerIcon path basename (e.g. "41" from "HD/41.png")
+    --      → falls back to game DAT resources via get_icon_from_theme
+    --   3. STATUS_ID_BY_LABEL lookup on pact.status label (Rage pacts: Slow/Stun/Bind/etc.)
     -- ========================================
     if bind and animOpacity > 0.5 then
         local pact = actions.GetResolvedBloodPact and actions.GetResolvedBloodPact(bind) or nil;
         if pact then
-            local cornerTex  = actions.GetBloodPactStatusCornerIcon and actions.GetBloodPactStatusCornerIcon(bind, pact) or nil;
-            local statusLabel = pact.status or nil;
-            local statusId    = (not cornerTex) and statusLabel and STATUS_ID_BY_LABEL[statusLabel] or nil;
             local statusIconPtr = nil;
+
+            -- 1. Try the explicit PNG path (works when theme files are installed locally)
+            local cornerTex = actions.GetBloodPactStatusCornerIcon and actions.GetBloodPactStatusCornerIcon(bind, pact) or nil;
             if cornerTex and cornerTex.image then
                 statusIconPtr = tonumber(ffi.cast('uint32_t', cornerTex.image));
-            elseif statusId then
-                statusIconPtr = statusHandler.get_icon_from_theme(gConfig.statusIconTheme, statusId);
             end
+
+            -- 2. File not on disk: extract numeric status ID from the path filename
+            --    e.g. 'assets/status/Tetsouou/580.png' → 580
+            if not statusIconPtr and pact.statusCornerIcon then
+                local basename = pact.statusCornerIcon:match('([^/\\]+)%.%w+$');
+                local idFromPath = basename and tonumber(basename);
+                if idFromPath then
+                    statusIconPtr = statusHandler.get_icon_from_theme(gConfig.statusIconTheme, idFromPath);
+                end
+            end
+
+            -- 3. Fall back to named status label (Rage pacts: Slow, Stun, Bind, Paralyze, etc.)
+            if not statusIconPtr and pact.status then
+                local statusId = STATUS_ID_BY_LABEL[pact.status];
+                if statusId then
+                    statusIconPtr = statusHandler.get_icon_from_theme(gConfig.statusIconTheme, statusId);
+                end
+            end
+
             if statusIconPtr and statusIconPtr ~= 0 and drawList then
                 local cornerSz  = size * 0.35;
                 local padding   = 2;
