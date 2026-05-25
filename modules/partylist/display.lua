@@ -1435,19 +1435,21 @@ function display.DrawWindow(settings)
     for partyIndex = 1, 3 do
         local firstIdx = (partyIndex - 1) * data.partyMaxSize;
         local count = 0;
-        data.frameCache.activeMemberList[partyIndex] = {};
+        -- Reuse the existing table to avoid a new allocation every frame.
+        local list = data.frameCache.activeMemberList[partyIndex];
+        for k in pairs(list) do list[k] = nil; end
 
         if showConfig[1] and gConfig.partyListPreview then
             count = data.partyMaxSize;
             for i = 0, data.partyMaxSize - 1 do
-                data.frameCache.activeMemberList[partyIndex][i] = true;
+                list[i] = true;
             end
         else
             for i = 0, data.partyMaxSize - 1 do
                 local memIdx = firstIdx + i;
                 if party:GetMemberIsActive(memIdx) ~= 0 then
                     count = count + 1;
-                    data.frameCache.activeMemberList[partyIndex][i] = true;
+                    list[i] = true;
                 else
                     break;
                 end

@@ -213,6 +213,24 @@ statusHandler.ReadPartyBuffsFromPacket = function(e)
             end
         end);
     end
+
+    -- Pre-warm status icon textures for all buff IDs seen in this packet.
+    -- This runs on the packet handler, not the render thread, so disk I/O here
+    -- doesn't stall d3d_present. Without this, each uncached icon fires a
+    -- synchronous D3DXCreateTextureFromFile on the first render frame after a
+    -- party member joins, which is the main cause of the one-frame stutter.
+    pcall(function()
+        local theme = gConfig and gConfig.partyA and gConfig.partyA.statusTheme;
+        -- statusTheme 0/1 both show icons; non-zero means a named theme folder.
+        local themeName = (theme and theme ~= 0 and theme ~= '') and theme or nil;
+        for _, buffList in pairs(partyBuffTable) do
+            for _, sid in ipairs(buffList) do
+                if sid and sid > 0 and sid ~= 255 and sid ~= -1 then
+                    TextureManager.getStatusIcon(sid, themeName);
+                end
+            end
+        end
+    end);
 end
 
 return statusHandler;
