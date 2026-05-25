@@ -67,6 +67,8 @@ MP._macroSearchPaletteKey = nil;
 MP._lastMacroPaletteSearch = nil;
 -- Which scope switch confirmation is open (single non-modal BeginPopup, no full-screen dim).
 MP.macroScopeConfirmKind = nil; -- 'toShared' | 'toProfile' while 'MacroScopeSwitch##xiui' is open
+--- State for Import from Profile popup (nil = closed).
+MP.importFromProfile = nil;
 MP.showAllMode = false;
 MP.showAllPetMode = false;
 MP.wsWeaponFilter = 'All';
@@ -3107,6 +3109,138 @@ local function DrawIconPreview(macro, x, y, size)
     DrawMacroJaBadgeOverlay(drawList, macro, x, y, size);
 end
 
+-- ============================================
+-- Import from Profile helpers
+-- ============================================
+
+-- Build a list of { macro, bucketKey, status='new'|'match', sharedMatch, resolution } for every
+-- macro in the frozen profile DB (only available while in Shared scope).
+local function BuildImportPreview()
+    local frozenDb = sharedMacroStore.GetFrozenProfileMacroDb();
+    if not frozenDb or not gConfig then return {}; end
+    local sharedDb = gConfig.macroDB or {};
+    local preview = {};
+    local function nameInBucket(db, bucketKey, name)
+        local bucket = db[bucketKey];
+        if type(bucket) ~= 'table' then return nil; end
+        for _, m in ipairs(bucket) do
+            if m and m.displayName == name then return m; end
+        end
+        return nil;
+    end
+    for bucketKey, macroList in pairs(frozenDb) do
+        if type(macroList) == 'table' then
+            for _, macro in ipairs(macroList) do
+                if macro and macro.id and (macro.displayName or '') ~= '' then
+                    local match = nameInBucket(sharedDb, bucketKey, macro.displayName);
+                    table.insert(preview, {
+                        macro      = macro,
+                        bucketKey  = bucketKey,
+                        status     = match and 'match' or 'new',
+                        sharedMatch = match,
+                        resolution = nil, -- nil = follow global mode
+                    });
+                end
+            end
+        end
+    end
+    -- Matches first (need attention), then new; alphabetical within each group
+    table.sort(preview, function(a, b)
+        if a.status ~= b.status then return a.status == 'match'; end
+        return (a.macro.displayName or '') < (b.macro.displayName or '');
+    end);
+    return preview;
+end
+
+-- Execute the import: write macros into gConfig.macroDB (shared library) and
+-- update slot bindings by adding a shared arm alongside each existing profile arm.
+local function ExecuteImportFromProfile(importState)
+    if not importState or not importState.preview or not gConfig then return; end
+    local globalMode = importState.globalConflict or 'overwrite';
+    local sharedDb   = gConfig.macroDB;
+    if not sharedDb then gConfig.macroDB = {}; sharedDb = gConfig.macroDB; end
+    local anyMacroChange = false;
+
+    local function nextIdInBucket(bucketKey)
+        local bucket = sharedDb[bucketKey];
+        local maxId  = 0;
+        if type(bucket) == 'table' then
+            for _, m in ipairs(bucket) do
+                if m and m.id and m.id > maxId then maxId = m.id; end
+            end
+        end
+        local fmax = sharedMacroStore.GetMaxMacroIdInFrozenProfileBucket(bucketKey);
+        if fmax > maxId then maxId = fmax; end
+        return maxId + 1;
+    end
+
+    local function copyMacroFields(src)
+        return {
+            displayName        = src.displayName,
+            macroText          = src.macroText,
+            target             = src.target,
+            customIcon         = src.customIcon,
+            showJaBadgeOnMacro = src.showJaBadgeOnMacro,
+            actionType         = src.actionType,
+            actionName         = src.actionName,
+            actionCategory     = src.actionCategory,
+            targetType         = src.targetType,
+        };
+    end
+
+    for _, item in ipairs(importState.preview) do
+        local resolution = item.resolution or globalMode;
+        local srcMacro   = item.macro;
+        local bucketKey  = item.bucketKey;
+        local sharedMacroId, sharedPaletteKey;
+
+        if item.status == 'new' or resolution == 'rename' then
+            -- Copy macro to shared library with a fresh ID
+            local newMacro = copyMacroFields(srcMacro);
+            if resolution == 'rename' and item.status == 'match' then
+                local profName = (config and config.currentProfile) or 'Profile';
+                newMacro.displayName = (newMacro.displayName or 'Macro') .. ' [' .. profName .. ']';
+            end
+            local bucket = sharedDb[bucketKey];
+            if not bucket then sharedDb[bucketKey] = {}; bucket = sharedDb[bucketKey]; end
+            newMacro.id = nextIdInBucket(bucketKey);
+            table.insert(bucket, newMacro);
+            sharedMacroId    = newMacro.id;
+            sharedPaletteKey = bucketKey;
+            anyMacroChange   = true;
+
+        elseif resolution == 'overwrite' and item.sharedMatch then
+            -- Update existing shared macro content; keep its ID
+            local sm = item.sharedMatch;
+            sm.macroText          = srcMacro.macroText;
+            sm.target             = srcMacro.target;
+            sm.customIcon         = srcMacro.customIcon;
+            sm.showJaBadgeOnMacro = srcMacro.showJaBadgeOnMacro;
+            sharedMacroId    = sm.id;
+            sharedPaletteKey = bucketKey;
+            anyMacroChange   = true;
+
+        elseif resolution == 'keep' and item.sharedMatch then
+            -- Link slot arms to existing shared macro without changing its data
+            sharedMacroId    = item.sharedMatch.id;
+            sharedPaletteKey = bucketKey;
+        end
+
+        if sharedMacroId then
+            data.AddSharedArmToSlotsWithProfileMacro(gConfig, srcMacro.id, bucketKey, sharedMacroId, sharedPaletteKey);
+        end
+    end
+
+    if anyMacroChange then
+        markSharedMacroLibraryDirtyIfNeeded();
+    end
+    data.MarkMacroLookupDirty();
+    data.InvalidateConfigDerivedCaches();
+    SaveSettingsToDisk();
+    ClearAllIconCaches();
+    RefreshCachedLists();
+end
+
 -- Draw the palette window (Lua 5.1: max 60 upvalues per function; heavy body uses MacroPaletteDrawEnv.)
 local MacroPaletteDrawEnv = {};
 
@@ -3416,6 +3550,31 @@ local function DrawPaletteBody()
                 imgui.PopTextWrapPos();
                 imgui.EndTooltip();
             end
+
+            -- Import from Profile button: only visible in Shared mode when a frozen profile DB exists
+            if scopeShared and sharedMacroStore.GetFrozenProfileMacroDb() ~= nil then
+                imgui.Spacing();
+                imgui.PushStyleColor(ImGuiCol_Button, { 0.20, 0.28, 0.20, 0.90 });
+                imgui.PushStyleColor(ImGuiCol_ButtonHovered, { 0.28, 0.40, 0.28, 1.0 });
+                imgui.PushStyleColor(ImGuiCol_ButtonActive, { 0.24, 0.35, 0.24, 1.0 });
+                if imgui.Button('Import from Profile...', { 0, 22 }) then
+                    MP.importFromProfile = {
+                        preview        = BuildImportPreview(),
+                        globalConflict = 'overwrite',
+                    };
+                    imgui.OpenPopup('ImportFromProfile##xiui');
+                end
+                imgui.PopStyleColor(3);
+                if imgui.IsItemHovered() then
+                    imgui.BeginTooltip();
+                    imgui.PushTextWrapPos(360);
+                    imgui.TextColored(COLORS.gold, 'Import from Profile');
+                    imgui.Spacing();
+                    imgui.TextWrapped('Copy macros from this profile\'s library into the Shared library and add shared slot bindings alongside existing profile ones. Switching back to Profile mode keeps everything intact.');
+                    imgui.PopTextWrapPos();
+                    imgui.EndTooltip();
+                end
+            end
         end
 
         -- Macro scope confirm: non-modal BeginPopup (palettemanager copy flow) = no full-screen dim; anchor to this window.
@@ -3512,6 +3671,138 @@ local function DrawPaletteBody()
                     closeScopePopup();
                 end
                 imgui.EndPopup();
+            end
+
+            -- Import from Profile popup
+            do
+                local IMPORT_W = 500;
+                imgui.SetNextWindowSize({ IMPORT_W, 0 }, ImGuiCond_Appearing);
+                local iwx, iwy = imgui.GetWindowPos();
+                local iwiw, iwih = imgui.GetWindowSize();
+                if type(iwx) == 'table' then
+                    local t = iwx; iwx, iwy = tonumber(t[1]) or 0, tonumber(t[2] or 0) or 0;
+                else
+                    iwx, iwy = tonumber(iwx) or 0, tonumber(iwy) or 0;
+                end
+                iwiw = type(iwiw) == 'table' and (tonumber(iwiw[1]) or 0) or (tonumber(iwiw) or 0);
+                iwih = type(iwih) == 'table' and (tonumber(iwih[2]) or 0) or (tonumber(iwih) or 0);
+                local impX = iwx + math.max(0, (iwiw - IMPORT_W) * 0.5);
+                local impY = iwy + 50;
+                imgui.SetNextWindowPos({ impX, impY }, ImGuiCond_Appearing);
+
+                if imgui.BeginPopup('ImportFromProfile##xiui') then
+                    local imp = MP.importFromProfile;
+                    if not imp then
+                        imgui.CloseCurrentPopup();
+                    else
+                        imgui.TextColored(COLORS.gold, 'Import from Profile');
+                        imgui.Separator();
+                        imgui.Spacing();
+
+                        local preview     = imp.preview or {};
+                        local totalNew    = 0;
+                        local totalMatch  = 0;
+                        for _, item in ipairs(preview) do
+                            if item.status == 'new'   then totalNew   = totalNew   + 1;
+                            elseif item.status == 'match' then totalMatch = totalMatch + 1; end
+                        end
+
+                        if #preview == 0 then
+                            imgui.TextColored(COLORS.textDim, 'Your profile library has no macros to import.');
+                        else
+                            local parts = {};
+                            if totalNew   > 0 then table.insert(parts, totalNew   .. ' new');      end
+                            if totalMatch > 0 then table.insert(parts, totalMatch .. ' matching'); end
+                            imgui.TextWrapped(table.concat(parts, ', ') .. ' macro(s) found in your profile library.');
+                            imgui.Spacing();
+                            imgui.PushTextWrapPos(IMPORT_W - 20);
+                            imgui.TextWrapped('New macros are copied into the Shared library. For each macro your profile and the Shared library share by name, choose how to handle it below. Slot bindings are updated to point at the Shared copy so everything works immediately. Switching back to Profile keeps the original bindings intact.');
+                            imgui.PopTextWrapPos();
+                            imgui.Spacing();
+
+                            -- Conflict resolution (only relevant when there are matches)
+                            if totalMatch > 0 then
+                                imgui.TextColored(COLORS.gold, 'When names match in the Shared library:');
+                                local modes = {
+                                    { id = 'overwrite', label = 'Overwrite shared text with profile version' },
+                                    { id = 'keep',      label = 'Keep shared macro unchanged; link slots to it' },
+                                    { id = 'rename',    label = 'Copy as "Name [Profile]" and keep both' },
+                                };
+                                for _, mode in ipairs(modes) do
+                                    local sel = (imp.globalConflict or 'overwrite') == mode.id;
+                                    if imgui.RadioButton(mode.label .. '##impmode_' .. mode.id, sel) then
+                                        imp.globalConflict = mode.id;
+                                    end
+                                end
+                                if (imp.globalConflict or 'overwrite') == 'overwrite' then
+                                    imgui.Spacing();
+                                    imgui.PushTextWrapPos(IMPORT_W - 20);
+                                    imgui.TextColored({ 1, 0.7, 0.2, 1 }, 'Overwrite affects every profile/character using those shared macros.');
+                                    imgui.PopTextWrapPos();
+                                end
+                                imgui.Spacing();
+                            end
+
+                            -- Macro list
+                            imgui.Separator();
+                            imgui.Spacing();
+                            local listH = math.min(#preview * 22, 200);
+                            imgui.BeginChild('ImportMacroList##xiui', { IMPORT_W - 20, listH }, false);
+                            for _, item in ipairs(preview) do
+                                local resolution = item.resolution or (imp.globalConflict or 'overwrite');
+                                local badge, col;
+                                if item.status == 'new' then
+                                    badge = '[New]';     col = { 0.4, 0.9, 0.4, 1 };
+                                elseif resolution == 'overwrite' then
+                                    badge = '[Overwrite]'; col = { 1, 0.6, 0.2, 1 };
+                                elseif resolution == 'keep' then
+                                    badge = '[Keep]';    col = { 0.5, 0.8, 1, 1 };
+                                else
+                                    badge = '[Rename]';  col = { 0.85, 0.85, 0.5, 1 };
+                                end
+                                imgui.TextColored(col, badge);
+                                imgui.SameLine(0, 6);
+                                imgui.Text(item.macro.displayName or '?');
+                                -- Per-item override for match entries
+                                if item.status == 'match' then
+                                    imgui.SameLine();
+                                    local overrides     = { nil, 'overwrite', 'keep', 'rename' };
+                                    local overrideLabels = { 'Global', 'Overwrite', 'Keep', 'Rename' };
+                                    local curIdx = 1;
+                                    for i, v in ipairs(overrides) do if v == item.resolution then curIdx = i; break; end; end
+                                    imgui.SetNextItemWidth(90);
+                                    if imgui.BeginCombo('##impov_' .. tostring(item.macro.id), overrideLabels[curIdx], ImGuiComboFlags_None) then
+                                        for i, v in ipairs(overrides) do
+                                            if imgui.Selectable(overrideLabels[i] .. '##sel' .. i, curIdx == i) then
+                                                item.resolution = v;
+                                            end
+                                        end
+                                        imgui.EndCombo();
+                                    end
+                                end
+                            end
+                            imgui.EndChild();
+                            imgui.Separator();
+                        end
+
+                        imgui.Spacing();
+                        imgui.PushStyleColor(ImGuiCol_Button, COLORS.bgLight);
+                        if imgui.Button('Import##impok', { 100, 24 }) then
+                            if #preview > 0 then
+                                ExecuteImportFromProfile(imp);
+                            end
+                            MP.importFromProfile = nil;
+                            imgui.CloseCurrentPopup();
+                        end
+                        imgui.PopStyleColor();
+                        imgui.SameLine();
+                        if imgui.Button('Cancel##impcancel', { 100, 24 }) then
+                            MP.importFromProfile = nil;
+                            imgui.CloseCurrentPopup();
+                        end
+                    end
+                    imgui.EndPopup();
+                end
             end
 
             imgui.PopStyleColor(9);

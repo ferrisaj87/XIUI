@@ -992,9 +992,72 @@ function M.RewriteMacroPaletteBindingsInConfig(cfg, oldId, oldKey, newId, newKey
     end
     return changed;
 end
+--- For each hotbar/crossbar slot that has a profile arm matching `profileMacroId`
+--- (in `profilePaletteKey` bucket), add a shared arm pointing at `sharedMacroId` /
+--- `sharedPaletteKey`.  The profile arm is left untouched so switching back to Profile
+--- mode is lossless (dual arms coexist; the active scope determines which is shown).
+function M.AddSharedArmToSlotsWithProfileMacro(cfg, profileMacroId, profilePaletteKey, sharedMacroId, sharedPaletteKey)
+    if not cfg or not profileMacroId or not sharedMacroId then return false; end
+    local changed = false;
+    local newSharedArm = {
+        macroRef         = sharedMacroId,
+        macroPaletteKey  = sharedPaletteKey,
+        macroSourceStore = 'shared',
+    };
 
---- Edit Full Palette draft crossbar blobs (if open).
-function M.RewriteMacroPaletteBindingsInDraft(oldId, oldKey, newId, newKey, onlyBucketForThisId)
+    local function processSlot(slots, idx)
+        local s = slots[idx];
+        if not s or type(s) ~= 'table' or s.cleared then return; end
+        local profileArm;
+        if isDualMacroSlotTable(s) then
+            profileArm = s[K_BIND_P];
+        elseif s.macroRef and (s.macroSourceStore or 'profile') ~= 'shared' then
+            profileArm = s;
+        end
+        if not profileArm or profileArm.macroRef ~= profileMacroId then return; end
+        if profilePaletteKey ~= nil and not macroPaletteKeysEqualData(profileArm.macroPaletteKey, profilePaletteKey) then return; end
+
+        local out;
+        if isDualMacroSlotTable(s) then
+            out = deepCopyTable(s);
+        else
+            out = { actionType = 'macro', [K_BIND_P] = deepCopyTable(profileArm) };
+            if out[K_BIND_P].macroSourceStore == nil then
+                out[K_BIND_P].macroSourceStore = 'profile';
+            end
+        end
+        out[K_BIND_S] = deepCopyTable(newSharedArm);
+        slots[idx] = out;
+        changed = true;
+    end
+
+    for barIndex = 1, 6 do
+        local configKey = 'hotbarBar' .. barIndex;
+        if cfg[configKey] and cfg[configKey].slotActions then
+            for _, jobSlots in pairs(cfg[configKey].slotActions) do
+                if jobSlots then
+                    for idx in pairs(jobSlots) do processSlot(jobSlots, idx); end
+                end
+            end
+        end
+    end
+    if cfg.hotbarCrossbar and cfg.hotbarCrossbar.slotActions then
+        for _, jobSlots in pairs(cfg.hotbarCrossbar.slotActions) do
+            if jobSlots then
+                for _, comboMode in ipairs(CROSSBAR_COMBO_MODES_FOR_MACRO_SWEEP) do
+                    local comboSlots = jobSlots[comboMode];
+                    if comboSlots then
+                        for idx in pairs(comboSlots) do processSlot(comboSlots, idx); end
+                    end
+                end
+            end
+        end
+    end
+    if changed then NotifySlotDataChanged(); end
+    return changed;
+end
+
+
     if not draftForStorageKey or not draftByKey then
         return false;
     end
