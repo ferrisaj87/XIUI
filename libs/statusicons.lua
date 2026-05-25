@@ -9,6 +9,11 @@ local imtext = require('libs.imtext');
 
 local M = {};
 
+-- Status ID hovered this frame. Set by DrawStatusIcons when IsItemHovered fires;
+-- caller should read M.pendingTooltipId AFTER all imgui.Begin/End blocks are closed
+-- and render the tooltip there so it appears above all party list windows.
+M.pendingTooltipId = nil;
+
 -- ========================================
 -- Status Reordering (debuffs closest to party frame)
 -- ========================================
@@ -284,7 +289,9 @@ function M.DrawStatusIcons(statusIds, iconSize, maxColumns, maxRows, drawBg, xOf
                     imtext.Draw(drawList, timerText, textPosX - timerW / 2, textPosY, timerColor, scaledFontHeight);
                 end
                 if (imgui.IsItemHovered()) then
-                    statusHandler.render_tooltip(statusIds[i]);
+                    -- Defer: store the ID and let the caller render the tooltip
+                    -- AFTER all party windows are closed so it isn't occluded.
+                    M.pendingTooltipId = statusIds[i];
                 end
                 currentColumn = currentColumn + 1;
                 -- Handle multiple rows

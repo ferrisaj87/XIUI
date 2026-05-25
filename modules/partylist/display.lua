@@ -1470,6 +1470,9 @@ function display.DrawWindow(settings)
     data.partyTargeted = false;
     data.partySubTargeted = false;
 
+    -- Clear pending tooltip from the previous frame before drawing new windows.
+    statusIcons.pendingTooltipId = nil;
+
     -- Main party window
     display.DrawPartyWindow(settings, party, 1);
 
@@ -1480,6 +1483,15 @@ function display.DrawWindow(settings)
     else
         data.UpdateTextVisibility(false, 2);
         data.UpdateTextVisibility(false, 3);
+    end
+
+    -- Render any hovered buff/debuff tooltip AFTER all party windows are closed.
+    -- Drawing the tooltip inside the buff sub-window caused it to render below the
+    -- main party list window (which uses NoBringToFrontOnFocus). Deferring here
+    -- ensures the tooltip is always drawn on top of everything.
+    if statusIcons.pendingTooltipId then
+        statusHandler.render_tooltip(statusIcons.pendingTooltipId);
+        statusIcons.pendingTooltipId = nil;
     end
 end
 

@@ -55,7 +55,9 @@ statusHandler.render_tooltip = function(status)
         imgui.BeginTooltip();
             imgui.Text(('%s (#%d)'):fmt(encoding:ShiftJIS_To_UTF8(name, true), status));
             if (info.Description[1] ~= nil) then
-                imgui.Text(encoding:ShiftJIS_To_UTF8(info.Description[1], true));
+                imgui.PushTextWrapPos(imgui.GetFontSize() * 22);
+                imgui.TextUnformatted(encoding:ShiftJIS_To_UTF8(info.Description[1], true));
+                imgui.PopTextWrapPos();
             end
         imgui.EndTooltip();
     end
