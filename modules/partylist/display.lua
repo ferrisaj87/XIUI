@@ -16,7 +16,6 @@ local encoding = require('libs.encoding');
 local castcostShared = require('modules.castcost.shared');
 local defaultPositions = require('libs.defaultpositions');
 local imtext = require('libs.imtext');
-
 local data = require('modules.partylist.data');
 
 local display = {};
@@ -1292,109 +1291,95 @@ function display.DrawPartyWindow(settings, party, partyIndex)
         );
     end
 
-    imgui.End();
-    imgui.PopStyleVar(2);
-
-    -- Handle bottom alignment
-    -- When alignBottom is true the window grows UPWARD and the bottom edge stays fixed.
-    -- ImGui windows are positioned by their top-left corner, so when the content height
-    -- changes we compensate by moving the top-left up or down by the same delta.
-    --
-    -- Two sources of drift prevented here:
-    --   1. positionJustApplied (ApplyWindowPosition fired this frame): the saved
-    --      windowPositions top may be from a different party-size session. If the saved
-    --      partyListState.y disagrees with the applied Y, clear it so a stale height
-    --      doesn't trigger a wrong correction. If they agree, the height-correction
-    --      block must still run to keep the bottom edge fixed across profile switches.
-    --   2. After any height-correction SetWindowPos, windowPositions is updated
-    --      immediately so a quick addon reload doesn't re-apply the pre-correction Y.
+    -- Handle bottom alignment BEFORE imgui.End() so the SetWindowPos call takes
+    -- effect this frame (not deferred to the next).  Mirrors the petbar pattern.
     if (settings.alignBottom and imguiPosX ~= nil) then
-        -- Legacy migration: partyListState was previously a flat table instead of partyIndex-keyed
+        -- Legacy migration: flat table → partyIndex-keyed
         if (partyIndex == 1 and gConfig.partyListState ~= nil and gConfig.partyListState.x ~= nil) then
             local oldValues = gConfig.partyListState;
             gConfig.partyListState = {};
             gConfig.partyListState[partyIndex] = oldValues;
             SaveSettingsOnly();
         end
-
-        if (gConfig.partyListState == nil) then
-            gConfig.partyListState = {};
-        end
+        if (gConfig.partyListState == nil) then gConfig.partyListState = {}; end
 
         local partyListState = gConfig.partyListState[partyIndex];
+        local curBottom = imguiPosY + menuHeight;
 
-        -- positionChanged: detects user dragging the window (top Y moved externally).
-        -- Guard: only check when positionJustApplied is false, because on the first frame
-        -- after a load the applied Y may differ from the stale saved partyListState.y,
-        -- which would otherwise look like a drag and suppress the needed correction.
-        local positionChanged = (not positionJustApplied)
-            and partyListState ~= nil
-            and partyListState.y ~= nil
-            and partyListState.y ~= imguiPosY;
-
-        -- On positionJustApplied, only clear partyListState if its saved Y doesn't match
-        -- the applied Y — that would indicate a stale/corrupt state. If the Ys match,
-        -- the height may still differ (e.g. profile switch with different party size) so
-        -- we must let the height-correction block below run to keep the bottom edge fixed.
-        local staleAfterApply = positionJustApplied
-            and partyListState ~= nil
-            and partyListState.y ~= imguiPosY;
-
-        if staleAfterApply then
-            -- Saved anchor Y doesn't match the applied position — discard stale height tracking.
-            gConfig.partyListState[partyIndex] = nil;
-        elseif positionChanged then
-            -- User dragged the window; reset the bottom anchor to the new location.
+        if positionJustApplied or partyListState == nil then
+            -- First frame after load / position restore: seed the anchor from wherever
+            -- the window currently is.  Don't correct yet — let it settle first.
             gConfig.partyListState[partyIndex] = {
-                x = imguiPosX,
-                y = imguiPosY,
-                width = menuWidth,
-                height = menuHeight,
+                x = imguiPosX, y = imguiPosY,
+                width = menuWidth, height = menuHeight,
+                anchorBottom = curBottom,
             };
-            if gConfig.windowPositions then
-                if not gConfig.windowPositions[windowName] then
-                    gConfig.windowPositions[windowName] = {};
-                end
-                gConfig.windowPositions[windowName].x = imguiPosX;
-                gConfig.windowPositions[windowName].y = imguiPosY;
-            end
-            data.lastSettingsSaveTime = os.clock();
             data.pendingSettingsSave = true;
+            data.lastSettingsSaveTime = os.clock();
         else
-            if (partyListState ~= nil) then
-                if (menuHeight ~= partyListState.height) then
-                    -- Content height changed — shift the window top by the delta so the
-                    -- bottom edge stays fixed at partyListState.y + partyListState.height.
-                    local newPosY = partyListState.y + partyListState.height - menuHeight;
+            local positionChanged = partyListState.y ~= nil and partyListState.y ~= imguiPosY;
+
+            if positionChanged then
+                -- User dragged the window; update the bottom anchor to follow.
+                gConfig.partyListState[partyIndex] = {
+                    x = imguiPosX, y = imguiPosY,
+                    width = menuWidth, height = menuHeight,
+                    anchorBottom = curBottom,
+                };
+                if gConfig.windowPositions then
+                    if not gConfig.windowPositions[windowName] then
+                        gConfig.windowPositions[windowName] = {};
+                    end
+                    gConfig.windowPositions[windowName].x = imguiPosX;
+                    gConfig.windowPositions[windowName].y = imguiPosY;
+                end
+                data.lastSettingsSaveTime = os.clock();
+                data.pendingSettingsSave = true;
+            else
+                -- No drag: enforce the fixed bottom anchor.
+                local anchorBottom = (partyListState.anchorBottom ~= nil)
+                    and partyListState.anchorBottom or curBottom;
+                local newPosY = anchorBottom - menuHeight;
+                if math.abs(newPosY - imguiPosY) > 0.5 then
+                    imgui.SetWindowPos(windowName, { imguiPosX, newPosY });
                     imguiPosY = newPosY;
-                    imgui.SetWindowPos(windowName, { imguiPosX, imguiPosY });
-                    -- Sync windowPositions immediately so the corrected Y is used on the
-                    -- next ApplyWindowPosition call (e.g. quick addon reload before the
-                    -- next frame's SaveWindowPosition can run).
+                    -- Sync windowPositions immediately so a reload uses the corrected Y.
                     if gConfig.windowPositions then
                         if not gConfig.windowPositions[windowName] then
                             gConfig.windowPositions[windowName] = {};
                         end
                         gConfig.windowPositions[windowName].x = imguiPosX;
-                        gConfig.windowPositions[windowName].y = imguiPosY;
+                        gConfig.windowPositions[windowName].y = newPosY;
                     end
                 end
-            end
-
-            if (partyListState == nil or
-                    imguiPosX ~= partyListState.x or imguiPosY ~= partyListState.y or
-                    menuWidth ~= partyListState.width or menuHeight ~= partyListState.height) then
-                gConfig.partyListState[partyIndex] = {
-                    x = imguiPosX,
-                    y = imguiPosY,
-                    width = menuWidth,
-                    height = menuHeight,
-                };
-                data.lastSettingsSaveTime = os.clock();
-                data.pendingSettingsSave = true;
+                -- Persist current state (may be no-op if nothing changed).
+                -- Only save when x or anchorBottom change — those represent user
+                -- intent (drag / initial placement).  Height and derived y are
+                -- transient corrections that don't need a disk write.
+                local anchorChanged = partyListState.x ~= imguiPosX
+                    or partyListState.anchorBottom ~= anchorBottom;
+                if anchorChanged then
+                    data.lastSettingsSaveTime = os.clock();
+                    data.pendingSettingsSave = true;
+                end
+                -- Always update the in-memory state even when not saving to disk.
+                if partyListState.x ~= imguiPosX
+                        or partyListState.y ~= imguiPosY
+                        or partyListState.width ~= menuWidth
+                        or partyListState.height ~= menuHeight
+                        or partyListState.anchorBottom ~= anchorBottom then
+                    gConfig.partyListState[partyIndex] = {
+                        x = imguiPosX, y = imguiPosY,
+                        width = menuWidth, height = menuHeight,
+                        anchorBottom = anchorBottom,
+                    };
+                end
             end
         end
     end
+
+    imgui.End();
+    imgui.PopStyleVar(2);
 end
 
 -- ============================================
@@ -1509,6 +1494,11 @@ display.ResetPositions = function()
         end
         if gConfig.appliedPositions then
             gConfig.appliedPositions[windowNames[i]] = nil;
+        end
+        -- Clear the anchorBottom state so alignBottom re-seeds from the
+        -- reset position rather than fighting the default placement.
+        if gConfig.partyListState then
+            gConfig.partyListState[i] = nil;
         end
     end
 end
