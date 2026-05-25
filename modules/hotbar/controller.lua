@@ -833,6 +833,34 @@ function Controller.HandleXInputButton(e)
         return false;
     end
 
+    -- Block DPad Up/Down when palette cycling would consume them, even when no
+    -- trigger combo is active. This must run BEFORE the activeCombo == NONE guard
+    -- below, because palette cycling fires with just a shoulder button held (no L2/R2).
+    --
+    -- xinput_state (poll) already cycled the palettes and tried to zero state_modified,
+    -- which works on standard controllers. On some devices (e.g. ROG Ally built-in
+    -- controller), state_modified either points to a buffer the game doesn't read or is
+    -- nil, so the game still sees the DPad press. Setting e.blocked = true here is
+    -- Ashita's first-class event block and is guaranteed to work on all devices.
+    -- Actual palette cycling is NOT repeated here — xinput_state fired first.
+    if e.state == 1 then
+        local isDpadUp   = e.button == xboxDevice.Buttons.DPAD_UP;
+        local isDpadDown = e.button == xboxDevice.Buttons.DPAD_DOWN;
+        if isDpadUp or isDpadDown then
+            local globalSettings = gConfig and gConfig.hotbarGlobal;
+            local paletteCycleEnabled = globalSettings and globalSettings.paletteCycleControllerEnabled ~= false;
+            if paletteCycleEnabled then
+                local cycleButton = globalSettings and globalSettings.hotbarPaletteCycleButton or 'R1';
+                local cycleButtonHeld = (cycleButton == 'L1' and state.leftShoulderHeld) or (cycleButton ~= 'L1' and state.rightShoulderHeld);
+                if cycleButtonHeld then
+                    DebugLog(string.format('DPad %s blocked via xinput_button (palette cycle consumed by xinput_state poll)',
+                        isDpadUp and 'UP' or 'DOWN'));
+                    return true;  -- e.blocked = true in XIUI.lua; stops the game seeing this press
+                end
+            end
+        end
+    end
+
     if state.activeCombo == COMBO_MODES.NONE then
         return false;
     end
