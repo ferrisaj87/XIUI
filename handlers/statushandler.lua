@@ -7,6 +7,7 @@ local ffi = require('ffi');
 local imgui = require('imgui');
 local encoding = require('libs.encoding');
 local TextureManager = require('libs.texturemanager');
+local imtext = require('libs.imtext');
 
 -- Party buffs table, populated by packet 0x076 via ReadPartyBuffsFromPacket()
 local partyBuffs = {};
@@ -51,15 +52,81 @@ statusHandler.render_tooltip = function(status)
     local resMan = AshitaCore:GetResourceManager();
     local info = resMan:GetStatusIconByIndex(status);
     local name = resMan:GetString('buffs.names', status);
-    if (name ~= nil and info ~= nil) then
-        imgui.BeginTooltip();
-            imgui.Text(('%s (#%d)'):fmt(encoding:ShiftJIS_To_UTF8(name, true), status));
-            if (info.Description[1] ~= nil) then
-                imgui.PushTextWrapPos(imgui.GetFontSize() * 22);
-                imgui.TextUnformatted(encoding:ShiftJIS_To_UTF8(info.Description[1], true));
-                imgui.PopTextWrapPos();
+    if (name == nil or info == nil) then return; end
+
+    local nameStr = encoding:ShiftJIS_To_UTF8(name, true);
+    local descStr = (info.Description[1] ~= nil) and encoding:ShiftJIS_To_UTF8(info.Description[1], true) or nil;
+
+    -- Draw directly on the foreground draw list.  This draw list is always
+    -- composited after every ImGui window (it is literally the "top layer"),
+    -- so the tooltip cannot be occluded by the party-list window even though
+    -- that window uses ImGuiWindowFlags_NoBringToFrontOnFocus.
+    local dl = imgui.GetForegroundDrawList();
+    if not dl then return; end
+
+    local fontSize    = 13;
+    local maxWrapPx   = 260;
+    local pad         = 8;
+    local lineSpacing = fontSize + 4;
+
+    -- configure imtext for measurement + drawing (Tahoma, no bold, outline width 1)
+    imtext.SetConfig('Tahoma', false, 1);
+
+    -- name header
+    local nameLabel = string.format('%s (#%d)', nameStr, status);
+    local nameW = imtext.Measure(nameLabel, fontSize);
+
+    -- word-wrap description into lines
+    local descLines = {};
+    if descStr and #descStr > 0 then
+        local words = {};
+        for w in descStr:gmatch('[^%s]+') do words[#words + 1] = w; end
+        local cur = '';
+        for _, word in ipairs(words) do
+            local candidate = (cur == '') and word or (cur .. ' ' .. word);
+            local tw = imtext.Measure(candidate, fontSize);
+            if tw > maxWrapPx and cur ~= '' then
+                descLines[#descLines + 1] = cur;
+                cur = word;
+            else
+                cur = candidate;
             end
-        imgui.EndTooltip();
+        end
+        if cur ~= '' then descLines[#descLines + 1] = cur; end
+    end
+
+    -- measure widest line
+    local contentW = nameW;
+    for _, l in ipairs(descLines) do
+        local lw = imtext.Measure(l, fontSize);
+        if lw > contentW then contentW = lw; end
+    end
+
+    local separatorH = (#descLines > 0) and (pad * 0.5) or 0;
+    local boxH = pad + lineSpacing + separatorH + #descLines * lineSpacing + pad;
+    local boxW = contentW + pad * 2;
+
+    -- position near cursor; standard tooltip offset (right + slightly down)
+    local mx, my = imgui.GetMousePos();
+    local ox = mx + 14;
+    local oy = my + 4;
+
+    -- background + border
+    local bgCol     = imgui.GetColorU32({0.06, 0.06, 0.07, 0.92});
+    local borderCol = imgui.GetColorU32({0.45, 0.45, 0.45, 1.0});
+    dl:AddRectFilled({ox, oy}, {ox + boxW, oy + boxH}, bgCol, 4);
+    dl:AddRect({ox, oy}, {ox + boxW, oy + boxH}, borderCol, 4, nil, 1.0);
+
+    -- name line (white)
+    imtext.Draw(dl, nameLabel, ox + pad, oy + pad, 0xFFFFFFFF, fontSize);
+
+    -- description lines (light grey)
+    if #descLines > 0 then
+        local textY = oy + pad + lineSpacing + separatorH;
+        for _, l in ipairs(descLines) do
+            imtext.Draw(dl, l, ox + pad, textY, 0xFFCCCCCC, fontSize);
+            textY = textY + lineSpacing;
+        end
     end
 end
 
