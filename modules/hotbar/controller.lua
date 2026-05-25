@@ -704,6 +704,20 @@ function Controller.HandleXInputState(e)
             -- Clear the dpad press so it doesn't trigger slot activation
             if consumed then
                 newPresses = bit.band(newPresses, bit.bnot(bit.bor(xboxDevice.ButtonMasks.DPAD_UP, xboxDevice.ButtonMasks.DPAD_DOWN)));
+                -- Also zero dpad bits in the game's input copy so the game doesn't
+                -- act on the press (e.g. menu navigation, cursor movement). This is
+                -- separate from the main shouldBlock path which only runs when L2/R2
+                -- triggers are held. Without this, R1+DPad cycles the palette AND
+                -- passes the DPad through to FFXI at the same time.
+                if e.state_modified then
+                    pcall(function()
+                        local modifiedState = ffi.cast('XINPUT_STATE*', e.state_modified);
+                        if modifiedState then
+                            local dpadMask = bit.bor(xboxDevice.ButtonMasks.DPAD_UP, xboxDevice.ButtonMasks.DPAD_DOWN);
+                            modifiedState.Gamepad.wButtons = bit.band(modifiedState.Gamepad.wButtons, bit.bnot(dpadMask));
+                        end
+                    end);
+                end
             end
         end
     end
