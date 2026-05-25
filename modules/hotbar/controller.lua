@@ -176,6 +176,9 @@ local state = {
 
     -- R1 double-tap tracking for cpal anchor return
     r1LastEdgeTime = 0,
+    -- Timestamp of the last DPad palette cycle (used to deduplicate across xinput_state
+    -- and xinput_button when both fire for the same press on some hardware).
+    lastDpadCycleTime = 0,
 
     -- Callback for slot activation
     onSlotActivate = nil,
@@ -697,6 +700,8 @@ function Controller.HandleXInputState(e)
                 end
                 DebugLog('Palettes cycled: ' .. (direction == 1 and 'next' or 'prev'));
                 consumed = true;
+                -- Stamp so xinput_button skips re-cycling if it fires after us.
+                state.lastDpadCycleTime = os.clock();
             else
                 DebugLog('Palette cycle skipped: shoulder button not held');
             end
@@ -837,12 +842,13 @@ function Controller.HandleXInputButton(e)
     -- trigger combo is active. This must run BEFORE the activeCombo == NONE guard
     -- below, because palette cycling fires with just a shoulder button held (no L2/R2).
     --
-    -- xinput_state (poll) already cycled the palettes and tried to zero state_modified,
-    -- which works on standard controllers. On some devices (e.g. ROG Ally built-in
-    -- controller), state_modified either points to a buffer the game doesn't read or is
-    -- nil, so the game still sees the DPad press. Setting e.blocked = true here is
-    -- Ashita's first-class event block and is guaranteed to work on all devices.
-    -- Actual palette cycling is NOT repeated here — xinput_state fired first.
+    -- On standard controllers, xinput_state (poll) fires first, cycles palettes, and
+    -- zeros state_modified to block the game. On some devices (e.g. ROG Ally built-in
+    -- controller), either xinput_button fires before xinput_state, or e.blocked prevents
+    -- xinput_state from seeing the press afterward. So we cycle AND block here to be
+    -- authoritative regardless of event ordering. Double-cycling is guarded by checking
+    -- whether the DPad was already consumed this poll frame via xinput_state's newPresses
+    -- delta — if xinput_state already ran we skip the cycle but still block.
     if e.state == 1 then
         local isDpadUp   = e.button == xboxDevice.Buttons.DPAD_UP;
         local isDpadDown = e.button == xboxDevice.Buttons.DPAD_DOWN;
@@ -853,8 +859,29 @@ function Controller.HandleXInputButton(e)
                 local cycleButton = globalSettings and globalSettings.hotbarPaletteCycleButton or 'R1';
                 local cycleButtonHeld = (cycleButton == 'L1' and state.leftShoulderHeld) or (cycleButton ~= 'L1' and state.rightShoulderHeld);
                 if cycleButtonHeld then
-                    DebugLog(string.format('DPad %s blocked via xinput_button (palette cycle consumed by xinput_state poll)',
-                        isDpadUp and 'UP' or 'DOWN'));
+                    -- Only cycle if xinput_state hasn't already done it this frame.
+                    -- state.lastDpadCycleFrame is set by the xinput_state path when it fires first.
+                    local thisFrame = os.clock();
+                    if not state.lastDpadCycleTime or (thisFrame - state.lastDpadCycleTime) > 0.05 then
+                        local direction = isDpadDown and 1 or -1;
+                        local jobId = data.jobId or 1;
+                        local subjobId = data.subjobId or 0;
+                        for i = 1, 6 do
+                            palette.CyclePalette(i, direction, jobId, subjobId);
+                        end
+                        palette.CyclePaletteForCombo(nil, direction, jobId, subjobId);
+                        palette.ClearCpalAnchor(palette.GetCrossbarPaletteScope());
+                        state.r1LastEdgeTime = 0;
+                        state.lastDpadCycleTime = thisFrame;
+                        local logPaletteName = globalSettings.logPaletteNameCrossbar;
+                        if logPaletteName == nil then logPaletteName = true; end
+                        if logPaletteName then
+                            print('[XIUI] Palettes cycled: ' .. (direction == 1 and 'next' or 'prev'));
+                        end
+                        DebugLog(string.format('DPad %s palette cycle via xinput_button', isDpadUp and 'UP' or 'DOWN'));
+                    else
+                        DebugLog(string.format('DPad %s block via xinput_button (xinput_state already cycled this frame)', isDpadUp and 'UP' or 'DOWN'));
+                    end
                     return true;  -- e.blocked = true in XIUI.lua; stops the game seeing this press
                 end
             end
