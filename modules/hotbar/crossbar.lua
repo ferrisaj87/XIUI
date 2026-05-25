@@ -1664,7 +1664,7 @@ end
 --                inputs used by the main DrawLeftSide/DrawRightSide path. Letting the preview
 --                share them keeps the highlight calculus identical between live and preview
 --                (a slot that lights up on the live bar lights up on its preview).
-local function DrawPreviewSide(winX, winY, windowKey, side, mode, ps, baseOp, dimFactor, drawList, activeCombo, targetServerId, skillchainEnabled, magicBurstEnabled)
+local function DrawPreviewSide(winX, winY, windowKey, side, mode, ps, baseOp, dimFactor, drawList, activeCombo, targetServerId, skillchainEnabled, magicBurstEnabled, showQty)
     local slotSize  = ps.slotSize or 40;
     local contentOp = baseOp * dimFactor;
 
@@ -1735,8 +1735,9 @@ local function DrawPreviewSide(winX, winY, windowKey, side, mode, ps, baseOp, di
             -- charges duplicates the info on the live bar and crowds an already-small preview.
             -- Cooldowns are kept (recastTimer* + flashCooldownUnder5) — they ARE useful here
             -- because the preview's whole purpose is "should I commit to this bar".
+            -- showQuantity respects the per-user opt-in (doubleTapPreviewShowQty).
             showMpCost = false,
-            showQuantity = false,
+            showQuantity = showQty and true or false,
             showLabel = false,
             recastTimerFontSize   = ps.recastTimerFontSize or 11,
             recastTimerFontColor  = ps.recastTimerFontColor or 0xFFFFFFFF,
@@ -1810,7 +1811,8 @@ local function DrawDoubleTapPreviewWindow(windowKey, mode, ps, baseOp, dimFactor
         end
 
         local dl = imgui.GetWindowDrawList();
-        DrawPreviewSide(wX, wY, windowKey, 'L2', mode, ps, baseOp, dimFactor, dl, activeCombo, targetServerId, skillchainEnabled, magicBurstEnabled);
+        local showQty = settings and settings.doubleTapPreviewShowQty ~= false;
+        DrawPreviewSide(wX, wY, windowKey, 'L2', mode, ps, baseOp, dimFactor, dl, activeCombo, targetServerId, skillchainEnabled, magicBurstEnabled, showQty);
     end
     imgui.End();
 

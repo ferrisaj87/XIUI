@@ -616,6 +616,7 @@ function M.createCrossbarDefaults()
         doubleTapPreviewScale   = 0.60,     -- Preview scale relative to main crossbar (0.3–1.0)
         doubleTapPreviewOpacity = 1.0,      -- Preview opacity multiplier (0.2–1.0; dims with trigger)
         doubleTapPreviewLocked  = false,    -- Lock preview positions independently of the main crossbar
+        doubleTapPreviewShowQty = true,     -- Show item stack quantity on preview slots
 
         -- Analog trigger thresholds (0-255 normalized range)
         -- Used by Xbox (XInput) and PlayStation (DirectInput with signed->unsigned conversion)

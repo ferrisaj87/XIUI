@@ -972,6 +972,8 @@ local function DrawCrossbarSettings(selectedCrossbarTab, menuState)
             imgui.ShowHelp('Base opacity of the preview windows. Follows trigger-dim behaviour: the inactive preview dims when\nthe opposite trigger is held, matching how the main crossbar dims its inactive side.');
             components.DrawPartyCheckbox(crossbarSettings, 'Lock Preview Positions##crossbar', 'doubleTapPreviewLocked', DeferredUpdateVisuals);
             imgui.ShowHelp('Lock the L2x2 and R2x2 preview windows in place so they cannot be dragged.\nIndependent of the main crossbar position lock.');
+            components.DrawPartyCheckbox(crossbarSettings, 'Show Item Quantity##crossbar', 'doubleTapPreviewShowQty', DeferredUpdateVisuals);
+            imgui.ShowHelp('Show item stack quantity on preview slots. Disable if you find the numbers clutter\nthe smaller preview windows.');
             imgui.Unindent(20);
         end
     end
