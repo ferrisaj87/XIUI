@@ -1307,15 +1307,20 @@ function display.DrawPartyWindow(settings, party, partyIndex)
         local curBottom = imguiPosY + menuHeight;
 
         if positionJustApplied or partyListState == nil then
-            -- First frame after load / position restore: seed the anchor from wherever
-            -- the window currently is.  Don't correct yet — let it settle first.
+            -- First frame after load / position restore: seed or refresh the anchor.
+            -- When partyListState already has an anchor (e.g. a relog within the same
+            -- Ashita session that reset appliedPositions), keep the existing anchor so
+            -- the potentially-unstable first-frame menuHeight doesn't corrupt it.
+            local keepAnchor = partyListState ~= nil and partyListState.anchorBottom ~= nil;
             gConfig.partyListState[partyIndex] = {
                 x = imguiPosX, y = imguiPosY,
                 width = menuWidth, height = menuHeight,
-                anchorBottom = curBottom,
+                anchorBottom = keepAnchor and partyListState.anchorBottom or curBottom,
             };
-            data.pendingSettingsSave = true;
-            data.lastSettingsSaveTime = os.clock();
+            if not keepAnchor then
+                data.pendingSettingsSave = true;
+                data.lastSettingsSaveTime = os.clock();
+            end
         else
             local positionChanged = partyListState.y ~= nil and partyListState.y ~= imguiPosY;
 
