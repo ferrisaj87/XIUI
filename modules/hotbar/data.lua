@@ -1057,7 +1057,8 @@ function M.AddSharedArmToSlotsWithProfileMacro(cfg, profileMacroId, profilePalet
     return changed;
 end
 
-
+--- Edit Full Palette draft crossbar blobs (if open).
+function M.RewriteMacroPaletteBindingsInDraft(oldId, oldKey, newId, newKey, onlyBucketForThisId)
     if not draftForStorageKey or not draftByKey then
         return false;
     end
