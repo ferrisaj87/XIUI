@@ -441,6 +441,12 @@ function M.ExportProfile(exportPart)
             universalCrossbarPaletteOrder = xbUnivOrder,
             slotActions = crossbarPalettes,
         };
+        -- Export crossbar scope settings so the new device starts up with the same defaults.
+        local hcCfg = gConfig.hotbarCrossbar;
+        if hcCfg then
+            payload.crossbarPalettes.enableUniversalCrossbarPalettes = hcCfg.enableUniversalCrossbarPalettes;
+            payload.crossbarPalettes.defaultCrossbarPaletteScope     = hcCfg.defaultCrossbarPaletteScope;
+        end
     end
 
     if exportPart ~= M.EXPORT_PART_PALETTES_ONLY then
@@ -970,6 +976,17 @@ function M.ImportProfile(jsonStr, opts)
                 decoded.crossbarPalettes.universalCrossbarPaletteOrder,
                 replace
             );
+            -- Restore crossbar scope settings so the imported profile starts up correctly.
+            local hcCfg = gConfig.hotbarCrossbar;
+            if hcCfg then
+                local xbSrc = decoded.crossbarPalettes;
+                if xbSrc.enableUniversalCrossbarPalettes ~= nil then
+                    hcCfg.enableUniversalCrossbarPalettes = xbSrc.enableUniversalCrossbarPalettes;
+                end
+                if type(xbSrc.defaultCrossbarPaletteScope) == 'string' then
+                    hcCfg.defaultCrossbarPaletteScope = xbSrc.defaultCrossbarPaletteScope;
+                end
+            end
         end
     end
 

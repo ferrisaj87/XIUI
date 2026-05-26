@@ -2015,6 +2015,16 @@ function M.SetCrossbarPaletteScope(scope)
     end
     state.crossbarPaletteScope = scope;
     state.crossbarCliPreview = nil;
+    -- When switching into universal scope with no active palette yet, pick the first available
+    -- so the crossbar never renders blank on the first L1+R1 press after login.
+    if scope == 'universal' and not state.crossbarActiveUniversalPalette then
+        local cyc = M.GetUniversalCrossbarPalettesForCycle();
+        if #cyc > 0 then
+            state.crossbarActiveUniversalPalette = cyc[1];
+        else
+            state.crossbarActiveUniversalPalette = M.EnsureUniversalCrossbarDefaultExists();
+        end
+    end
     for _, mode in ipairs(CROSSBAR_COMBO_MODES) do
         M.FirePaletteChangedCallbacks('crossbar:' .. mode, nil, nil);
     end
