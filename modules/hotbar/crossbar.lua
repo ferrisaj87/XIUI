@@ -1886,7 +1886,9 @@ function M.DrawWindow(settings, moduleSettings)
     local exitingChordCenter = state.wasSharedCenterChordLayout and (not hideRightForSharedCenter);
 
     -- Window flags (dummy window for positioning, like hotbar display.lua)
-    local windowFlags = GetBaseWindowFlags(gConfig.lockPositions);
+    -- NoMove when global lock OR crossbar-specific lock is on.
+    local crossbarShouldLock = gConfig.lockPositions or (gConfig.crossbarLockMovement == true);
+    local windowFlags = GetBaseWindowFlags(crossbarShouldLock);
 
     local windowName = 'Crossbar';
     local defaultX, defaultY = GetDefaultPosition(settings);
