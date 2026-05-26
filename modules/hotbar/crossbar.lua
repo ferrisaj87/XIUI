@@ -657,7 +657,13 @@ end
 -- on the bottom, then offset the window-top so the SLOT GRID still lands at the user's
 -- saved (or default) Y. `state.windowY` continues to mean "slot grid top" everywhere
 -- else in this module, which lets the rest of the layout code stay unchanged.
+-- The same logic applies horizontally: CROSSBAR_WINDOW_SIDE_PAD pixels of extra window
+-- width on each side prevent action labels (which can be wider than slotSize) from being
+-- clipped against the window's left/right edges. `state.windowX` always means "slot grid
+-- left" (= window.x + SIDE_PAD); `gConfig.windowPositions.Crossbar.x` stores slot grid X
+-- so saved positions remain stable across upgrades.
 local CROSSBAR_WINDOW_TOP_DECOR_PAD = 80;
+local CROSSBAR_WINDOW_SIDE_PAD      = 60;
 
 local function GetCrossbarWindowBottomPad(settings)
     settings = settings or {};
@@ -684,7 +690,7 @@ local function ApplyCrossbarWindowPositionOnce()
         return false;
     end
     local pos = gConfig.windowPositions['Crossbar'];
-    imgui.SetNextWindowPos({ pos.x, pos.y - CROSSBAR_WINDOW_TOP_DECOR_PAD }, ImGuiCond_Always);
+    imgui.SetNextWindowPos({ pos.x - CROSSBAR_WINDOW_SIDE_PAD, pos.y - CROSSBAR_WINDOW_TOP_DECOR_PAD }, ImGuiCond_Always);
     gConfig.appliedPositions['Crossbar'] = true;
     return true;
 end
@@ -699,12 +705,15 @@ local function SaveCrossbarWindowSlotTopPosition()
     if not gConfig.windowPositions then
         gConfig.windowPositions = {};
     end
+    -- Store SLOT GRID X (= window X + SIDE_PAD) so the saved coordinate is independent of
+    -- the padding constant — the same convention as SLOT_TOP_Y (window Y + TOP_PAD).
+    local slotTopX = wx + CROSSBAR_WINDOW_SIDE_PAD;
     local slotTopY = wy + CROSSBAR_WINDOW_TOP_DECOR_PAD;
     local saved = gConfig.windowPositions['Crossbar'];
     if not saved then
-        gConfig.windowPositions['Crossbar'] = { x = wx, y = slotTopY };
-    elseif saved.x ~= wx or saved.y ~= slotTopY then
-        saved.x = wx;
+        gConfig.windowPositions['Crossbar'] = { x = slotTopX, y = slotTopY };
+    elseif saved.x ~= slotTopX or saved.y ~= slotTopY then
+        saved.x = slotTopX;
         saved.y = slotTopY;
     end
 end
@@ -1910,22 +1919,23 @@ function M.DrawWindow(settings, moduleSettings)
     -- state.windowX / state.windowY track the SLOT GRID origin. ImGui's window must open
     -- CROSSBAR_WINDOW_TOP_DECOR_PAD pixels higher so the decoration above the slots
     -- (L2/R2 triggers, combo text, R1 cpal-anchor pulse) stays inside the window's
-    -- content rect and doesn't get clipped.
+    -- content rect and doesn't get clipped. Likewise it opens CROSSBAR_WINDOW_SIDE_PAD
+    -- pixels wider on each side so action labels wider than a single slot aren't clipped.
     if anchorDragging then
         -- Use state position directly during drag for immediate response
-        imgui.SetNextWindowPos({ state.windowX, state.windowY - CROSSBAR_WINDOW_TOP_DECOR_PAD }, ImGuiCond_Always);
+        imgui.SetNextWindowPos({ state.windowX - CROSSBAR_WINDOW_SIDE_PAD, state.windowY - CROSSBAR_WINDOW_TOP_DECOR_PAD }, ImGuiCond_Always);
     elseif hideRightForSharedCenter then
         -- Shared-center chord: force X to screen-center each frame so the narrow window reads as
         -- the FFXIV-style single 8-slot strip (Y persists from the last wide-bar position).
         local io = imgui.GetIO();
         local screenW = (io and io.DisplaySize and io.DisplaySize.x) or 1920;
         local slotY = storedCrossbarPosY();
-        imgui.SetNextWindowPos({ (screenW - width) * 0.5, slotY - CROSSBAR_WINDOW_TOP_DECOR_PAD }, ImGuiCond_Always);
+        imgui.SetNextWindowPos({ (screenW - width) * 0.5 - CROSSBAR_WINDOW_SIDE_PAD, slotY - CROSSBAR_WINDOW_TOP_DECOR_PAD }, ImGuiCond_Always);
     elseif exitingChordCenter and state.lastWideCrossbarWindowX ~= nil then
         -- First frame after chord release: re-anchor to the wide-bar X we stashed before the
         -- chord, otherwise the user-visible position would briefly snap to the centered narrow X.
         local slotY = storedCrossbarPosY();
-        imgui.SetNextWindowPos({ state.lastWideCrossbarWindowX, slotY - CROSSBAR_WINDOW_TOP_DECOR_PAD }, ImGuiCond_Always);
+        imgui.SetNextWindowPos({ state.lastWideCrossbarWindowX - CROSSBAR_WINDOW_SIDE_PAD, slotY - CROSSBAR_WINDOW_TOP_DECOR_PAD }, ImGuiCond_Always);
     else
         -- Apply saved position (once, slot-top -> window-top offset handled inside) or default
         local hasSaved = gConfig.windowPositions and gConfig.windowPositions[windowName];
@@ -1933,12 +1943,12 @@ function M.DrawWindow(settings, moduleSettings)
         if hasSaved then
             ApplyCrossbarWindowPositionOnce();
         else
-            imgui.SetNextWindowPos({ defaultX, defaultY - CROSSBAR_WINDOW_TOP_DECOR_PAD }, ImGuiCond_FirstUseEver);
+            imgui.SetNextWindowPos({ defaultX - CROSSBAR_WINDOW_SIDE_PAD, defaultY - CROSSBAR_WINDOW_TOP_DECOR_PAD }, ImGuiCond_FirstUseEver);
         end
     end
 
     local bottomPad = GetCrossbarWindowBottomPad(settings);
-    imgui.SetNextWindowSize({ width, height + CROSSBAR_WINDOW_TOP_DECOR_PAD + bottomPad }, ImGuiCond_Always);
+    imgui.SetNextWindowSize({ width + 2 * CROSSBAR_WINDOW_SIDE_PAD, height + CROSSBAR_WINDOW_TOP_DECOR_PAD + bottomPad }, ImGuiCond_Always);
 
     -- When "Disable Crossbar While In Menu" is on, controller.lua clears the active combo
     -- while a game menu is open. activeOnly mode would otherwise treat that as "no trigger
@@ -2083,13 +2093,14 @@ function M.DrawWindow(settings, moduleSettings)
             if gConfig.windowPositions and gConfig.windowPositions[windowName] then
                 local wx, wy = imgui.GetWindowPos();
                 local s = gConfig.windowPositions[windowName];
+                local slotTopX = wx + CROSSBAR_WINDOW_SIDE_PAD;  -- save slot grid X
                 local slotTopY = wy + CROSSBAR_WINDOW_TOP_DECOR_PAD;
                 if s.y ~= slotTopY then
                     s.y = slotTopY;
                 end
-                -- Track the centered window X for free (used by lastWideCrossbarWindowX restore)
-                if s.x ~= wx then
-                    s.x = wx;
+                -- Track the centered window X as slot grid X for lastWideCrossbarWindowX restore
+                if s.x ~= slotTopX then
+                    s.x = slotTopX;
                 end
             end
         else
@@ -2097,15 +2108,16 @@ function M.DrawWindow(settings, moduleSettings)
         end
         windowPosX, windowPosY = imgui.GetWindowPos();
 
-        -- Update stored position. state.windowY = slot grid top (window top + decor pad);
-        -- the rest of the layout code references state.windowY as the slot origin.
-        state.windowX = windowPosX;
+        -- Update stored position. state.windowX = slot grid left (window left + SIDE_PAD);
+        -- state.windowY = slot grid top (window top + TOP_PAD). All layout code below
+        -- references state.windowX/Y as the slot origin.
+        state.windowX = windowPosX + CROSSBAR_WINDOW_SIDE_PAD;
         state.windowY = windowPosY + CROSSBAR_WINDOW_TOP_DECOR_PAD;
 
-        -- Stash the wide-bar X so that when the user releases the chord we can restore it
-        -- (otherwise the narrow centered X from this frame would be the "last" saved X).
+        -- Stash the wide-bar SLOT GRID X so that when the user releases the chord we can
+        -- restore it (state.windowX is already slot grid X at this point).
         if not hideRightForSharedCenter then
-            state.lastWideCrossbarWindowX = windowPosX;
+            state.lastWideCrossbarWindowX = state.windowX;
         end
         -- Remember the layout for the NEXT frame so exitingChordCenter (above) can detect
         -- the chord-release transition and re-anchor X.
