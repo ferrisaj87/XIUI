@@ -983,7 +983,9 @@ function display.DrawWindow(settings)
                 textRowY = mpBarY + tpBarHeight + 2;
             end
 
-            -- Draw status icons on the same row as MP/TP text (left side)
+            -- Draw status icons on the same row as MP/TP text (left side).
+            -- Drawn directly onto the foreground draw list so the pet bar background
+            -- (also on the foreground draw list) does not occlude them.
             if showStatusIcons then
                 local effectIds, effectTimes = data.GetPetStatusEffects();
                 -- When settings open with preview, show 2 dummy icons if none (so user can see layout)
@@ -992,26 +994,40 @@ function display.DrawWindow(settings)
                     effectTimes = { 45, nil };
                 end
                 if effectIds and #effectIds > 0 then
-                    -- Clamp so 0/invalid from saved config doesn't hide icons (default 16)
                     local statusIconSize = math.max(8, tonumber(gConfig.petBarStatusIconSize) or 16) * gs;
+                    local iconSpacing = math.floor(2 * gs);
+                    local iconX = barsStartX;
+                    local iconY = textRowY;
+                    local timerFontSize = math.max(8, (gConfig.targetBarIconFontSize or 10) * gs);
 
-                    -- Position icons at left side, same Y as MP/TP text
-                    imgui.SetCursorScreenPos({barsStartX, textRowY});
+                    imtext.SetConfig(gConfig.fontFamily, false, gConfig.fontOutlineWidth or 2);
 
-                    statusIcons.DrawStatusIcons(
-                        effectIds,
-                        statusIconSize,
-                        6,      -- maxColumns (single row)
-                        1,      -- maxRows
-                        false,  -- drawBg (background behind icons)
-                        0,      -- xOffset
-                        effectTimes,
-                        nil,    -- settings (use defaults)
-                        statusHandler,
-                        buffTable
-                    );
+                    for i = 1, math.min(#effectIds, 8) do
+                        local effectId = effectIds[i];
+                        if effectId == nil or effectId == -1 then break; end
+                        local ptr = statusHandler.get_icon_from_theme(gConfig.statusIconTheme, effectId);
+                        if ptr then
+                            drawList:AddImage(
+                                ptr,
+                                {iconX, iconY},
+                                {iconX + statusIconSize, iconY + statusIconSize},
+                                {0, 0}, {1, 1},
+                                0xFFFFFFFF
+                            );
+                            if effectTimes and effectTimes[i] then
+                                local timerText = tostring(math.floor(effectTimes[i]));
+                                local timerW = imtext.Measure(timerText, timerFontSize);
+                                imtext.Draw(drawList, timerText,
+                                    iconX + statusIconSize / 2 - timerW / 2,
+                                    iconY + statusIconSize,
+                                    0xFFFFFFFF, timerFontSize
+                                );
+                            end
+                            iconX = iconX + statusIconSize + iconSpacing;
+                        end
+                    end
 
-                    -- Set cursor to fixed position after icons (icon + timer height)
+                    -- Advance main window cursor past the icon row so layout flows correctly
                     imgui.SetCursorScreenPos({barsStartX, textRowY + statusIconSize - 5});
                 end
             end
