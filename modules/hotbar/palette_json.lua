@@ -579,13 +579,28 @@ local function clearCrossbarSlotLayoutsOnly()
 end
 
 local function macroExistsInBucket(bucketKey, macroId)
-    if not gConfig or not gConfig.macroDB or not macroId then
+    if not gConfig or not macroId then
         return false;
     end
-    local db = gConfig.macroDB[bucketKey];
-    if type(db) ~= 'table' then return false; end
-    for _, m in ipairs(db) do
-        if m and m.id == macroId then return true; end
+    -- Check the live macroDB (profile library or shared library depending on current scope)
+    if gConfig.macroDB then
+        local db = gConfig.macroDB[bucketKey];
+        if type(db) == 'table' then
+            for _, m in ipairs(db) do
+                if m and m.id == macroId then return true; end
+            end
+        end
+    end
+    -- Also check the frozen profile library when in Shared scope: profile-arm bindings
+    -- resolve against the profile DB, which is stored separately from gConfig.macroDB.
+    local frozenDb = sharedMacroStore.GetFrozenProfileMacroDb();
+    if frozenDb then
+        local db = frozenDb[bucketKey];
+        if type(db) == 'table' then
+            for _, m in ipairs(db) do
+                if m and m.id == macroId then return true; end
+            end
+        end
     end
     return false;
 end
@@ -951,18 +966,20 @@ function M.ImportProfile(jsonStr, opts)
     end
 
     if importPalettes then
+        -- Validate macro refs BEFORE clearing anything so a failed check doesn't leave
+        -- the destination with wiped palettes.
+        if not importMacros then
+            local okV, errV = validatePaletteMacroRefs(hotbarPalettesTbl, crossbarPalettesTbl);
+            if not okV then
+                return false, errV;
+            end
+        end
         if replace then
             if hasHotbar then
                 clearHotbarSlotLayoutsOnly();
             end
             if hasCrossbar then
                 clearCrossbarSlotLayoutsOnly();
-            end
-        end
-        if not importMacros then
-            local okV, errV = validatePaletteMacroRefs(hotbarPalettesTbl, crossbarPalettesTbl);
-            if not okV then
-                return false, errV;
             end
         end
         applyHotbarPalettes(hotbarPalettesTbl, idMaps);
