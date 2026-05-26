@@ -966,14 +966,6 @@ function M.ImportProfile(jsonStr, opts)
     end
 
     if importPalettes then
-        -- Validate macro refs BEFORE clearing anything so a failed check doesn't leave
-        -- the destination with wiped palettes.
-        if not importMacros then
-            local okV, errV = validatePaletteMacroRefs(hotbarPalettesTbl, crossbarPalettesTbl);
-            if not okV then
-                return false, errV;
-            end
-        end
         if replace then
             if hasHotbar then
                 clearHotbarSlotLayoutsOnly();
