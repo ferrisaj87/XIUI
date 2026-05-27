@@ -1015,7 +1015,12 @@ function M.AddSharedArmToSlotsWithProfileMacro(cfg, profileMacroId, profilePalet
             profileArm = s;
         end
         if not profileArm or profileArm.macroRef ~= profileMacroId then return; end
-        if profilePaletteKey ~= nil and not macroPaletteKeysEqualData(profileArm.macroPaletteKey, profilePaletteKey) then return; end
+        -- Only enforce bucket check when the arm actually has a stored key; nil-key
+        -- legacy slots never stored macroPaletteKey and should match by macroRef alone.
+        if profileArm.macroPaletteKey ~= nil and profilePaletteKey ~= nil
+            and not macroPaletteKeysEqualData(profileArm.macroPaletteKey, profilePaletteKey) then
+            return;
+        end
 
         local out;
         if isDualMacroSlotTable(s) then

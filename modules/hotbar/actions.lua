@@ -1757,6 +1757,12 @@ function M.BuildCommandString(bind)
         return bind.macroText or bind.action;
     end
 
+    -- Defensive fallback: if actionType is nil/unknown but macroText is present,
+    -- covers legacy profile macros imported to shared without an actionType field.
+    if bind.macroText and bind.macroText ~= '' then
+        return bind.macroText;
+    end
+
     return nil;
 end
 

@@ -1839,7 +1839,9 @@ function M.DrawSlot(params)
                 elseif bind then
                     local cmd = actions.BuildCommand(bind);
                     if cmd then
-                        actions.ExecuteCommandString(cmd, bind.actionType == 'macro');
+                        local isMacro = bind.actionType == 'macro'
+                            or (bind.actionType == nil and bind.macroText and bind.macroText ~= '');
+                        actions.ExecuteCommandString(cmd, isMacro);
                     end
                 end
             end

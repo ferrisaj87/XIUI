@@ -3133,12 +3133,28 @@ local function BuildImportPreview()
             for _, macro in ipairs(macroList) do
                 if macro and macro.id and (macro.displayName or '') ~= '' then
                     local match = nameInBucket(sharedDb, bucketKey, macro.displayName);
+                    local sharedMatchBucketKey = match and bucketKey or nil;
+                    if not match then
+                        -- Cross-bucket fallback: the shared library may hold the same macro
+                        -- in a different bucket (e.g. global 2-hour vs job-specific copy).
+                        for k, _ in pairs(sharedDb) do
+                            if k ~= bucketKey then
+                                local m = nameInBucket(sharedDb, k, macro.displayName);
+                                if m then
+                                    match = m;
+                                    sharedMatchBucketKey = k;
+                                    break;
+                                end
+                            end
+                        end
+                    end
                     table.insert(preview, {
-                        macro      = macro,
-                        bucketKey  = bucketKey,
-                        status     = match and 'match' or 'new',
-                        sharedMatch = match,
-                        resolution = nil, -- nil = follow global mode
+                        macro               = macro,
+                        bucketKey           = bucketKey,
+                        status              = match and 'match' or 'new',
+                        sharedMatch         = match,
+                        sharedMatchBucketKey = sharedMatchBucketKey,
+                        resolution          = nil, -- nil = follow global mode
                     });
                 end
             end
@@ -3175,13 +3191,19 @@ local function ExecuteImportFromProfile(importState)
     end
 
     local function copyMacroFields(src)
+        -- Coerce missing actionType: a macro with text but no type tag would silently
+        -- fail to execute after import (BuildCommandString returns nil for unknown types).
+        local at = src.actionType;
+        if (at == nil or at == '') and src.macroText and src.macroText ~= '' then
+            at = 'macro';
+        end
         return {
             displayName        = src.displayName,
             macroText          = src.macroText,
             target             = src.target,
             customIcon         = src.customIcon,
             showJaBadgeOnMacro = src.showJaBadgeOnMacro,
-            actionType         = src.actionType,
+            actionType         = at,
             actionName         = src.actionName,
             actionCategory     = src.actionCategory,
             targetType         = src.targetType,
@@ -3216,14 +3238,18 @@ local function ExecuteImportFromProfile(importState)
             sm.target             = srcMacro.target;
             sm.customIcon         = srcMacro.customIcon;
             sm.showJaBadgeOnMacro = srcMacro.showJaBadgeOnMacro;
+            sm.actionType         = srcMacro.actionType;
+            sm.actionName         = srcMacro.actionName;
+            sm.actionCategory     = srcMacro.actionCategory;
+            sm.targetType         = srcMacro.targetType;
             sharedMacroId    = sm.id;
-            sharedPaletteKey = bucketKey;
+            sharedPaletteKey = item.sharedMatchBucketKey or bucketKey;
             anyMacroChange   = true;
 
         elseif resolution == 'keep' and item.sharedMatch then
             -- Link slot arms to existing shared macro without changing its data
             sharedMacroId    = item.sharedMatch.id;
-            sharedPaletteKey = bucketKey;
+            sharedPaletteKey = item.sharedMatchBucketKey or bucketKey;
         end
 
         if sharedMacroId then
