@@ -245,28 +245,6 @@ local function RefreshProfileJsonImportFiles()
     end
 end
 
-local function LoadSelectedProfileJsonImportFile()
-    local idx = profileJsonImportSelectedIdx[1];
-    if not idx or idx < 0 then
-        profileJsonErr = 'Pick a file from the list first (or paste JSON below).';
-        return;
-    end
-    local name = profileJsonImportFiles[idx + 1];
-    if not name then
-        profileJsonErr = 'Selected file is no longer present.';
-        return;
-    end
-    local text, err = paletteJson.ReadExportFile(name);
-    if not text then
-        profileJsonErr = err or ('Could not read ' .. name);
-        return;
-    end
-    profileJsonBuf[1] = text;
-    profileJsonErr = nil;
-    profileJsonInfo = 'Loaded ' .. name;
-    profileJsonImportSelectedName = name;
-end
-
 local function OpenProfileJsonImport()
     profileJsonMode = 'import';
     profileJsonErr = nil;
@@ -301,21 +279,6 @@ local function RunProfileJsonSaveToFile()
         profileJsonErr = nil;
     else
         profileJsonErr = tostring(path);
-    end
-end
-
-local function RunProfileJsonImport()
-    local okImp, errImp = paletteJson.ImportProfile(profileJsonBuf[1] or '', {
-        importPalettes = profileJsonImportPalettes[1],
-        importMacros = profileJsonImportMacros[1],
-        importMode = profileJsonImportMode[1] or paletteJson.IMPORT_MODE_MERGE,
-    });
-    if okImp then
-        profileJsonErr = nil;
-        profileJsonInfo = 'Import applied.';
-        profileJsonWinOpen[1] = false;
-    else
-        profileJsonErr = errImp or 'Import failed';
     end
 end
 
@@ -481,12 +444,6 @@ local function DrawProfileJsonWindow()
             if imgui.Button('Load & Import##pjLoadImportFile', { 200, 0 }) then
                 RunImportFromSelectedFile();
             end
-            imgui.PushStyleColor(ImGuiCol_Text, { 0.6, 0.6, 0.65, 1.0 });
-            imgui.TextWrapped('^ Use this for files from disk.');
-            imgui.PopStyleColor();
-            if imgui.Button('Load into text box##pjLoadFile', { 200, 0 }) then
-                LoadSelectedProfileJsonImportFile();
-            end
             if imgui.Button('Refresh list##pjRefreshFiles', { 200, 0 }) then
                 RefreshProfileJsonImportFiles();
                 profileJsonInfo = 'Refreshed (' .. #profileJsonImportFiles .. ' file(s)).';
@@ -495,16 +452,6 @@ local function DrawProfileJsonWindow()
                 paletteJson.OpenExportsDir();
             end
             imgui.EndGroup();
-
-            imgui.Spacing();
-            if imgui.Button('Apply import##pjApply', { 140, 0 }) then
-                RunProfileJsonImport();
-            end
-            imgui.SameLine();
-            imgui.TextColored({ 0.6, 0.6, 0.65, 1.0 }, 'Or paste JSON below and Apply (max ~200 KB).');
-
-            imgui.Spacing();
-            imgui.InputTextMultiline('##profJsonBuf', profileJsonBuf, 200000, { -1, -1 });
         end
     end
     imgui.End();

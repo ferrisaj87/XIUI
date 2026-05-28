@@ -446,6 +446,24 @@ function M.ExportProfile(exportPart)
         if hcCfg then
             payload.crossbarPalettes.enableUniversalCrossbarPalettes = hcCfg.enableUniversalCrossbarPalettes;
             payload.crossbarPalettes.defaultCrossbarPaletteScope     = hcCfg.defaultCrossbarPaletteScope;
+            -- Export which palettes are excluded from cycling (active/inactive state).
+            if hcCfg.crossbarPaletteExcludeFromCycle and next(hcCfg.crossbarPaletteExcludeFromCycle) ~= nil then
+                payload.crossbarPalettes.crossbarPaletteExcludeFromCycle = deepCopy(hcCfg.crossbarPaletteExcludeFromCycle);
+            end
+            if hcCfg.crossbarUniversalPaletteMeta and next(hcCfg.crossbarUniversalPaletteMeta) ~= nil then
+                payload.crossbarPalettes.crossbarUniversalPaletteMeta = deepCopy(hcCfg.crossbarUniversalPaletteMeta);
+            end
+        end
+        -- Export hotbar palette cycle exclusions (which palettes are marked inactive per bar).
+        local hbExclude = {};
+        for barIndex = 1, 6 do
+            local barCfg = gConfig['hotbarBar' .. barIndex];
+            if barCfg and barCfg.paletteExcludeFromCycle and next(barCfg.paletteExcludeFromCycle) ~= nil then
+                hbExclude['bar' .. barIndex] = deepCopy(barCfg.paletteExcludeFromCycle);
+            end
+        end
+        if next(hbExclude) ~= nil then
+            payload.hotbarPalettes.paletteExcludeFromCycle = hbExclude;
         end
     end
 
@@ -495,6 +513,8 @@ local function nextMacroIdInBucket(bucket)
 end
 
 --- Append imported macro rows into destination buckets with fresh IDs.
+--- In shared scope, macros that already exist (matched by displayName) are reused
+--- instead of duplicated — the old ID maps to the existing macro's ID.
 --- Returns idMaps: idMaps[srcBucketKeyStr][oldId] = newId.
 local function importMacrosAppend(macrosObj)
     if not gConfig then
@@ -503,6 +523,7 @@ local function importMacrosAppend(macrosObj)
     if not gConfig.macroDB then
         gConfig.macroDB = {};
     end
+    local isShared = (gConfig.macroStorageScope or 'profile') == 'shared';
     local idMaps = {};
     for srcKs, list in pairs(macrosObj or {}) do
         if not isAnnotationKey(srcKs) and type(list) == 'table' then
@@ -514,7 +535,7 @@ local function importMacrosAppend(macrosObj)
                     destBucket = gConfig.macroDB[destKey];
                 end
                 local maxId = nextMacroIdInBucket(destBucket);
-                if (gConfig.macroStorageScope or 'profile') == 'shared' and sharedMacroStore.GetMaxMacroIdInFrozenProfileBucket then
+                if isShared and sharedMacroStore.GetMaxMacroIdInFrozenProfileBucket then
                     local fmax = sharedMacroStore.GetMaxMacroIdInFrozenProfileBucket(destKey);
                     if fmax > maxId then
                         maxId = fmax;
@@ -523,12 +544,32 @@ local function importMacrosAppend(macrosObj)
                 idMaps[srcKs] = idMaps[srcKs] or {};
                 for _, m in ipairs(list) do
                     if type(m) == 'table' and m.id then
-                        maxId = maxId + 1;
-                        local copy = deepCopy(m);
-                        local oldId = copy.id;
-                        copy.id = maxId;
-                        table.insert(destBucket, copy);
-                        idMaps[srcKs][oldId] = maxId;
+                        local oldId = m.id;
+                        -- In shared scope: reuse existing macro with same displayName instead of duplicating.
+                        if isShared and m.displayName and m.displayName ~= '' then
+                            local existingId = nil;
+                            for _, existing in ipairs(destBucket) do
+                                if existing and existing.displayName == m.displayName then
+                                    existingId = existing.id;
+                                    break;
+                                end
+                            end
+                            if existingId then
+                                idMaps[srcKs][oldId] = existingId;
+                            else
+                                maxId = maxId + 1;
+                                local copy = deepCopy(m);
+                                copy.id = maxId;
+                                table.insert(destBucket, copy);
+                                idMaps[srcKs][oldId] = maxId;
+                            end
+                        else
+                            maxId = maxId + 1;
+                            local copy = deepCopy(m);
+                            copy.id = maxId;
+                            table.insert(destBucket, copy);
+                            idMaps[srcKs][oldId] = maxId;
+                        end
                     end
                 end
             end
@@ -995,6 +1036,53 @@ function M.ImportProfile(jsonStr, opts)
                 if type(xbSrc.defaultCrossbarPaletteScope) == 'string' then
                     hcCfg.defaultCrossbarPaletteScope = xbSrc.defaultCrossbarPaletteScope;
                 end
+                -- Restore palette active/inactive (cycle exclusion) state.
+                if type(xbSrc.crossbarPaletteExcludeFromCycle) == 'table' then
+                    if replace then
+                        hcCfg.crossbarPaletteExcludeFromCycle = deepCopy(xbSrc.crossbarPaletteExcludeFromCycle);
+                    else
+                        hcCfg.crossbarPaletteExcludeFromCycle = hcCfg.crossbarPaletteExcludeFromCycle or {};
+                        for k, v in pairs(xbSrc.crossbarPaletteExcludeFromCycle) do
+                            if not isAnnotationKey(k) then
+                                hcCfg.crossbarPaletteExcludeFromCycle[k] = deepCopy(v);
+                            end
+                        end
+                    end
+                end
+                if type(xbSrc.crossbarUniversalPaletteMeta) == 'table' then
+                    if replace then
+                        hcCfg.crossbarUniversalPaletteMeta = deepCopy(xbSrc.crossbarUniversalPaletteMeta);
+                    else
+                        hcCfg.crossbarUniversalPaletteMeta = hcCfg.crossbarUniversalPaletteMeta or {};
+                        for k, v in pairs(xbSrc.crossbarUniversalPaletteMeta) do
+                            if not isAnnotationKey(k) then
+                                hcCfg.crossbarUniversalPaletteMeta[k] = deepCopy(v);
+                            end
+                        end
+                    end
+                end
+            end
+            -- Restore hotbar palette active/inactive (cycle exclusion) state.
+            if type(decoded.hotbarPalettes) == 'table' and type(decoded.hotbarPalettes.paletteExcludeFromCycle) == 'table' then
+                local src = decoded.hotbarPalettes.paletteExcludeFromCycle;
+                for barIndex = 1, 6 do
+                    local barKey = 'bar' .. barIndex;
+                    if type(src[barKey]) == 'table' then
+                        local barCfg = gConfig['hotbarBar' .. barIndex];
+                        if barCfg then
+                            if replace then
+                                barCfg.paletteExcludeFromCycle = deepCopy(src[barKey]);
+                            else
+                                barCfg.paletteExcludeFromCycle = barCfg.paletteExcludeFromCycle or {};
+                                for k, v in pairs(src[barKey]) do
+                                    if not isAnnotationKey(k) then
+                                        barCfg.paletteExcludeFromCycle[k] = deepCopy(v);
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
             end
         end
     end
@@ -1010,6 +1098,21 @@ function M.ImportProfile(jsonStr, opts)
     palette.InvalidateCachesAfterExternalSlotMutation();
     if importMacros and gConfig and (gConfig.macroStorageScope or 'profile') == 'shared' then
         sharedMacroStore.MarkSharedLibraryDirty();
+        -- In shared scope gConfig.macroDB IS the shared library, but imported palette slots
+        -- only have macroBindProfile arms. Sweep every slot and add a matching macroBindShared
+        -- arm so the crossbar/hotbar displays them in shared mode.
+        if importPalettes and gConfig.macroDB then
+            for bucketKey, bucket in pairs(gConfig.macroDB) do
+                if type(bucket) == 'table' then
+                    for _, m in ipairs(bucket) do
+                        if m and m.id then
+                            data.AddSharedArmToSlotsWithProfileMacro(
+                                gConfig, m.id, bucketKey, m.id, bucketKey);
+                        end
+                    end
+                end
+            end
+        end
     end
     if SaveSettingsToDisk then
         SaveSettingsToDisk();
