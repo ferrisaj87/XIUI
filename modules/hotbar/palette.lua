@@ -2019,10 +2019,16 @@ function M.SetCrossbarPaletteScope(scope)
     -- so the crossbar never renders blank on the first L1+R1 press after login.
     if scope == 'universal' and not state.crossbarActiveUniversalPalette then
         local cyc = M.GetUniversalCrossbarPalettesForCycle();
+        local picked;
         if #cyc > 0 then
-            state.crossbarActiveUniversalPalette = cyc[1];
+            picked = cyc[1];
         else
-            state.crossbarActiveUniversalPalette = M.EnsureUniversalCrossbarDefaultExists();
+            picked = M.EnsureUniversalCrossbarDefaultExists();
+        end
+        state.crossbarActiveUniversalPalette = picked;
+        if picked and gConfig and gConfig.hotbarCrossbar then
+            gConfig.hotbarCrossbar.savedActiveUniversalPalette = picked;
+            paletteStateDirty = true;
         end
     end
     for _, mode in ipairs(CROSSBAR_COMBO_MODES) do
@@ -2055,6 +2061,11 @@ function M.SetActiveUniversalCrossbarPalette(paletteName)
     end
     state.crossbarActiveUniversalPalette = paletteName;
     state.crossbarPaletteScope = 'universal';
+    -- Persist so the same palette is restored after login/reload.
+    if gConfig and gConfig.hotbarCrossbar then
+        gConfig.hotbarCrossbar.savedActiveUniversalPalette = paletteName;
+        paletteStateDirty = true;
+    end
     for _, mode in ipairs(CROSSBAR_COMBO_MODES) do
         M.FirePaletteChangedCallbacks('crossbar:' .. mode, old, paletteName);
     end
@@ -2911,7 +2922,19 @@ function M.ValidatePalettesForJob(jobId, subjobId, opts)
                 state.crossbarActiveUniversalPalette = (cyc[1] or firstUniversal);
             end
         elseif firstUniversal and state.crossbarPaletteScope == 'universal' then
-            state.crossbarActiveUniversalPalette = firstUniversal;
+            -- Try to restore the last-used palette from persisted config before
+            -- falling back to firstUniversal, so login always shows the same palette.
+            local saved = crossbarSettings and crossbarSettings.savedActiveUniversalPalette;
+            if saved and saved ~= '' then
+                local ulist = M.GetUniversalCrossbarPaletteNamesOrdered();
+                local found = false;
+                for _, n in ipairs(ulist) do
+                    if n == saved then found = true; break; end
+                end
+                state.crossbarActiveUniversalPalette = found and saved or firstUniversal;
+            else
+                state.crossbarActiveUniversalPalette = firstUniversal;
+            end
         end
     elseif crossbarSettings then
         -- Feature explicitly disabled in profile — scope must be job tier only.

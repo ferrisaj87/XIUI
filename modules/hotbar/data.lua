@@ -133,8 +133,10 @@ function M.EnsureMacroDatabaseCoherence(cfg)
             mdb[k] = nil;
         end
     end
-    -- 2) Deduplicate ids per bucket (stable: first row wins, later duplicates renumbered)
-    for _, macros in pairs(mdb) do
+    -- 2) Deduplicate ids per bucket (stable: first row wins, later duplicates renumbered).
+    -- Track any id remappings so slot macroRef pointers can be fixed below.
+    local remaps = {}; -- remaps[bucketKey][oldId] = newId
+    for bucketKey, macros in pairs(mdb) do
         if type(macros) == 'table' then
             local seen = {};
             local maxId = 0;
@@ -150,16 +152,57 @@ function M.EnsureMacroDatabaseCoherence(cfg)
                         m.id = maxId;
                         seen[m.id] = true;
                     elseif seen[m.id] then
+                        local oldId = m.id;
                         repeat
                             maxId = maxId + 1;
                         until not seen[maxId];
                         m.id = maxId;
                         seen[m.id] = true;
+                        if not remaps[bucketKey] then remaps[bucketKey] = {}; end
+                        remaps[bucketKey][oldId] = maxId;
                     else
                         seen[m.id] = true;
                     end
                 end
             end
+        end
+    end
+
+    -- 3) If any ids were renumbered, patch slot macroRef in all hotbar and crossbar palettes.
+    if next(remaps) then
+        local function patchArm(arm, bucketKey)
+            if arm and type(arm) == 'table' and type(arm.macroRef) == 'number' then
+                local bk = arm.macroPaletteKey or bucketKey;
+                local bmap = bk and remaps[bk];
+                if bmap and bmap[arm.macroRef] then
+                    arm.macroRef = bmap[arm.macroRef];
+                end
+            end
+        end
+        local function patchSlot(slot, bucketKey)
+            if not slot or type(slot) ~= 'table' then return; end
+            patchArm(slot['macroBindProfile'], bucketKey);
+            patchArm(slot['macroBindShared'],  bucketKey);
+            patchArm(slot, bucketKey);
+        end
+        local function patchPaletteTable(palettes)
+            if not palettes or type(palettes) ~= 'table' then return; end
+            for palKey, slots in pairs(palettes) do
+                if type(slots) == 'table' then
+                    for _, slot in pairs(slots) do
+                        patchSlot(slot, palKey);
+                    end
+                end
+            end
+        end
+        -- Hotbar bars
+        for barIndex = 1, 6 do
+            local barCfg = c['hotbarBar' .. barIndex];
+            if barCfg then patchPaletteTable(barCfg.slotActions); end
+        end
+        -- Crossbar
+        if c.hotbarCrossbar then
+            patchPaletteTable(c.hotbarCrossbar.slotActions);
         end
     end
 end
