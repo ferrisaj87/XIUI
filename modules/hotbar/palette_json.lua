@@ -1078,11 +1078,23 @@ function M.ReadExportFile(filename)
     return text, path;
 end
 
+--- Import a profile directly from a filename in the exports folder, bypassing the ImGui text
+--- buffer (which has a 200 KB character limit that can truncate large exports).
+--- opts are the same as ImportProfile: importPalettes, importMacros, importMode.
+function M.ImportProfileFromFile(filename, opts)
+    local text, err = M.ReadExportFile(filename);
+    if not text then
+        return false, err or ('Could not read ' .. tostring(filename));
+    end
+    return M.ImportProfile(text, opts);
+end
+
 --- Write UTF-8 text under Ashita config/addons/xiui/exports/ (creates folder).
 function M.SaveTextFile(baseName, text)
     local dir = M.GetExportsDir();
     local safe = (baseName or 'xiui'):gsub('[^%w%-%_]', '_');
-    local path = dir .. safe .. '_' .. os.time() .. '.json';
+    local ts = os.date and os.date('%Y%m%d_%H%M%S') or tostring(os.time());
+    local path = dir .. safe .. '_' .. ts .. '.json';
     local f = io.open(path, 'w');
     if not f then
         return false, path;

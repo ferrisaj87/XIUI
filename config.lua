@@ -319,6 +319,31 @@ local function RunProfileJsonImport()
     end
 end
 
+local function RunImportFromSelectedFile()
+    local idx = profileJsonImportSelectedIdx[1];
+    if not idx or idx < 0 then
+        profileJsonErr = 'Pick a file from the list first.';
+        return;
+    end
+    local name = profileJsonImportFiles[idx + 1];
+    if not name then
+        profileJsonErr = 'Selected file is no longer present.';
+        return;
+    end
+    local okImp, errImp = paletteJson.ImportProfileFromFile(name, {
+        importPalettes = profileJsonImportPalettes[1],
+        importMacros = profileJsonImportMacros[1],
+        importMode = profileJsonImportMode[1] or paletteJson.IMPORT_MODE_MERGE,
+    });
+    if okImp then
+        profileJsonErr = nil;
+        profileJsonInfo = 'Import applied from ' .. name .. '.';
+        profileJsonWinOpen[1] = false;
+    else
+        profileJsonErr = errImp or 'Import failed';
+    end
+end
+
 local function DrawProfileJsonWindow()
     if not profileJsonWinOpen[1] then return; end
 
@@ -453,7 +478,13 @@ local function DrawProfileJsonWindow()
             end
             imgui.SameLine();
             imgui.BeginGroup();
-            if imgui.Button('Load selected##pjLoadFile', { 200, 0 }) then
+            if imgui.Button('Load & Import##pjLoadImportFile', { 200, 0 }) then
+                RunImportFromSelectedFile();
+            end
+            imgui.PushStyleColor(ImGuiCol_Text, { 0.6, 0.6, 0.65, 1.0 });
+            imgui.TextWrapped('^ Use this for files from disk.');
+            imgui.PopStyleColor();
+            if imgui.Button('Load into text box##pjLoadFile', { 200, 0 }) then
                 LoadSelectedProfileJsonImportFile();
             end
             if imgui.Button('Refresh list##pjRefreshFiles', { 200, 0 }) then
@@ -470,7 +501,7 @@ local function DrawProfileJsonWindow()
                 RunProfileJsonImport();
             end
             imgui.SameLine();
-            imgui.TextColored({ 0.6, 0.6, 0.65, 1.0 }, 'Or paste JSON directly below and Apply.');
+            imgui.TextColored({ 0.6, 0.6, 0.65, 1.0 }, 'Or paste JSON below and Apply (max ~200 KB).');
 
             imgui.Spacing();
             imgui.InputTextMultiline('##profJsonBuf', profileJsonBuf, 200000, { -1, -1 });
