@@ -1314,6 +1314,12 @@ function M.DrawSlot(params)
         unavailDisplayText = cached.displayText;
     end
 
+    -- Weaponskills (and /ws macros) read as ready when player TP meets the WS cost (1000+)
+    local notEnoughTp = false;
+    if bind and actions.NeedsTpCheck(bind) and not isUnavailable then
+        notEnoughTp = not actions.HasEnoughTpForBind(bind);
+    end
+
     -- ========================================
     -- 4. Icon Rendering (unified ImGui AddImage path)
     -- ========================================
@@ -1342,8 +1348,8 @@ function M.DrawSlot(params)
                 applyGreyTint = true;  -- Apply grey/desaturated tint
             elseif isOnCooldown then
                 colorMult = 0.4;
-            elseif notEnoughMp then
-                colorMult = 0.6;  -- Slightly dimmed when not enough MP
+            elseif notEnoughMp or notEnoughTp then
+                colorMult = 0.6;  -- Slightly dimmed when not enough MP/TP
             end
             colorMult = colorMult * dimFactor;
 
@@ -1413,7 +1419,7 @@ function M.DrawSlot(params)
 
         local colorMult = 1.0;
         if isUnavailable then colorMult = 0.35;
-        elseif notEnoughMp then colorMult = 0.6; end
+        elseif notEnoughMp or notEnoughTp then colorMult = 0.6; end
         colorMult = colorMult * dimFactor;
         -- Gold base: R=244, G=218, B=151 (0xF4DA97)
         local r = math.floor(244 * colorMult);
@@ -1475,12 +1481,12 @@ function M.DrawSlot(params)
     if params.showLabel and params.labelText and params.labelText ~= '' and animOpacity > 0.5 and drawList then
         local lblFontSize = params.labelFontSize or 10;
         local labelColor = params.labelFontColor or 0xFFFFFFFF;
-        -- Priority: Unavailable (grey) > Cooldown (grey) > Not enough MP (red) > Normal
+        -- Priority: Unavailable (grey) > Cooldown (grey) > Not enough MP/TP (red) > Normal
         if isUnavailable then
             labelColor = 0xFF888888;
         elseif isOnCooldown then
             labelColor = params.labelCooldownColor or 0xFF888888;
-        elseif notEnoughMp then
+        elseif notEnoughMp or notEnoughTp then
             labelColor = params.labelNoMpColor or 0xFFFF4444;
         end
 

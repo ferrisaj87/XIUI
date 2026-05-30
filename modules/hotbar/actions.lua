@@ -829,6 +829,108 @@ function M.GetMPCost(bind)
     return nil;
 end
 
+-- TP cost cache for weaponskills (static resource data)
+local wsTpCostCache = {};
+
+--- Whether this bind should be dimmed when the player lacks enough TP
+---@param bind table
+---@return boolean
+function M.NeedsTpCheck(bind)
+    if not bind then return false; end
+
+    if bind.actionType == 'ws' then
+        return true;
+    end
+
+    if bind.actionType == 'macro' then
+        if bind.recastSourceType == 'ws' and bind.recastSourceAction then
+            return true;
+        end
+        if bind.macroText and bind.macroText ~= '' then
+            local primaryType = macroparse.GetMacroPrimaryAndJaBadge(bind.macroText);
+            if primaryType == 'ws' then
+                return true;
+            end
+        end
+    end
+
+    return false;
+end
+
+--- Get TP cost for a weaponskill (clamped to 1000-3000)
+---@param wsName string
+---@return number
+function M.GetWeaponskillTpCost(wsName)
+    if not wsName or wsName == '' then
+        return 1000;
+    end
+
+    local cached = wsTpCostCache[wsName];
+    if cached then
+        return cached;
+    end
+
+    local tpCost = 1000;
+    local abilityId = actiondb.GetAbilityId(wsName);
+    if abilityId then
+        local ability = AshitaCore:GetResourceManager():GetAbilityById(abilityId);
+        if ability and ability.TP and ability.TP >= 1000 then
+            tpCost = ability.TP;
+        end
+    end
+
+    if tpCost > 3000 then
+        tpCost = 3000;
+    end
+
+    wsTpCostCache[wsName] = tpCost;
+    return tpCost;
+end
+
+--- Resolve weaponskill name from a hotbar bind (direct WS or /ws macro)
+---@param bind table
+---@return string|nil
+local function ResolveWeaponskillNameForTpCheck(bind)
+    if not bind then return nil; end
+
+    if bind.actionType == 'ws' then
+        return bind.action;
+    end
+
+    if bind.actionType == 'macro' then
+        if bind.recastSourceType == 'ws' and bind.recastSourceAction then
+            return bind.recastSourceAction;
+        end
+        if bind.macroText and bind.macroText ~= '' then
+            local primaryType, primaryName = macroparse.GetMacroPrimaryAndJaBadge(bind.macroText);
+            if primaryType == 'ws' and primaryName then
+                return primaryName;
+            end
+        end
+    end
+
+    return nil;
+end
+
+--- Check if the player currently has enough TP for a weaponskill bind
+---@param bind table
+---@return boolean hasEnoughTp
+function M.HasEnoughTpForBind(bind)
+    if not M.NeedsTpCheck(bind) then
+        return true;
+    end
+
+    local wsName = ResolveWeaponskillNameForTpCheck(bind);
+    if not wsName then
+        return true;
+    end
+
+    local tpCost = M.GetWeaponskillTpCost(wsName);
+    local party = AshitaCore:GetMemoryManager():GetParty();
+    local playerTp = party and party:GetMemberTP(0) or 0;
+    return playerTp >= tpCost;
+end
+
 -- Resolve a Blood Pact record (Rage or Ward) for a bind.
 -- Supports:
 -- - actionType='pet' (direct pact name in bind.action)
