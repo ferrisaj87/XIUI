@@ -1373,8 +1373,9 @@ end
 
 -- Controller palette cycle (hotbarGlobal); top strip in config/crossbar.lua when crossbar is enabled
 function M.DrawControllerPaletteCycleGlobalOptions()
+    local hg = gConfig.hotbarGlobal;
     local ctrlOptions = { 'Disabled', 'Enabled' };
-    local currentCtrlIndex = (gConfig.hotbarGlobal.paletteCycleControllerEnabled ~= false) and 2 or 1;
+    local currentCtrlIndex = (hg.paletteCycleControllerEnabled ~= false) and 2 or 1;
 
     imgui.AlignTextToFramePadding();
     imgui.Text('Palette Cycle:');
@@ -1384,7 +1385,7 @@ function M.DrawControllerPaletteCycleGlobalOptions()
         for i, label in ipairs(ctrlOptions) do
             local isSelected = currentCtrlIndex == i;
             if imgui.Selectable(label, isSelected) then
-                gConfig.hotbarGlobal.paletteCycleControllerEnabled = (i == 2);
+                hg.paletteCycleControllerEnabled = (i == 2);
                 SaveSettingsOnly();
             end
             if isSelected then imgui.SetItemDefaultFocus(); end
@@ -1392,13 +1393,13 @@ function M.DrawControllerPaletteCycleGlobalOptions()
         imgui.EndCombo();
     end
 
-    if gConfig.hotbarGlobal.paletteCycleControllerEnabled ~= false then
+    if hg.paletteCycleControllerEnabled ~= false then
         imgui.SameLine();
         imgui.Text('Button:');
         imgui.SameLine();
 
         local buttonOptions = { 'R1', 'L1' };
-        local currentButton = gConfig.hotbarGlobal.hotbarPaletteCycleButton or 'R1';
+        local currentButton = hg.hotbarPaletteCycleButton or 'R1';
         local currentButtonIndex = 1;
         for i, btn in ipairs(buttonOptions) do
             if btn == currentButton then
@@ -1412,7 +1413,7 @@ function M.DrawControllerPaletteCycleGlobalOptions()
             for i, btn in ipairs(buttonOptions) do
                 local isSelected = (i == currentButtonIndex);
                 if imgui.Selectable(btn .. '##hbCycleBtn' .. i, isSelected) then
-                    gConfig.hotbarGlobal.hotbarPaletteCycleButton = btn;
+                    hg.hotbarPaletteCycleButton = btn;
                     SaveSettingsOnly();
                 end
                 if isSelected then imgui.SetItemDefaultFocus(); end
@@ -1421,6 +1422,63 @@ function M.DrawControllerPaletteCycleGlobalOptions()
         end
     end
     imgui.ShowHelp('Controller shortcut to cycle palettes.\nHold the selected shoulder button + D-pad Up/Down to cycle keyboard hotbar palettes and the active crossbar palette.');
+
+    -- ── Quick Return ─────────────────────────────────────────────────────────
+    local qrButton = hg.crossbarQuickReturnButton or 'R1';
+
+    imgui.Indent(18);
+    imgui.AlignTextToFramePadding();
+    imgui.Text('Quick Return:');
+    imgui.SameLine();
+    imgui.SetNextItemWidth(60);
+    if imgui.BeginCombo('##qrButton', qrButton) then
+        for i, btn in ipairs({ 'R1', 'L1' }) do
+            local isSelected = btn == qrButton;
+            if imgui.Selectable(btn .. '##qrBtn' .. i, isSelected) then
+                hg.crossbarQuickReturnButton = btn;
+                -- Auto-swap the pet palette hide button when it would conflict
+                local hideBtn = hg.petPaletteTempHideButton or 'L1';
+                if hideBtn == btn then
+                    hg.petPaletteTempHideButton = (btn == 'R1') and 'L1' or 'R1';
+                end
+                SaveSettingsOnly();
+            end
+            if isSelected then imgui.SetItemDefaultFocus(); end
+        end
+        imgui.EndCombo();
+    end
+    imgui.ShowHelp('Double-tap this shoulder button to return to your previous palette after a /xiui cpal jump. Works like a "back" button for palette navigation — the indicator pulses on the crossbar while an anchor is set.');
+
+    -- ── Pet Palette Temporary Hide ────────────────────────────────────────────
+    local tempHideVal = { hg.petPaletteTempHideEnabled == true };
+    if imgui.Checkbox('Allow Pet Palette Temporary Hide##petTempHide', tempHideVal) then
+        hg.petPaletteTempHideEnabled = tempHideVal[1];
+        SaveSettingsOnly();
+    end
+    imgui.ShowHelp('When enabled, double-tapping the selected shoulder button temporarily suppresses the crossbar pet palette while your pet is out.\n\nThe crossbar switches back to the normal job palette so you can use palette cycling, /xiui cpal jumps, etc. without the pet overlay getting in the way.\n\nDouble-tap the same button again to re-enable the pet palette. A pulsing indicator appears on the crossbar while active.\n\nCannot share the same button as Quick Return.');
+
+    if hg.petPaletteTempHideEnabled then
+        imgui.SameLine();
+        local hideButton = hg.petPaletteTempHideButton or 'L1';
+        imgui.SetNextItemWidth(60);
+        if imgui.BeginCombo('##petHideBtn', hideButton) then
+            for i, btn in ipairs({ 'R1', 'L1' }) do
+                local isConflict = (btn == qrButton);
+                if isConflict then
+                    imgui.TextDisabled(btn .. ' (Quick Return)');
+                else
+                    local isSelected = (btn == hideButton);
+                    if imgui.Selectable(btn .. '##petHideBtn' .. i, isSelected) then
+                        hg.petPaletteTempHideButton = btn;
+                        SaveSettingsOnly();
+                    end
+                    if isSelected then imgui.SetItemDefaultFocus(); end
+                end
+            end
+            imgui.EndCombo();
+        end
+    end
+    imgui.Unindent(18);
 end
 
 function M.DrawLogPaletteNameCheckboxCrossbar(idSuffix)

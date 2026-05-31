@@ -174,8 +174,10 @@ local state = {
     rightShoulderHeld = false,
     leftShoulderHeld = false,
 
-    -- R1 double-tap tracking for cpal anchor return
-    r1LastEdgeTime = 0,
+    -- Quick Return double-tap tracking for cpal anchor return (configurable button, default R1)
+    quickReturnLastEdgeTime = 0,
+    -- Pet Palette Temp Hide double-tap tracking (configurable button, default L1)
+    petPaletteHideLastEdgeTime = 0,
     -- Timestamp of the last DPad palette cycle (used to deduplicate across xinput_state
     -- and xinput_button when both fire for the same press on some hardware).
     lastDpadCycleTime = 0,
@@ -630,22 +632,11 @@ function Controller.HandleXInputState(e)
         end
     end
 
-    -- R1 double-tap: return to cpal anchor palette (only when no L1 held, to avoid L1+R1 overlap)
-    do
-        local r1Edge = bit.band(newPresses, xboxDevice.ButtonMasks.RIGHT_SHOULDER) ~= 0;
-        if r1Edge and not lbHeld then
-            local now = os.clock();
-            local scope = palette.GetCrossbarPaletteScope();
-            local anchor = palette.GetCpalAnchor(scope);
-            if anchor and (now - state.r1LastEdgeTime) < 0.4 then
-                palette.RestoreCpalAnchor(scope);
-                state.r1LastEdgeTime = 0;
-                newPresses = bit.band(newPresses, bit.bnot(xboxDevice.ButtonMasks.RIGHT_SHOULDER));
-            else
-                state.r1LastEdgeTime = now;
-            end
-        end
-    end
+    -- NOTE: Quick Return and Pet Palette Temp Hide double-tap detection is handled in
+    -- HandleXInputButton (xinput_button event) rather than here. FFXI masks the L1 bit
+    -- in wButtons when it is bound to a native action (e.g. "Previous Target"), so
+    -- newPresses never contains L1. xinput_button is event-driven and not affected by
+    -- that masking, making it the reliable path for shoulder button edge detection.
 
     -- Check for palette cycling: configurable shoulder button + Dpad Up/Down
     local globalSettings = gConfig and gConfig.hotbarGlobal;
@@ -691,9 +682,9 @@ function Controller.HandleXInputState(e)
                 -- Cycle crossbar palette (global for all combo modes)
                 palette.CyclePaletteForCombo(nil, direction, jobId, subjobId);
 
-                -- Cycling manually = user is done with the cpal anchor; clear it so R1 indicator hides
+                -- Cycling manually = user is done with the cpal anchor; clear it so Quick Return indicator hides
                 palette.ClearCpalAnchor(palette.GetCrossbarPaletteScope());
-                state.r1LastEdgeTime = 0;
+                state.quickReturnLastEdgeTime = 0;
 
                 if logPaletteName then
                     print('[XIUI] Palettes cycled: ' .. (direction == 1 and 'next' or 'prev'));
@@ -813,16 +804,92 @@ function Controller.HandleXInputButton(e)
     end
 
     if e.button == xboxDevice.Buttons.RIGHT_SHOULDER then
-        if isPressed ~= state.rightShoulderHeld then
+        local wasHeld = state.rightShoulderHeld;
+        if isPressed ~= wasHeld then
             DebugLog(string.format('RB/R1 %s (from xinput_button)', isPressed and 'PRESSED' or 'RELEASED'));
         end
         state.rightShoulderHeld = isPressed;
+
+        -- Handle Quick Return / Pet Palette Temp Hide double-tap for R1.
+        -- xinput_button is used instead of xinput_state because FFXI can mask shoulder
+        -- bits from wButtons, making newPresses-based detection unreliable for L1/R1.
+        if isPressed and not wasHeld then
+            local hg = gConfig and gConfig.hotbarGlobal;
+
+            -- Quick Return (if configured as R1, and L1 is not held)
+            local qrButton = (hg and hg.crossbarQuickReturnButton) or 'R1';
+            if qrButton == 'R1' and not state.leftShoulderHeld then
+                local now = os.clock();
+                local scope = palette.GetCrossbarPaletteScope();
+                local anchor = palette.GetCpalAnchor and palette.GetCpalAnchor(scope);
+                if anchor and (now - state.quickReturnLastEdgeTime) < 0.4 then
+                    palette.RestoreCpalAnchor(scope);
+                    state.quickReturnLastEdgeTime = 0;
+                    DebugLog('Quick Return triggered (R1 double-tap, xinput_button)');
+                else
+                    state.quickReturnLastEdgeTime = now;
+                end
+            end
+
+            -- Pet Palette Temp Hide (if configured as R1, and L1 is not held)
+            if hg and hg.petPaletteTempHideEnabled and petpalette.HasPet() then
+                local hideButton = hg.petPaletteTempHideButton or 'L1';
+                if hideButton == 'R1' and not state.leftShoulderHeld then
+                    local now = os.clock();
+                    if (now - state.petPaletteHideLastEdgeTime) < 0.4 then
+                        petpalette.SetCrossbarPetPaletteTempHideActive(not petpalette.IsCrossbarPetPaletteTempHideActive());
+                        state.petPaletteHideLastEdgeTime = 0;
+                        DebugLog('Pet Palette Temp Hide toggled (R1 double-tap, xinput_button): ' .. tostring(petpalette.IsCrossbarPetPaletteTempHideActive()));
+                    else
+                        state.petPaletteHideLastEdgeTime = now;
+                    end
+                end
+            end
+        end
+
         return false;  -- Don't block shoulder buttons
     elseif e.button == xboxDevice.Buttons.LEFT_SHOULDER then
-        if isPressed ~= state.leftShoulderHeld then
+        local wasHeld = state.leftShoulderHeld;
+        if isPressed ~= wasHeld then
             DebugLog(string.format('LB/L1 %s (from xinput_button)', isPressed and 'PRESSED' or 'RELEASED'));
         end
         state.leftShoulderHeld = isPressed;
+
+        -- Handle Quick Return / Pet Palette Temp Hide double-tap for L1.
+        if isPressed and not wasHeld then
+            local hg = gConfig and gConfig.hotbarGlobal;
+
+            -- Quick Return (if configured as L1, and R1 is not held)
+            local qrButton = (hg and hg.crossbarQuickReturnButton) or 'R1';
+            if qrButton == 'L1' and not state.rightShoulderHeld then
+                local now = os.clock();
+                local scope = palette.GetCrossbarPaletteScope();
+                local anchor = palette.GetCpalAnchor and palette.GetCpalAnchor(scope);
+                if anchor and (now - state.quickReturnLastEdgeTime) < 0.4 then
+                    palette.RestoreCpalAnchor(scope);
+                    state.quickReturnLastEdgeTime = 0;
+                    DebugLog('Quick Return triggered (L1 double-tap, xinput_button)');
+                else
+                    state.quickReturnLastEdgeTime = now;
+                end
+            end
+
+            -- Pet Palette Temp Hide (if configured as L1, and R1 is not held)
+            if hg and hg.petPaletteTempHideEnabled and petpalette.HasPet() then
+                local hideButton = hg.petPaletteTempHideButton or 'L1';
+                if hideButton == 'L1' and not state.rightShoulderHeld then
+                    local now = os.clock();
+                    if (now - state.petPaletteHideLastEdgeTime) < 0.4 then
+                        petpalette.SetCrossbarPetPaletteTempHideActive(not petpalette.IsCrossbarPetPaletteTempHideActive());
+                        state.petPaletteHideLastEdgeTime = 0;
+                        DebugLog('Pet Palette Temp Hide toggled (L1 double-tap, xinput_button): ' .. tostring(petpalette.IsCrossbarPetPaletteTempHideActive()));
+                    else
+                        state.petPaletteHideLastEdgeTime = now;
+                    end
+                end
+            end
+        end
+
         return false;  -- Don't block shoulder buttons
     end
 
@@ -871,7 +938,7 @@ function Controller.HandleXInputButton(e)
                         end
                         palette.CyclePaletteForCombo(nil, direction, jobId, subjobId);
                         palette.ClearCpalAnchor(palette.GetCrossbarPaletteScope());
-                        state.r1LastEdgeTime = 0;
+                        state.quickReturnLastEdgeTime = 0;
                         state.lastDpadCycleTime = thisFrame;
                         local logPaletteName = globalSettings.logPaletteNameCrossbar;
                         if logPaletteName == nil then logPaletteName = true; end
@@ -1036,6 +1103,48 @@ function Controller.HandleDInputButton(e)
         if cb and cb.enableUniversalCrossbarPalettes then
             palette.ToggleCrossbarPaletteScope();
             return true;
+        end
+    end
+
+    -- Quick Return double-tap (DInput): return to cpal anchor palette via configured button.
+    if buttonState == 128 then
+        local hg = gConfig and gConfig.hotbarGlobal;
+        local qrButton = (hg and hg.crossbarQuickReturnButton) or 'R1';
+        local isQrButton = (qrButton == 'R1' and device.IsR1Button and device.IsR1Button(buttonId)) or
+                           (qrButton == 'L1' and device.IsL1Button and device.IsL1Button(buttonId));
+        if isQrButton then
+            local qrOtherHeld = (qrButton == 'R1') and state.leftShoulderHeld or state.rightShoulderHeld;
+            if not qrOtherHeld then
+                local now = os.clock();
+                local scope = palette.GetCrossbarPaletteScope();
+                local anchor = palette.GetCpalAnchor(scope);
+                if anchor and (now - state.quickReturnLastEdgeTime) < 0.4 then
+                    palette.RestoreCpalAnchor(scope);
+                    state.quickReturnLastEdgeTime = 0;
+                else
+                    state.quickReturnLastEdgeTime = now;
+                end
+            end
+        end
+
+        -- Pet Palette Temp Hide double-tap (DInput)
+        local hgCheck = gConfig and gConfig.hotbarGlobal;
+        if hgCheck and hgCheck.petPaletteTempHideEnabled and petpalette.HasPet() then
+            local hideButton = hgCheck.petPaletteTempHideButton or 'L1';
+            local isHideButton = (hideButton == 'L1' and device.IsL1Button and device.IsL1Button(buttonId)) or
+                                 (hideButton == 'R1' and device.IsR1Button and device.IsR1Button(buttonId));
+            if isHideButton then
+                local hideOtherHeld = (hideButton == 'L1') and state.rightShoulderHeld or state.leftShoulderHeld;
+                if not hideOtherHeld then
+                    local now = os.clock();
+                    if (now - state.petPaletteHideLastEdgeTime) < 0.4 then
+                        petpalette.SetCrossbarPetPaletteTempHideActive(not petpalette.IsCrossbarPetPaletteTempHideActive());
+                        state.petPaletteHideLastEdgeTime = 0;
+                    else
+                        state.petPaletteHideLastEdgeTime = now;
+                    end
+                end
+            end
         end
     end
 
@@ -1433,6 +1542,12 @@ end
 --- Get macro block debug state
 function Controller.IsMacroBlockDebugEnabled()
     return DEBUG_MACROBLOCK;
+end
+
+--- Check whether the crossbar pet palette temporary hide is currently active.
+--- Used by crossbar.lua to decide whether to draw the pet hide indicator.
+function Controller.IsCrossbarPetPaletteTempHideActive()
+    return petpalette.IsCrossbarPetPaletteTempHideActive();
 end
 
 return Controller;

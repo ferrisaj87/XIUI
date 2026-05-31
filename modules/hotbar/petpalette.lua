@@ -23,6 +23,11 @@ local state = {
     -- Crossbar: keyed by comboMode
     crossbar = { overrides = {}, cycleIndices = {} },
 
+    -- When true, GetEffectivePetKeyForCombo returns nil so the crossbar shows the base
+    -- job palette instead of the pet-aware palette. Toggled by double-tapping the
+    -- configured shoulder button (petPaletteTempHideButton). Cleared on pet change.
+    crossbarTempHideActive = false,
+
     onPetChangedCallbacks = {},
 };
 
@@ -288,7 +293,17 @@ function M.CycleCrossbarPalette(comboMode, direction, jobId)
 end
 
 function M.GetEffectivePetKeyForCombo(comboMode)
+    if state.crossbarTempHideActive then return nil; end
     return getEffectivePetKey(state.crossbar, comboMode);
+end
+
+-- Crossbar Pet Palette Temporary Hide state
+function M.IsCrossbarPetPaletteTempHideActive()
+    return state.crossbarTempHideActive;
+end
+
+function M.SetCrossbarPetPaletteTempHideActive(active)
+    state.crossbarTempHideActive = (active == true);
 end
 
 function M.GetCrossbarPaletteDisplayName(comboMode, jobId)
@@ -302,6 +317,7 @@ end
 function M.ClearAllManualOverrides()
     clearAllOverrides(state.hotbar);
     clearAllOverrides(state.crossbar);
+    state.crossbarTempHideActive = false;
 end
 
 -- ============================================
@@ -332,6 +348,7 @@ function M.Reset()
     state.lastKnownPetName = nil;
     clearAllOverrides(state.hotbar);
     clearAllOverrides(state.crossbar);
+    state.crossbarTempHideActive = false;
 end
 
 return M;

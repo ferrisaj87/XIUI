@@ -293,6 +293,13 @@ function M.createHotbarGlobalDefaults()
         paletteCycleControllerEnabled = true,  -- Enable controller palette cycling
         hotbarPaletteCycleButton = 'R1',       -- 'R1' or 'L1' for hotbar cycling
 
+        -- Quick Return: double-tap this shoulder button to jump back to the cpal anchor palette
+        crossbarQuickReturnButton = 'R1',      -- 'R1' or 'L1' (must differ from petPaletteTempHideButton)
+
+        -- Pet Palette Temporary Hide: double-tap to suppress the crossbar pet palette while a pet is out
+        petPaletteTempHideEnabled = false,     -- Enable the feature
+        petPaletteTempHideButton = 'L1',       -- 'R1' or 'L1' (must differ from crossbarQuickReturnButton)
+
         logPaletteName = true,                 -- Log palette name when cycling keyboard hotbars
         logPaletteNameCrossbar = true,         -- Log palette name when cycling via controller (crossbar)
         logPaletteNameCrossbarCycleHint = true, -- Second CLI line: RB+D-pad return hint after job preview

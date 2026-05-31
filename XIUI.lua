@@ -102,6 +102,7 @@ local notifications = uiMods.notifications;
 local treasurePool = uiMods.treasurepool;
 local hotbar = uiMods.hotbar;
 local readyCheck = uiMods.readycheck;
+local vanaTime   = uiMods.vanatime;
 local macropalette = require('modules.hotbar.macropalette');
 local palette = require('modules.hotbar.palette');
 local skillchainModule = require('modules.hotbar.skillchain');
@@ -315,6 +316,13 @@ uiModules.Register('readyCheck', {
     module = readyCheck,
     settingsKey = nil,
     configKey = 'showReadyCheck',
+    hasSetHidden = true,
+});
+uiModules.Register('vanaTime', {
+    module = vanaTime,
+    settingsKey = nil,
+    configKey = 'showVanaTime',
+    hideOnMenuFocusKey = 'vanaTimeHideOnMenuFocus',
     hasSetHidden = true,
 });
 
@@ -2071,6 +2079,11 @@ end);
 
 ashita.events.register('packet_in', 'packet_in_cb', function (e)
     expBar.HandlePacket(e)
+
+    -- VanaTime weather/zone packet handling (0x000A zone-in, 0x057 weather change)
+    if gConfig.showVanaTime then
+        vanaTime.HandlePacketIn(e);
+    end
 
     -- Pet bar packet handling (0x0028 Action, 0x0068 Pet Sync)
     if gConfig.showPetBar then

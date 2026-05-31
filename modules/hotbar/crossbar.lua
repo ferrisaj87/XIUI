@@ -438,14 +438,15 @@ local function GetDisplayModes(activeCombo, settings)
         if useSharedExp then
             return 'Shared', 'R2', true, 'center';
         end
-        -- Expanded: L2 first, then R2 -> show L2R2 on left side only, right side dimmed (shows R2)
-        return 'L2R2', 'R2', true, 'left';
+        -- Chord: collapse to a single centered 8-slot strip (like useSharedExpandedBar but per-chord)
+        return 'L2R2', 'R2', true, 'center';
     elseif activeCombo == COMBO_MODES.R2_THEN_L2 then
         if useSharedExp then
             return 'Shared', 'R2', true, 'center';
         end
-        -- Expanded: R2 first, then L2 -> show R2L2 on right side only, left side dimmed (shows L2)
-        return 'L2', 'R2L2', true, 'right';
+        -- Chord: collapse to a single centered 8-slot strip; R2L2 goes in the left slot since
+        -- 'center' layout only draws the left group.
+        return 'R2L2', 'R2', true, 'center';
     elseif activeCombo == 'Shared' then
         -- Shared expanded bar (edit mode only): show Shared on left side, right side dimmed
         return 'Shared', 'R2', true, 'left';
@@ -477,11 +478,11 @@ local function GetVisibilityState(activeCombo, settings, isEditMode)
     elseif activeCombo == COMBO_MODES.R2 or activeCombo == COMBO_MODES.R2_DOUBLE then
         return false, true, true;
     elseif activeCombo == COMBO_MODES.L2_THEN_R2 then
-        -- L2+R2: show expanded L2R2 on left side only
+        -- L2+R2: chord collapses to centered single diamond (left group only)
         return true, false, true;
     elseif activeCombo == COMBO_MODES.R2_THEN_L2 then
-        -- R2+L2: show expanded R2L2 on right side only
-        return false, true, true;
+        -- R2+L2: chord collapses to centered single diamond; R2L2 is drawn in the left group
+        return true, false, true;
     end
 
     -- Fallback: show both
@@ -848,6 +849,18 @@ local function GetCbInteractionPaletteEditor(comboMode, slotIndex)
                     or (macropalette.GetMacroSourceTagForDrops and macropalette.GetMacroSourceTagForDrops())
                     or 'profile';
                 local built = data.BuildMacroSlotAfterDrop(arm, store, existing);
+                -- NormalizeCrossbarSlotRawForSwap returns nil for slots whose active arm is
+                -- invisible in the current scope (e.g. a Profile-only slot when in Shared scope).
+                -- When that happens BuildMacroSlotAfterDrop sees nil for existingParentSlot and
+                -- clears the inactive arm. Restore ONLY the inactive arm from the raw slot so the
+                -- two arms remain fully independent — never overwrite the active arm just set.
+                if built and existingRaw and type(existingRaw) == 'table' and not existingRaw.cleared then
+                    local sh = store == 'shared';
+                    local kInactive = sh and data.MACRO_BIND_PROFILE_KEY or data.MACRO_BIND_SHARED_KEY;
+                    if built[kInactive] == nil and existingRaw[kInactive] ~= nil then
+                        built[kInactive] = data.CopyTable(existingRaw[kInactive]);
+                    end
+                end
                 data.SetDraftSlotData(comboMode, slotIndex, built);
             elseif payload.type == 'crossbar_slot' then
                 -- Always read source/target from overlay at drop time; payload.data was captured
@@ -1146,6 +1159,9 @@ local function DrawTriggerIcons(activeCombo, l2GroupX, r2GroupX, groupY, groupWi
     local baseScale = settings.triggerIconScale or 1.0;
     local baseIconWidth = 49 * baseScale;
     local baseIconHeight = 28 * baseScale;
+    -- Pre-compute base icon Y (un-press-scaled) so shoulder-button indicators can position
+    -- themselves consistently above either group without depending on per-frame press scale.
+    local baseIconY = groupY - (baseIconHeight * 0.5);
 
     -- Determine active state for each trigger
     local l2Active = activeCombo == COMBO_MODES.L2 or activeCombo == COMBO_MODES.L2_THEN_R2 or activeCombo == COMBO_MODES.R2_THEN_L2 or activeCombo == COMBO_MODES.L2_DOUBLE;
@@ -1203,44 +1219,91 @@ local function DrawTriggerIcons(activeCombo, l2GroupX, r2GroupX, groupY, groupWi
                 tintColor
             );
 
-            -- R1 return indicator: rendered above R2 when the user has set a "cpal" anchor
-            -- (via `/xiui cpal <Job>`). Pulses to draw the eye toward the return-to-anchor
-            -- shortcut. Per-scope so anchors don't leak across universal vs job-scoped views.
+            -- Quick Return indicator: pulses above the configured Quick Return button's trigger
+            -- group when a /xiui cpal anchor is set (user jumped to a specific palette and can
+            -- double-tap the configured shoulder button to jump back).
+            -- Per-scope so anchors don't leak across universal vs job-scoped views.
             local scope = palette.GetCrossbarPaletteScope();
             local anchor = palette.GetCpalAnchor and palette.GetCpalAnchor(scope);
             if anchor then
-                local r1Texture = textures:GetControllerIcon('R1');
-                if r1Texture and r1Texture.image then
-                    local r1Ptr = tonumber(ffi.cast('uint32_t', r1Texture.image));
-                    if r1Ptr then
-                        local r1Width = baseIconWidth;
-                        local r1Height = baseIconHeight;
-                        local r1IconX = r2GroupX + (groupWidth / 2) - (r1Width / 2);
-                        local r1IconY = r2IconY - r1Height - 4;
+                local hg = gConfig and gConfig.hotbarGlobal;
+                local qrButton = (hg and hg.crossbarQuickReturnButton) or 'R1';
+                local qrTexture = textures:GetControllerIcon(qrButton);
+                if qrTexture and qrTexture.image then
+                    local qrPtr = tonumber(ffi.cast('uint32_t', qrTexture.image));
+                    if qrPtr then
+                        local qrWidth = baseIconWidth;
+                        local qrHeight = baseIconHeight;
+                        -- Position above the group that corresponds to the configured button
+                        local anchorGroupX = (qrButton == 'L1') and l2GroupX or r2GroupX;
+                        local qrIconX = anchorGroupX + (groupWidth / 2) - (qrWidth / 2);
+                        local qrIconY = baseIconY - qrHeight - 4;
 
                         -- ~2.5 Hz size pulse (peak +30%) keeps the indicator visible without
                         -- being distracting. Sin → abs so the icon "breathes" symmetrically.
                         local pulse = math.abs(math.sin(os.clock() * 2.5));
                         local sizeScale = 1.0 + 0.30 * pulse;
-                        local sw = r1Width * sizeScale;
-                        local sh = r1Height * sizeScale;
-                        local sx = r1IconX + r1Width * 0.5 - sw * 0.5;
-                        local sy = r1IconY + r1Height * 0.5 - sh * 0.5;
+                        local sw = qrWidth * sizeScale;
+                        local sh = qrHeight * sizeScale;
+                        local sx = qrIconX + qrWidth * 0.5 - sw * 0.5;
+                        local sy = qrIconY + qrHeight * 0.5 - sh * 0.5;
 
                         -- Pill-shaped dark backdrop spans the icon + "x2" text so they read
                         -- as a single legend regardless of the underlying scene.
                         local textGap, textEstW, pad = 3, 14, 4;
                         drawList:AddRectFilled(
-                            { r1IconX - pad, r1IconY - pad },
-                            { r1IconX + r1Width + textGap + textEstW + pad, r1IconY + r1Height + pad },
+                            { qrIconX - pad, qrIconY - pad },
+                            { qrIconX + qrWidth + textGap + textEstW + pad, qrIconY + qrHeight + pad },
                             0x99000000, 5
                         );
 
-                        drawList:AddImage(r1Ptr, { sx, sy }, { sx + sw, sy + sh }, { 0, 0 }, { 1, 1 }, 0xFFFFFFFF);
-                        -- Gold ARGB: A=FF R=FF G=C8 B=32 → ImGui's GetColorU32 byte order is 0xAABBGGRR
+                        drawList:AddImage(qrPtr, { sx, sy }, { sx + sw, sy + sh }, { 0, 0 }, { 1, 1 }, 0xFFFFFFFF);
+                        -- Gold tint for "x2" text (ABGR: A=FF B=32 G=C8 R=FF)
                         drawList:AddText(
-                            { r1IconX + r1Width + textGap, r1IconY + r1Height * 0.5 - 6 },
+                            { qrIconX + qrWidth + textGap, qrIconY + qrHeight * 0.5 - 6 },
                             0xFF32C8FF,
+                            'x2'
+                        );
+                    end
+                end
+            end
+
+            -- Pet Palette Temp Hide indicator: pulses above the configured hide button's trigger
+            -- group while the pet palette is suppressed. Mirrors the Quick Return indicator style
+            -- but appears on the opposite side (left by default) to distinguish the two states.
+            if controller.IsCrossbarPetPaletteTempHideActive() then
+                local hg = gConfig and gConfig.hotbarGlobal;
+                local hideButton = (hg and hg.petPaletteTempHideButton) or 'L1';
+                local hideTexture = textures:GetControllerIcon(hideButton);
+                if hideTexture and hideTexture.image then
+                    local hidePtr = tonumber(ffi.cast('uint32_t', hideTexture.image));
+                    if hidePtr then
+                        local hidW = baseIconWidth;
+                        local hidH = baseIconHeight;
+                        local hideGroupX = (hideButton == 'L1') and l2GroupX or r2GroupX;
+                        local hidIconX = hideGroupX + (groupWidth / 2) - (hidW / 2);
+                        local hidIconY = baseIconY - hidH - 4;
+
+                        local pulse = math.abs(math.sin(os.clock() * 2.5));
+                        local sizeScale = 1.0 + 0.30 * pulse;
+                        local sw = hidW * sizeScale;
+                        local sh = hidH * sizeScale;
+                        local sx = hidIconX + hidW * 0.5 - sw * 0.5;
+                        local sy = hidIconY + hidH * 0.5 - sh * 0.5;
+
+                        local textGap, textEstW, pad = 3, 14, 4;
+                        drawList:AddRectFilled(
+                            { hidIconX - pad, hidIconY - pad },
+                            { hidIconX + hidW + textGap + textEstW + pad, hidIconY + hidH + pad },
+                            0x99000000, 5
+                        );
+
+                        drawList:AddImage(hidePtr, { sx, sy }, { sx + sw, sy + sh }, { 0, 0 }, { 1, 1 }, 0xFFFFFFFF);
+                        -- Teal "x2" text to visually distinguish from the gold Quick Return indicator
+                        -- (ABGR: A=FF B=FF G=CC R=32 → teal)
+                        drawList:AddText(
+                            { hidIconX + hidW + textGap, hidIconY + hidH * 0.5 - 6 },
+                            0xFFFFCC32,
                             'x2'
                         );
                     end
@@ -1250,9 +1313,9 @@ local function DrawTriggerIcons(activeCombo, l2GroupX, r2GroupX, groupY, groupWi
     end
 end
 
--- Shared expanded bar (useSharedExpandedBar): the L2+R2 / R2+L2 chord collapses both diamonds
--- into a single centered 8-slot strip, so DrawTriggerIcons can't position L2 over the left group
--- and R2 over the (now-absent) right group. This variant renders an "L2 + R2" chord glyph centred
+-- Chord center layout (L2+R2, R2+L2, or Shared): the chord collapses both diamonds into a
+-- single centered 8-slot strip, so DrawTriggerIcons can't position L2 over the left group and
+-- R2 over the (now-absent) right group. This variant renders an "L2 + R2" chord glyph centred
 -- on the single visible diamond: both icons inline with a small "+" between them, tinted brighter
 -- when their trigger is part of the active combo. Same draw list as DrawTriggerIcons so the chord
 -- glyph layers with the same z-order as the regular trigger labels.
@@ -1314,13 +1377,25 @@ local function DrawTriggerIconsSharedExpandedCenter(activeCombo, groupLeftX, gro
     local lh = ih * l2PressScale;
     local rw = iw * r2PressScale;
     local rh = ih * r2PressScale;
-    local total = lw + chordTight + ptw + chordTight + rw;
-    local leftX = cx - total * 0.5;
     local l2Tint = l2Active and 0xFFFFFFFF or 0x88FFFFFF;
     local r2Tint = r2Active and 0xFFFFFFFF or 0x88FFFFFF;
-    drawImageScaled('L2', leftX, cy - lh * 0.5, lw, lh, l2Tint);
-    drawList:AddText({ leftX + lw + chordTight, cy - pth * 0.5 }, textCol, '+');
-    drawImageScaled('R2', leftX + lw + chordTight + ptw + chordTight, cy - rh * 0.5, rw, rh, r2Tint);
+
+    -- For R2+L2 chord, draw R2 first then L2 to match the input order.
+    local r2l2 = activeCombo == COMBO_MODES.R2_THEN_L2;
+    local firstW  = r2l2 and rw or lw;
+    local firstH  = r2l2 and rh or lh;
+    local secondW = r2l2 and lw or rw;
+    local secondH = r2l2 and lh or rh;
+    local firstTex  = r2l2 and 'R2' or 'L2';
+    local secondTex = r2l2 and 'L2' or 'R2';
+    local firstTint  = r2l2 and r2Tint or l2Tint;
+    local secondTint = r2l2 and l2Tint or r2Tint;
+
+    local total = firstW + chordTight + ptw + chordTight + secondW;
+    local leftX = cx - total * 0.5;
+    drawImageScaled(firstTex,  leftX, cy - firstH * 0.5, firstW, firstH, firstTint);
+    drawList:AddText({ leftX + firstW + chordTight, cy - pth * 0.5 }, textCol, '+');
+    drawImageScaled(secondTex, leftX + firstW + chordTight + ptw + chordTight, cy - secondH * 0.5, secondW, secondH, secondTint);
 end
 
 -- Draw combo text in center for complex combos (L2R2, R2L2, L2x2, R2x2) or edit mode
@@ -1878,16 +1953,15 @@ function M.DrawWindow(settings, moduleSettings)
         pressedSlot = nil;  -- Don't show pressed state in edit mode
     end
 
-    -- Determine which bar set to display based on active combo. expandedSide == 'center' is
-    -- the useSharedExpandedBar branch (chord collapses both diamonds into one centered strip).
+    -- Determine which bar set to display based on active combo. expandedSide == 'center' means
+    -- the chord collapses both diamonds into one centered strip (L2R2, R2L2, and Shared modes).
     local targetLeftMode, targetRightMode, isExpanded, expandedSide = GetDisplayModes(activeCombo, settings);
 
-    -- useSharedExpandedBar special layout: shrink window to one diamond, re-center on screen X,
-    -- skip the right group draw + center divider/scope icon (they have no meaning when there's
-    -- only one diamond visible). Outside of chord, behaves identically to the standard 2-diamond
-    -- layout. exitingChordCenter catches the FIRST frame after the user releases the chord: we
-    -- restore the stashed wide-bar X so SaveCrossbarWindowSlotTopPosition doesn't persist the
-    -- narrow centered value.
+    -- Chord center layout: shrink window to one diamond, re-center on screen X, skip the right
+    -- group draw + center divider/scope icon (they have no meaning when there's only one diamond
+    -- visible). Applies to L2R2, R2L2, and Shared chord modes (regardless of useSharedExpandedBar).
+    -- exitingChordCenter catches the FIRST frame after the user releases the chord: we restore
+    -- the stashed wide-bar X so SaveCrossbarWindowSlotTopPosition doesn't persist the narrow value.
     local hideRightForSharedCenter = (isExpanded and expandedSide == 'center');
     if hideRightForSharedCenter then
         width = groupWidth;
@@ -2218,7 +2292,8 @@ function M.DrawWindow(settings, moduleSettings)
                         rightActive, pressedSlot, rightShowPressed, visibilityOpacity, drawList, 0, targetServerId, skillchainEnabled, activeCombo, magicBurstEnabled);
                 end
             elseif hideRightForSharedCenter then
-                -- Shared-center chord: render only the (now-Shared) left column as one centered strip.
+                -- Chord center layout: render only the left column as one centered strip
+                -- (applies to L2R2, R2L2, and Shared chord modes).
                 DrawLeftSide(state.currentLeftMode, leftGroupX, leftGroupY, slotSize, settings,
                     leftActive, pressedSlot, leftShowPressed, visibilityOpacity, drawList, 0, targetServerId, skillchainEnabled, activeCombo, magicBurstEnabled);
             else
@@ -2302,9 +2377,9 @@ function M.DrawWindow(settings, moduleSettings)
         DrawPaletteName(centerX, bottomY, settings);
     end
 
-    -- Draw L2/R2 trigger icons above the groups (hidden in activeOnly mode). The shared-center
-    -- chord uses a different glyph (L2 + R2 chord centred on the single visible diamond) since
-    -- there's no left-vs-right group to position labels against.
+    -- Draw L2/R2 trigger icons above the groups (hidden in activeOnly mode). When chord center
+    -- layout is active (L2R2, R2L2, or Shared), use the combined "L2 + R2" glyph centered on
+    -- the single visible diamond since there's no left-vs-right group to position labels against.
     if drawList and showCenterElements then
         if hideRightForSharedCenter then
             DrawTriggerIconsSharedExpandedCenter(activeCombo, leftGroupX, leftGroupY, groupWidth, settings, drawList);

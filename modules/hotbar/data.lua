@@ -2440,10 +2440,12 @@ function M.ClearDraftSlotData(comboMode, slotIndex)
         else
             raw.actionType = 'macro';
         end
+        -- Do NOT call scrubDraftBucketSlotIfInvisible here: after clearing the active arm the
+        -- inactive arm is legitimately invisible in the current scope but must NOT be wiped.
+        -- The check above already sets DRAFT_CROSSBAR_SLOT_EMPTY when both arms are gone.
     else
         bucket[effectiveComboMode][slotIndex] = DRAFT_CROSSBAR_SLOT_EMPTY;
     end
-    scrubDraftBucketSlotIfInvisible(bucket, rk, effectiveComboMode, slotIndex);
     draftDirty = true;
 end
 

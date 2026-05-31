@@ -26,6 +26,7 @@ local treasurepoolModule = require('config.treasurepool');
 local hotbarModule = require('config.hotbar');
 local crossbarModule = require('config.crossbar');
 local readycheckModule = require('config.readycheck');
+local vanatimeModule   = require('config.vanatime');
 
 local treasurePool = require('modules.treasurepool.init');
 local macropalette = require('modules.hotbar.macropalette');
@@ -623,6 +624,7 @@ local categories = {
     { name = 'hotbar', label = 'Hotbar' },
     { name = 'crossbar', label = 'Crossbar' },
     { name = 'readyCheck', label = 'Ready Check' },
+    { name = 'vanaTime',   label = 'Vana Time' },
 };
 
 
@@ -753,6 +755,10 @@ local function DrawReadyCheckSettings()
     readycheckModule.DrawSettings();
 end
 
+local function DrawVanaTimeSettings()
+    vanatimeModule.DrawSettings();
+end
+
 -- Color settings draw functions with state handling
 local function DrawGlobalColorSettings()
     globalModule.DrawColorSettings();
@@ -824,6 +830,10 @@ local function DrawReadyCheckColorSettings()
     readycheckModule.DrawColorSettings();
 end
 
+local function DrawVanaTimeColorSettings()
+    vanatimeModule.DrawColorSettings();
+end
+
 -- Dispatch tables for settings and color settings
 local settingsDrawFunctions = {
     DrawGlobalSettings,
@@ -842,6 +852,7 @@ local settingsDrawFunctions = {
     DrawHotbarSettings,
     DrawCrossbarSettingsPanel,
     DrawReadyCheckSettings,
+    DrawVanaTimeSettings,
 };
 
 local colorSettingsDrawFunctions = {
@@ -861,6 +872,7 @@ local colorSettingsDrawFunctions = {
     DrawHotbarColorSettings,
     DrawCrossbarColorSettingsPanel,
     DrawReadyCheckColorSettings,
+    DrawVanaTimeColorSettings,
 };
 
 local function DrawProfilePopups()

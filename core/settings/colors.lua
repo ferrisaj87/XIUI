@@ -274,6 +274,25 @@ function M.createColorCustomizationDefaults()
             levelTextColor = 0xFFFFFFFF,
         },
 
+        -- Vana Time
+        vanaTime = T{
+            bgColor         = 0xFF000000,   -- black bg (transparent via opacity setting)
+            borderColor     = 0xFFFFFFFF,
+            textColor       = 0xFFFFFFFF,   -- LT clock + general text
+            moonFullColor   = 0xFFFFD700,   -- gold glow for full moon cell
+            moonNewColor    = 0xFF8B0000,   -- dark red glow for new moon cell
+            -- Light group (Fire/Wind/Lightning/Light) -> black outline + white pill
+            -- Dark group  (Ice/Water/Earth/Dark)      -> white outline + dark pill
+            elementFire      = 0xFFFF4500,  -- orange-red   (Light group)
+            elementEarth     = 0xFFB8860B,  -- dark gold    (Dark group)
+            elementWater     = 0xFF1E90FF,  -- dodger blue  (Dark group)
+            elementWind      = 0xFF32CD32,  -- lime green   (Light group)
+            elementIce       = 0xFF87CEEB,  -- sky blue     (Dark group)
+            elementLightning = 0xFFBF5FFF,  -- med purple   (Light group)
+            elementLight     = 0xFFFFFFE0,  -- light yellow (Light group)
+            elementDark      = 0xFF2A0850,  -- very deep dark purple (Dark group)
+        },
+
         -- Global/Shared
         shared = T{
             backgroundGradient = T{ enabled = true, start = '#01122b', stop = '#061c39' },

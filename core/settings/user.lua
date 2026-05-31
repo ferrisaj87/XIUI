@@ -847,6 +847,29 @@ function M.createUserSettingsDefaults()
         noBookendRounding = 4,          -- Bar roundness for bars without bookends (0-10)
         barBorderThickness = 1,         -- Border thickness for all progress bars (1-5)
 
+        -- VanaTime settings
+        showVanaTime = true,
+        vanaTimeHideOnMenuFocus = false,
+        vanaTimeShowLocalTime = true,
+        vanaTimeShowMoonPercent = true,
+        vanaTimeShowPastFuture = true,
+        vanaTimePastFutureOpacity = 0.18,
+        vanaTimeShowWeather = true,
+        vanaTimeWeatherSide = 'right',     -- 'left' | 'right' | 'above' | 'below'
+        vanaTimeScale = 1.0,
+        vanaTimeFontSize = 12,
+        vanaTimeIconSize = 28,
+        vanaTimeBackgroundTheme = 'Plain',
+        vanaTimeBorderTheme = 'Plain',
+        vanaTimeBgScale = 1.0,
+        vanaTimeBorderScale = 1.0,
+        vanaTimeBackgroundOpacity = 0.85,
+        vanaTimeBorderOpacity = 1.0,
+        vanaTimeTooltipDirection = 'above',  -- 'above' | 'below'
+        vanaTimeShowTooltip = true,          -- master tooltip toggle
+        vanaTimeTooltipFenrir = true,        -- show Fenrir pact section
+        vanaTimeTooltipSeleneBow = true,     -- show Selene's Bow section
+
         -- Color customization settings (populated from colors.lua)
         colorCustomization = colors.createColorCustomizationDefaults(),
     };
