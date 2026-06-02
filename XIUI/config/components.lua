@@ -156,7 +156,6 @@ components.available_fonts = {
     'Georgia',
     'Lucida Console',
     'Microsoft Sans Serif',
-	'Segoe UI',
     'Tahoma',
     'Times New Roman',
     'Trebuchet MS',
@@ -459,53 +458,49 @@ function components.DrawCheckbox(label, configKey, callback)
     end
 end
 
--- Draw "Hide When Menu Open" with optional indented sub-options
--- @param hideOnMenuFocusKey: config key for hide when menu open
--- @param hideMacroPaletteKey: optional config key for macro palette exception
--- @param hideOnlyAllianceKey: optional config key for party list alliance-only hide
-function components.DrawHideWhenMenuOpenOptions(hideOnMenuFocusKey, hideMacroPaletteKey, hideOnlyAllianceKey)
-    components.DrawCheckbox('Hide When Menu Open', hideOnMenuFocusKey);
-    imgui.ShowHelp('Hide this module when a game menu is open (equipment, map, etc.).');
-
-    if not gConfig[hideOnMenuFocusKey] then
-        return;
-    end
-
-    local showMacroPaletteOption = hideMacroPaletteKey
-        and not (gConfig.hotbarGlobal and gConfig.hotbarGlobal.disableMacroBars);
-    if not showMacroPaletteOption and not hideOnlyAllianceKey then
-        return;
-    end
-
-    imgui.Indent(components.INDENT_SIZE);
-    if showMacroPaletteOption then
-        components.DrawCheckbox('Keep Macro Palette Visible', hideMacroPaletteKey);
-        imgui.ShowHelp('Keep this module visible when the in-game macro palette is open.');
-    end
-    if hideOnlyAllianceKey then
-        components.DrawCheckbox('Hide Only Alliance', hideOnlyAllianceKey);
-        imgui.ShowHelp('Keep main party visible when a game menu is open(equipment, map, etc.).');
-    end
-    imgui.Unindent(components.INDENT_SIZE);
-end
+-- Per-slider right-click timestamp for manual double-right-click detection.
+-- ImGui's IsMouseDoubleClicked is unreliable across SliderInt/SliderFloat due to
+-- hover-state differences; tracking single clicks ourselves is more consistent.
+local _sliderRClickTime = {};
 
 -- Helper function for slider with deferred save (top-level gConfig keys)
-function components.DrawSlider(label, configKey, min, max, format, callback)
+-- Optional 7th arg `default`: double-right-clicking the slider resets it to that value.
+function components.DrawSlider(label, configKey, min, max, format, callback, default)
     local value = { gConfig[configKey] };
     local changed = false;
 
     imgui.SetNextItemWidth(CONTENT_MAX_WIDTH);
 
-    -- Use SliderFloat if format is specified, otherwise check if value is integer
-    if format ~= nil then
-        -- Format specified, use float slider
+    if format == '%d' then
+        -- Explicit integer format: always use SliderInt for proper per-pixel drag
+        value = { math.floor(value[1] or 0) };
+        changed = imgui.SliderInt(label, value, min, max, '%d', ImGuiSliderFlags_AlwaysClamp);
+    elseif format ~= nil then
+        -- Float format (e.g. '%.2f')
         changed = imgui.SliderFloat(label, value, min, max, format, ImGuiSliderFlags_AlwaysClamp);
     elseif type(gConfig[configKey]) == 'number' and math.floor(gConfig[configKey]) == gConfig[configKey] then
-        -- No format and value is integer, use int slider
+        -- No format but stored value is already an integer
+        value = { math.floor(value[1] or 0) };
         changed = imgui.SliderInt(label, value, min, max, '%d', ImGuiSliderFlags_AlwaysClamp);
     else
-        -- No format but value is float, use float slider with default format
+        -- No format, float value
         changed = imgui.SliderFloat(label, value, min, max, '%.2f', ImGuiSliderFlags_AlwaysClamp);
+    end
+
+    -- Double right-click resets to default.
+    -- Manual timing is used instead of IsMouseDoubleClicked because hover state
+    -- differs between SliderInt and SliderFloat, causing inconsistent detection.
+    if default ~= nil and imgui.IsItemHovered() and imgui.IsMouseClicked(1) then
+        local now = os.clock();
+        local last = _sliderRClickTime[configKey];
+        if last and (now - last) < 0.5 then
+            value[1] = default;
+            changed = true;
+            _sliderRClickTime[configKey] = nil;
+            SaveSettingsToDisk();
+        else
+            _sliderRClickTime[configKey] = now;
+        end
     end
 
     if changed then
@@ -558,7 +553,7 @@ end
 -- Flexible combo box for any table + key (with width constraint and auto-save)
 -- items: display labels, values: optional stored values (if nil, items are used as values)
 -- callback: optional function called after selection with (newValue) parameter
-function components.Combo(label, parentTable, key, items, values, default, callback)
+function components.Combo(label, parentTable, key, items, values, default, callback, width)
     local currentValue = parentTable[key];
     if currentValue == nil then currentValue = default or (values and values[1] or items[1]); end
 
@@ -573,7 +568,7 @@ function components.Combo(label, parentTable, key, items, values, default, callb
         end
     end
 
-    imgui.SetNextItemWidth(CONTENT_MAX_WIDTH);
+    imgui.SetNextItemWidth(width or CONTENT_MAX_WIDTH);
     if imgui.BeginCombo(label, currentLabel) then
         for i, item in ipairs(items) do
             local itemValue = values and values[i] or item;
@@ -886,24 +881,87 @@ components.TAB_STYLE = {
     bgLighter = {0.176, 0.161, 0.137, 1.0},
 };
 
+-- Button theming: XIUI gold accent for both Macro Manager and Palette Manager.
+-- Green reserved for success states only.
+components.MANAGER_BUTTON_STYLE = {
+    macro = {
+        normal = {0.72, 0.58, 0.22, 1.0},
+        hovered = {0.84, 0.70, 0.30, 1.0},
+        active = {0.58, 0.46, 0.14, 1.0},
+        text = {0.08, 0.06, 0.02, 1.0},
+        danger = {0.58, 0.22, 0.08, 1.0},
+        dangerHovered = {0.72, 0.30, 0.12, 1.0},
+        dangerActive = {0.48, 0.16, 0.05, 1.0},
+    },
+    palette = {
+        normal = {0.38, 0.32, 0.16, 1.0},
+        hovered = {0.50, 0.42, 0.20, 1.0},
+        active = {0.30, 0.25, 0.12, 1.0},
+        text = {0.96, 0.90, 0.72, 1.0},
+        headerText = {0.957, 0.855, 0.592, 1.0},
+    },
+};
+
+function components.PushMacroManagerButtonStyle()
+    local s = components.MANAGER_BUTTON_STYLE.macro;
+    imgui.PushStyleColor(ImGuiCol_Button, s.normal);
+    imgui.PushStyleColor(ImGuiCol_ButtonHovered, s.hovered);
+    imgui.PushStyleColor(ImGuiCol_ButtonActive, s.active);
+    imgui.PushStyleColor(ImGuiCol_Text, s.text);
+end
+
+function components.PopMacroManagerButtonStyle()
+    imgui.PopStyleColor(4);
+end
+
+function components.PushPaletteManagerButtonStyle()
+    local s = components.MANAGER_BUTTON_STYLE.palette;
+    imgui.PushStyleColor(ImGuiCol_Button, s.normal);
+    imgui.PushStyleColor(ImGuiCol_ButtonHovered, s.hovered);
+    imgui.PushStyleColor(ImGuiCol_ButtonActive, s.active);
+    imgui.PushStyleColor(ImGuiCol_Text, s.text);
+end
+
+function components.PopPaletteManagerButtonStyle()
+    imgui.PopStyleColor(4);
+end
+
 -- Helper: Draw a styled tab button with underline when selected
+-- variant: nil/'default' = default tab styling; 'palette' = Palette Manager gold-accent tab
 -- Returns true if tab was clicked, and the calculated tab width
-function components.DrawStyledTab(label, id, isSelected, width, height, padding)
+function components.DrawStyledTab(label, id, isSelected, width, height, padding, variant)
     height = height or components.TAB_STYLE.height;
     padding = padding or components.TAB_STYLE.padding;
+    variant = variant or 'default';
 
     local textWidth = imgui.CalcTextSize(label);
     local tabWidth = width or (textWidth + padding * 2);
     local tabPosX, tabPosY = imgui.GetCursorScreenPos();
+    local popCount;
 
+    local usePalette = (variant == 'green' or variant == 'palette');
+    local pal = components.MANAGER_BUTTON_STYLE.palette;
     if isSelected then
         imgui.PushStyleColor(ImGuiCol_Button, {0, 0, 0, 0});
         imgui.PushStyleColor(ImGuiCol_ButtonHovered, {0, 0, 0, 0});
         imgui.PushStyleColor(ImGuiCol_ButtonActive, {0, 0, 0, 0});
+        if usePalette then
+            imgui.PushStyleColor(ImGuiCol_Text, pal.text);
+        end
+        popCount = usePalette and 4 or 3;
     else
-        imgui.PushStyleColor(ImGuiCol_Button, components.TAB_STYLE.bgMedium);
-        imgui.PushStyleColor(ImGuiCol_ButtonHovered, components.TAB_STYLE.bgLight);
-        imgui.PushStyleColor(ImGuiCol_ButtonActive, components.TAB_STYLE.bgLighter);
+        if usePalette then
+            imgui.PushStyleColor(ImGuiCol_Button, pal.normal);
+            imgui.PushStyleColor(ImGuiCol_ButtonHovered, pal.hovered);
+            imgui.PushStyleColor(ImGuiCol_ButtonActive, pal.active);
+            imgui.PushStyleColor(ImGuiCol_Text, pal.text);
+            popCount = 4;
+        else
+            imgui.PushStyleColor(ImGuiCol_Button, components.TAB_STYLE.bgMedium);
+            imgui.PushStyleColor(ImGuiCol_ButtonHovered, components.TAB_STYLE.bgLight);
+            imgui.PushStyleColor(ImGuiCol_ButtonActive, components.TAB_STYLE.bgLighter);
+            popCount = 3;
+        end
     end
 
     local clicked = imgui.Button(label .. '##' .. id, { tabWidth, height });
@@ -918,7 +976,7 @@ function components.DrawStyledTab(label, id, isSelected, width, height, padding)
             1.0
         );
     end
-    imgui.PopStyleColor(3);
+    imgui.PopStyleColor(popCount);
 
     return clicked, tabWidth;
 end
