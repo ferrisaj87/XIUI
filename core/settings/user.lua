@@ -850,12 +850,23 @@ function M.createUserSettingsDefaults()
         -- VanaTime settings
         showVanaTime = true,
         vanaTimeHideOnMenuFocus = false,
+        vanaTimeVTElementColor = false,    -- tint VT clock text with the current day element color
         vanaTimeShowLocalTime = true,
         vanaTimeShowMoonPercent = true,
         vanaTimeShowPastFuture = true,
-        vanaTimePastFutureOpacity = 0.18,
+        vanaTimePastFutureOpacity = 0.35,
         vanaTimeShowWeather = true,
-        vanaTimeWeatherSide = 'right',     -- 'left' | 'right' | 'above' | 'below'
+        vanaTimeWeatherSide  = 'right',    -- 'left' | 'right' | 'above' | 'below'
+        vanaTimeWeatherAlign = 'left',     -- 'left' | 'right'  (when side is above/below)
+        vanaTimeWeatherCustomScale = false,
+        vanaTimeWeatherIconSize    = 28,
+        vanaTimeWeatherAdjustElemental  = false,
+        vanaTimeWeatherElementalIconSize = 42,
+        vanaTimeWeatherHideNonElemental  = false,
+        vanaTimeTodSide      = 'left',     -- 'left' | 'right' | 'above' | 'below'
+        vanaTimeTodAlign     = 'left',     -- 'left' | 'right'  (when side is above/below)
+        vanaTimeTodCustomScale     = false,
+        vanaTimeTodIconSize        = 28,
         vanaTimeScale = 1.0,
         vanaTimeFontSize = 12,
         vanaTimeIconSize = 28,
@@ -866,9 +877,27 @@ function M.createUserSettingsDefaults()
         vanaTimeBackgroundOpacity = 0.85,
         vanaTimeBorderOpacity = 1.0,
         vanaTimeTooltipDirection = 'above',  -- 'above' | 'below'
-        vanaTimeShowTooltip = true,          -- master tooltip toggle
+        vanaTimeShowTooltip = true,          -- legacy: day column master (now derived)
         vanaTimeTooltipFenrir = true,        -- show Fenrir pact section
         vanaTimeTooltipSeleneBow = true,     -- show Selene's Bow section
+        vanaTimeShowSettingsBtn = true,      -- show gear icon that opens VanaTime config
+        vanaTimeEnableTooltips = true,       -- master tooltip toggle
+        vanaTimeTipVT      = true,           -- VT clock label tooltip
+        vanaTimeTipLT      = true,           -- LT clock label tooltip
+        vanaTimeTipTod     = true,           -- TOD tab tooltip
+        vanaTimeTipWeather = true,           -- Weather tab tooltip
+        vanaTimeShowTimers = true,           -- show clock icon + timers popup
+        vanaTimeTimerSide = 'above',         -- 'above' | 'below'
+        vanaTimeTimersFontSize = 12,         -- independent font size for the timers panel
+        vanaTimeTimersAutoCloseClick = false, -- close timers when clicking outside
+        vanaTimeTimersAutoCloseIdle  = false, -- close timers after idle timeout
+        vanaTimeTimersAutoCloseIdleSec = 5,  -- seconds of inactivity before auto-close
+        vanaTimeTimerSections = T{           -- persisted expand/collapse state
+            airships = false,
+            boats    = false,
+            rse      = false,
+            lunar    = false,
+        },
 
         -- Color customization settings (populated from colors.lua)
         colorCustomization = colors.createColorCustomizationDefaults(),

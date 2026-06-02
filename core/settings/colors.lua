@@ -281,6 +281,7 @@ function M.createColorCustomizationDefaults()
             textColor       = 0xFFFFFFFF,   -- LT clock + general text
             moonFullColor   = 0xFFFFD700,   -- gold glow for full moon cell
             moonNewColor    = 0xFF8B0000,   -- dark red glow for new moon cell
+            todTimerColor   = 0xFFFFFFFF,   -- TOD countdown text (default: white)
             -- Light group (Fire/Wind/Lightning/Light) -> black outline + white pill
             -- Dark group  (Ice/Water/Earth/Dark)      -> white outline + dark pill
             elementFire      = 0xFFFF4500,  -- orange-red   (Light group)

@@ -22,8 +22,23 @@ require('common');
 local bit       = require('bit');
 local imgui     = require('imgui');
 local imtext    = require('libs.imtext');
+local ffi       = require('ffi');
+
+-- High-precision wall-clock milliseconds via Windows API.
+-- os.clock() is CPU time in LuaJIT (doesn't advance while the game sleeps),
+-- so we use GetTickCount64 for sub-second interpolation instead.
+pcall(function() ffi.cdef[[ unsigned long long __stdcall GetTickCount64(void); ]]; end);
+local function _doGetTickCount64()
+    return tonumber(ffi.C.GetTickCount64());
+end
+local function GetTickMs()
+    local ok, v = pcall(_doGetTickCount64);
+    return (ok and v) or nil;
+end
+
 local TextureManager = require('libs.texturemanager');
 local windowbg  = require('libs.windowbackground');
+local timers    = require('modules.vanatime.timers');
 
 local M = {};
 
@@ -32,10 +47,8 @@ local M = {};
 local WEATHER_POPUP_GAP  = 4;   -- px gap between main window and popup
 local PAST_FUTURE_ALPHA  = 0.18;
 local BADGE_SCALE        = 0.40; -- weakness badge as fraction of main icon size
+local VT_TEXT_COLOR      = 0xFFC3AE79; -- XIUI Gold Dark — fixed for VT clock text
 local ARROW_SCALE        = 0.55; -- down-arrow as fraction of badge icon size
-local MOON_ARROW_UP      = '(+)'; -- waxing
-local MOON_ARROW_DOWN    = '(-)'; -- waning
-local MOON_ARROW_FLAT    = '';    -- new/full moon: no direction shown
 local COL_ARROW          = '>';   -- column separator
 
 -- ── Pure-Lua Vana'diel time (no FFI / ashita.memory) ─────────────────────────
@@ -44,52 +57,64 @@ local COL_ARROW          = '>';   -- column separator
 -- 1 VD hour = 144  real seconds
 -- 1 VD min  = 2.4  real seconds
 -- Moon cycle = 84 VD days; day 0 = new moon, day 42 = full moon.
-local VANA_EPOCH    = 1009810800; -- Unix ts of Vana'diel year-0 epoch (Jan 1 2002 12:00 UTC)
+local VANA_EPOCH    = 1009810797.6; -- Unix ts of Vana'diel epoch, calibrated -2.4s (1 VT min) vs raw JST anchor
 local VD_DAY_SEC    = 3456;
 local VD_HOUR_SEC   = 144;
 local VD_MIN_F      = 2.4;
 local VD_MOON_DAYS  = 84;
+-- VT day 0 does not coincide with moon-cycle day 0.  Calibrated against live data:
+-- at a known timestamp the raw vtDays%84 is off by +4, so subtract 4 (add 80) to align.
+local VD_MOON_OFFSET = 80;
 
--- os.time() truncates to the last whole second, so on average the display
--- lags ~0.5 real seconds behind true time.  At 25x VT speed that's ~12 VT
--- seconds of lag.  Subtract a small constant so the clock reads "now" rather
--- than "just before now".  0.25 s is empirically comfortable; adjust if needed.
-local VT_TIME_BIAS  = 0.25;
+-- os.time() has 1-second granularity; at 25x VT speed a 0-1s truncation lag = 0-25 VT seconds.
+-- Sub-second VT precision via GetTickCount64 (wall-clock ms).
+-- os.clock() is CPU time in LuaJIT on Windows and does NOT advance while the
+-- game sleeps between frames, so it cannot be used for wall-clock interpolation.
+-- GetTickCount64 is a lightweight Windows kernel call (no syscall overhead) that
+-- returns monotonic milliseconds since boot — perfect for this purpose.
+local _vtLastSec   = 0;    -- last os.time() second anchor
+local _vtTickAtSec = 0;    -- GetTickCount64() value when os.time() last ticked
 
 local function GetRawTime()
-    return (os.time() + VT_TIME_BIAS) - VANA_EPOCH;
+    local t      = os.time();
+    local tickMs = GetTickMs();
+    if tickMs then
+        if t ~= _vtLastSec then
+            _vtLastSec   = t;
+            _vtTickAtSec = tickMs;
+        end
+        local subSec = math.min(0.999, (tickMs - _vtTickAtSec) / 1000.0);
+        return (t + subSec) - VANA_EPOCH;
+    else
+        -- Fallback if FFI unavailable: integer-second precision.
+        return t - VANA_EPOCH;
+    end
 end
 
 local function CalcMoonPercent(moonDay)
     if moonDay <= 42 then
-        return math.floor(moonDay / 42 * 100);
+        return math.floor(moonDay / 42 * 100 + 0.5);
     else
-        return math.floor((VD_MOON_DAYS - moonDay) / 42 * 100);
+        return math.floor((VD_MOON_DAYS - moonDay) / 42 * 100 + 0.5);
     end
 end
 
--- Weekday index -> element name (matches assets/hotbar/elements/*.png)
+-- Weekday index -> element name (matches assets/VanaTime/elements/*.png)
+-- Indices 0-7: the eight FFXI elements (used for day columns and elemental weather).
+-- Indices 8-11: non-elemental weather icons (used only for the weather popup).
 local ELEMENT_NAMES = {
     [0] = 'Fire',
     [1] = 'Earth',
     [2] = 'Water',
     [3] = 'Wind',
     [4] = 'Ice',
-    [5] = 'Lightning',
+    [5] = 'Thunder',
     [6] = 'Light',
-    [7] = 'Dark',
-};
-
--- Day name strings
-local DAY_NAMES = {
-    [0] = 'Firesday',
-    [1] = 'Earthsday',
-    [2] = 'Watersday',
-    [3] = 'Windsday',
-    [4] = 'Iceday',
-    [5] = 'Lightningday',
-    [6] = 'Lightsday',
-    [7] = 'Darksday',
+    [7] = 'Darkness',
+    [8] = 'Clear',
+    [9] = 'Sunshine',
+    [10] = 'Cloudy',
+    [11] = 'Foggy',
 };
 
 -- Module-level constant: maps weekday index to colorCustomization key
@@ -155,72 +180,141 @@ local SELENE_BOW = {
     [8]={20,10}, [9]={15,15}, [10]={10,20},[11]={10,20},
 };
 
--- moonDay: 0=new moon, 42=full moon, 1-41=waxing, 43-83=waning
-local function GetMoonArrow(moonDay)
-    if moonDay == 0 or moonDay == 42 then return MOON_ARROW_FLAT; end
-    if moonDay < 42 then return MOON_ARROW_UP; end
-    return MOON_ARROW_DOWN;
-end
-
 -- Weather IDs 4-19 are elemental; odd = double
 -- Map to weekday element index (0-7)
 local WEATHER_TO_ELEMENT = {
-    [4]=0,  [5]=0,   -- Fire / Fire x2
-    [6]=2,  [7]=2,   -- Water / Water x2
-    [8]=1,  [9]=1,   -- Earth / Earth x2
-    [10]=3, [11]=3,  -- Wind / Wind x2
-    [12]=4, [13]=4,  -- Ice / Ice x2
-    [14]=5, [15]=5,  -- Lightning / Lightning x2
-    [16]=6, [17]=6,  -- Light / Light x2
-    [18]=7, [19]=7,  -- Dark / Dark x2
+    [0]=8,  [1]=9,   -- Clear / Sunshine          (non-elemental)
+    [2]=10, [3]=11,  -- Cloudy / Fog              (non-elemental)
+    [4]=3,  [5]=3,   -- Wind / Gales              (Wind)
+    [6]=2,  [7]=2,   -- Rain / Squall             (Water)
+    [8]=0,  [9]=0,   -- Hot Spell / Heat Wave     (Fire)
+    [10]=1, [11]=1,  -- Dust Storm / Sandstorm    (Earth)
+    [12]=4, [13]=4,  -- Snow / Blizzard           (Ice)
+    [14]=5, [15]=5,  -- Thunder / Thunderstorm    (Lightning)
+    [16]=6, [17]=6,  -- Auroras / Stellar Glare   (Light)
+    [18]=7, [19]=7,  -- Gloom / Darkness          (Dark)
 };
+
+local WEATHER_NAMES = {
+    [0]  = 'Clear',
+    [1]  = 'Sunshine',
+    [2]  = 'Cloudy',
+    [3]  = 'Fog',
+    [4]  = 'Wind',
+    [5]  = 'Gales',
+    [6]  = 'Rain',
+    [7]  = 'Squall',
+    [8]  = 'Hot Spell',
+    [9]  = 'Heat Wave',
+    [10] = 'Dust Storm',
+    [11] = 'Sandstorm',
+    [12] = 'Snow',
+    [13] = 'Blizzard',
+    [14] = 'Thunder',
+    [15] = 'Thunderstorm',
+    [16] = 'Auroras',
+    [17] = 'Stellar Glare',
+    [18] = 'Gloom',
+    [19] = 'Darkness',
+};
+
+
 
 -- ── Texture cache ─────────────────────────────────────────────────────────────
 
 local textures = {};
-local arrowDownTex  = nil;
 local arrowRightTex = nil;
 local moonUpTex     = nil;
 local moonDownTex   = nil;
 local moonPhaseTextures = {};  -- [0..11] → phase icon
+local todDayTex       = nil;   -- VT 06:00-17:59
+local todNightTex     = nil;   -- VT 18:00-19:59 and 04:00-05:59
+local todDeadNightTex = nil;   -- VT 20:00-03:59 (priority over night)
 
--- Map moonDay (0-83) to phase icon index 0-11
--- Waxing: 0-42, Waning: 43-83
-local function GetMoonPhaseIndex(moonDay)
-    if moonDay == 0  then return 0 end   -- New Moon
-    if moonDay == 42 then return 6 end   -- Full Moon
-    if moonDay < 42 then
-        -- Waxing: phases 1-5 spread across moonDay 1-41
-        return math.min(5, math.floor((moonDay - 1) / 7) + 1);
+-- ── Timers panel state ─────────────────────────────────────────────────────
+local clockIconTex    = nil;
+local gearIconTex     = nil;   -- settings gear icon
+local timersOpen      = false;
+local cachedTimersH   = 200;  -- seeded so first-frame 'above' position doesn't flicker
+local clockIconRect   = { x=0, y=0, w=0, h=0 };
+local firstTimerFrame = false;   -- seeds CollapsingHeader open states on popup open
+local timersLastActivity = 0;    -- os.clock() of last hover/click inside timers window
+local timersOpenedAt     = 0;    -- os.clock() when timers was opened; suppresses same-frame close
+-- Session-only section open state: always starts collapsed on reload, never written to disk.
+local timerSectionOpen    = { airships=false, boats=false, rse=false, lunar=false };
+-- Session-only boat sub-group open state: all collapsed on addon load.
+local timerBoatGroupOpen  = {};
+-- Holds the colorCfg table for the duration of DrawTimersPopup so inner draw helpers
+-- can resolve element-day colours without needing extra parameters.
+
+-- Maps phase index (0-11) to icon file number.
+-- After renaming phase_3/4/5 assets to match logical order, this is 1:1.
+local PHASE_ICON_MAP = {
+    [0]=0, [1]=1,  [2]=2,
+    [3]=3, [4]=4,  [5]=5,
+    [6]=6, [7]=7,  [8]=8,
+    [9]=9, [10]=10,[11]=11,
+};
+
+-- Map moonDay (0-83) to the raw logical phase index (0-11).
+-- New Moon wraps: moonDays 80-83 and 0-2 → 0.
+-- All other phases are 7-day segments from moonDay 3 onward.
+-- Phase → moonDay range → asset file:
+--   0  New Moon          80-83, 0-2  phase_0.png
+--   1  Waxing Crescent   3-9         phase_1.png
+--   2  Waxing Crescent   10-16       phase_2.png
+--   3  First Quarter     17-23       phase_3.png
+--   4  Waxing Gibbous    24-30       phase_4.png
+--   5  Waxing Gibbous    31-37       phase_5.png
+--   6  Full Moon         38-44       phase_6.png
+--   7  Waning Gibbous    45-51       phase_7.png
+--   8  Waning Gibbous    52-58       phase_8.png
+--   9  Last Quarter      59-65       phase_9.png
+--  10  Waning Crescent   66-72       phase_10.png
+--  11  Waning Crescent   73-79       phase_11.png
+local function GetMoonPhaseRaw(moonDay)
+    if moonDay >= 80 or moonDay <= 2 then
+        return 0;
     else
-        -- Waning: phases 7-11 spread across moonDay 43-83
-        return math.min(11, math.floor((moonDay - 43) / 7) + 7);
+        return math.floor((moonDay - 3) / 7) + 1;
     end
 end
 
 local function LoadTextures()
-    for i = 0, 7 do
+    for i = 0, 11 do
         local name = ELEMENT_NAMES[i];
         if name and not textures[i] then
-            textures[i] = TextureManager.getFileTexture('hotbar/elements/' .. name);
+            textures[i] = TextureManager.getFileTexture('VanaTime/elements/' .. name);
         end
     end
     for i = 0, 11 do
         if not moonPhaseTextures[i] then
-            moonPhaseTextures[i] = TextureManager.getFileTexture('hotbar/vanatime/moon/phase_' .. i);
+            moonPhaseTextures[i] = TextureManager.getFileTexture('VanaTime/moon/phase_' .. i);
         end
     end
-    if not arrowDownTex then
-        arrowDownTex = TextureManager.getFileTexture('hotbar/vanatime/arrow_down');
-    end
     if not arrowRightTex then
-        arrowRightTex = TextureManager.getFileTexture('hotbar/vanatime/arrow_right');
+        arrowRightTex = TextureManager.getFileTexture('VanaTime/arrow_right');
     end
     if not moonUpTex then
-        moonUpTex = TextureManager.getFileTexture('hotbar/vanatime/moon_up');
+        moonUpTex = TextureManager.getFileTexture('VanaTime/moon_up');
     end
     if not moonDownTex then
-        moonDownTex = TextureManager.getFileTexture('hotbar/vanatime/moon_down');
+        moonDownTex = TextureManager.getFileTexture('VanaTime/moon_down');
+    end
+    if not clockIconTex then
+        clockIconTex = TextureManager.getFileTexture('VanaTime/clock_icon');
+    end
+    if not gearIconTex then
+        gearIconTex = TextureManager.getFileTexture('icons/gear');
+    end
+    if not todDayTex then
+        todDayTex = TextureManager.getFileTexture('VanaTime/tod/tod_day');
+    end
+    if not todNightTex then
+        todNightTex = TextureManager.getFileTexture('VanaTime/tod/tod_night');
+    end
+    if not todDeadNightTex then
+        todDeadNightTex = TextureManager.getFileTexture('VanaTime/tod/tod_deadofnight');
     end
 end
 
@@ -251,12 +345,15 @@ local function GetOutlineColor(weekday)
 end
 
 -- Returns pill background color for element group
-local function GetPillColor(weekday, alpha)
-    if LIGHT_GROUP[weekday] then
-        return WithAlpha(0xFFFFFFFF, alpha or 0.22);
-    end
-    return WithAlpha(0xFF000000, alpha or 0.40);
-end
+-- ── Per-frame allocation sinks (reused across calls to avoid GC pressure) ─────
+-- Shared position table for DrawTextWithOutline (replaces per-call {x, y} allocations)
+local _textPos = {0, 0};
+
+-- Cached measurement for the constant string "100%" at the current fontSize.
+-- Avoids calling imtext.Measure (which does ImGui PushFont/CalcTextSize) 4× per frame.
+-- Invalidated whenever fontSize changes (see the lastFontSize block in DrawWindow).
+local _moonPctMeasW   = 0;
+local _moonPctFontSz  = -1;
 
 -- Draw text with a custom outline color (bypasses imtext's hardcoded black)
 local function DrawTextWithOutline(drawList, text, x, y, textArgb, outlineArgb, fontSize)
@@ -266,18 +363,20 @@ local function DrawTextWithOutline(drawList, text, x, y, textArgb, outlineArgb, 
     local outU32   = ToU32(outlineArgb);
     -- apply SIZE_OFFSET to match imtext scaling
     local fs = fontSize and (fontSize + 2) or nil;
-    local function addText(dx, dy, col)
-        local p = {x + dx, y + dy};
-        if fs and font then
-            drawList:AddText(font, fs, p, col, text);
-        else
-            drawList:AddText(p, col, text);
-        end
+    -- shadow (reuse module-level _textPos to avoid per-call table allocation)
+    _textPos[1] = x + ow; _textPos[2] = y + ow;
+    if fs and font then
+        drawList:AddText(font, fs, _textPos, outU32, text);
+    else
+        drawList:AddText(_textPos, outU32, text);
     end
-    -- Single shadow offset — clean drop-shadow instead of heavy cardinal outline
-    addText( 1,  1, outU32);
     -- main text
-    addText(0, 0, textU32);
+    _textPos[1] = x; _textPos[2] = y;
+    if fs and font then
+        drawList:AddText(font, fs, _textPos, textU32, text);
+    else
+        drawList:AddText(_textPos, textU32, text);
+    end
 end
 
 -- Draw a rounded pill rectangle behind text/icons
@@ -292,8 +391,18 @@ end
 local mainWinPos   = {x=0, y=0};
 local mainWinSize  = {w=0, h=0};
 local cachedWeatherH = 0; -- used by 'above' positioning
+local cachedWeatherW = 0; -- used by right-align positioning (accounts for double weather width)
+local cachedTodH     = 0; -- used when TOD and weather share a left/right side
+local cachedTodW     = 0; -- used when TOD and weather share an above/below side
 -- Deferred Fenrir tooltip: set during Begin/End hover check, drawn after End() on the foreground list
 local pendingFenrirTooltip = nil;  -- {moonDay, moonPercent}
+
+-- Preview flags: set by config/vanatime.lua while the respective weather icon size sliders are
+-- actively being dragged, so the weather popup previews correctly regardless of current weather.
+if _G.XIUI_weatherElementalPreview == nil then _G.XIUI_weatherElementalPreview = false; end
+if _G.XIUI_weatherBasePreview      == nil then _G.XIUI_weatherBasePreview      = false; end
+-- Test-placement expiry: os.clock() timestamp; positive = test active (blinks the weather tab)
+if _G.XIUI_weatherTestExpiry       == nil then _G.XIUI_weatherTestExpiry       = 0;     end
 
 -- ── Draw helpers ──────────────────────────────────────────────────────────────
 
@@ -302,20 +411,16 @@ local pendingFenrirTooltip = nil;  -- {moonDay, moonPercent}
 -- moonPercent: moon % for this day (may differ past/future)
 -- moonDay: day within the 84-day moon cycle (0=new, 42=full)
 -- showMoon: whether to draw the moon% text row
-local function DrawDayColumn(drawList, cx, cy, colWeekday, moonPercent, moonDay, alpha, iconSize, fontSize, colorConfig, showMoon)
+local function DrawDayColumn(drawList, cx, cy, colWeekday, moonPercent, moonDay, alpha, iconSize, fontSize, colorConfig, showMoon, showBadge, disableIcons)
     local badgeSize = math.floor(iconSize * BADGE_SCALE);
     local arrowW    = math.floor(badgeSize * ARROW_SCALE);
 
-    local elemKeys = {
-        [0]='elementFire', [1]='elementEarth', [2]='elementWater', [3]='elementWind',
-        [4]='elementIce',  [5]='elementLightning', [6]='elementLight', [7]='elementDark',
-    };
-    local elemArgb = colorConfig[elemKeys[colWeekday]] or 0xFFFFFFFF;
+    local elemArgb = colorConfig[ELEM_KEYS[colWeekday]] or 0xFFFFFFFF;
 
     -- Effective content width: icon, or moon row (phase icon + "100%" + arrow)
     local moonArrowSlot = showMoon and (math.floor(fontSize * 0.7) + 2) or 0;
     local phaseIconSlot = showMoon and (math.floor(fontSize + 2) + 2) or 0;
-    local moonMaxW      = showMoon and (phaseIconSlot + imtext.Measure('100%', fontSize) + moonArrowSlot) or 0;
+    local moonMaxW      = showMoon and (phaseIconSlot + _moonPctMeasW + moonArrowSlot) or 0;
     local colContentW   = math.max(iconSize, moonMaxW + 4);
 
     -- Row Y positions (badge is a corner overlay on the icon, not a separate row)
@@ -339,20 +444,27 @@ local function DrawDayColumn(drawList, cx, cy, colWeekday, moonPercent, moonDay,
         ToU32(WithAlpha(elemArgb, alpha)), 6, nil, alpha >= 0.95 and 1.5 or 1.0);
 
     -- Element group glow removed — border color carries the light/dark affinity instead.
-    local LIGHT_GROUP = { [0]=true, [3]=true, [5]=true, [6]=true };  -- Fire, Wind, Lightning, Light
     local iconX = cx + math.floor((colContentW - iconSize) / 2);
 
-    -- Flat black background behind the icon only
-    drawList:AddRectFilled(
-        {iconX, iconY}, {iconX + iconSize, iconY + iconSize},
-        ToU32(WithAlpha(0xFF000000, alpha)), 3);
+    -- Flat black background behind the icon, or element-color fill when icons are disabled
+    if disableIcons then
+        drawList:AddRectFilled(
+            {iconX, iconY}, {iconX + iconSize, iconY + iconSize},
+            ToU32(WithAlpha(elemArgb, alpha * 0.85)), 3);
+    else
+        drawList:AddRectFilled(
+            {iconX, iconY}, {iconX + iconSize, iconY + iconSize},
+            ToU32(WithAlpha(0xFF000000, alpha)), 3);
+    end
 
-    -- Main element icon — centered within colContentW
-    local iconTex = GetTexPtr(textures[colWeekday]);
-    if iconTex then
-        local tint  = ToU32(WithAlpha(0xFFFFFFFF, alpha));
-        drawList:AddImage(iconTex,
-            {iconX, iconY}, {iconX + iconSize, iconY + iconSize}, {0,0}, {1,1}, tint);
+    -- Main element icon — skipped when icons are disabled
+    if not disableIcons then
+        local iconTex = GetTexPtr(textures[colWeekday]);
+        if iconTex then
+            local tint  = ToU32(WithAlpha(0xFFFFFFFF, alpha));
+            drawList:AddImage(iconTex,
+                {iconX, iconY}, {iconX + iconSize, iconY + iconSize}, {0,0}, {1,1}, tint);
+        end
     end
     -- Border: XIUI gold for Light group, dark purple for Dark group
     local iconBorderArgb = LIGHT_GROUP[colWeekday] and 0xFFF4DA97 or 0xFF6A0DAD;
@@ -370,7 +482,7 @@ local function DrawDayColumn(drawList, cx, cy, colWeekday, moonPercent, moonDay,
 
         -- Phase icon (square, same height as font + 2 to match imtext rendered size)
         local phaseIconSize = math.floor(fontSize + 2);
-        local phaseTex = GetTexPtr(moonPhaseTextures[GetMoonPhaseIndex(moonDay)]);
+        local phaseTex = GetTexPtr(moonPhaseTextures[GetMoonPhaseRaw(moonDay)]);
 
         -- Arrow image to the right of the % text
         local moonArrowSize = math.floor(fontSize * 0.7);  -- smaller, keeps aspect ratio
@@ -392,14 +504,33 @@ local function DrawDayColumn(drawList, cx, cy, colWeekday, moonPercent, moonDay,
         local moonRowH  = fontSize + 4;
         local moonBaseY = moonY + math.floor((moonRowH - fontSize) / 2);
 
-        -- Moon glow (full/new moon) — spans the whole group horizontally
+        -- Moon pill border for New Moon (blood red) and Full Moon (moonlit blue).
+        -- Phase check uses the same 7-day ranges as GetMoonPhaseRaw:
+        --   New Moon  = moonDay >= 80 or moonDay <= 2
+        --   Full Moon = moonDay >= 38 and moonDay <= 44
+        -- Always drawn on any column (current/past/future); border alpha is scaled by column alpha.
         local totalMoonRowW = phaseGap + moonW + (moonArrowTex and (moonArrowSize + arrowGap) or 0);
-        if moonDay == 42 and alpha >= 0.95 then
-            local glowArgb = WithAlpha(colorConfig.moonFullColor or 0xFFFFD700, 0.35);
-            DrawPill(drawList, moonTextX - phaseGap - 3, moonBaseY - 1, totalMoonRowW + 6, fontSize + 2, glowArgb, 3);
-        elseif moonDay == 0 and alpha >= 0.95 then
-            local glowArgb = WithAlpha(colorConfig.moonNewColor or 0xFF8B0000, 0.45);
-            DrawPill(drawList, moonTextX - phaseGap - 3, moonBaseY - 1, totalMoonRowW + 6, fontSize + 2, glowArgb, 3);
+        local isNewMoonPhase  = (moonDay >= 80 or moonDay <= 2);
+        local isFullMoonPhase = (moonDay >= 38 and moonDay <= 44);
+        if isNewMoonPhase or isFullMoonPhase then
+            -- Center the pill around the full group (icon + text + arrow) within colContentW
+            local pillPad = 4;
+            local groupLeft = cx + math.floor((colContentW - totalMoonRowW) / 2);
+            local pillX = groupLeft - pillPad;
+            local pillY = moonBaseY - 3;
+            local pillW = totalMoonRowW + pillPad * 2;
+            local pillH = fontSize + 6;
+            if isNewMoonPhase then
+                DrawPill(drawList, pillX, pillY, pillW, pillH,
+                    ToU32(WithAlpha(0xFF6B0000, 0.30 * alpha)), 4);
+                drawList:AddRect({pillX, pillY}, {pillX + pillW, pillY + pillH},
+                    ToU32(WithAlpha(0xFFCC2222, 0.85 * alpha)), 4, nil, 1.0);
+            else
+                DrawPill(drawList, pillX, pillY, pillW, pillH,
+                    ToU32(WithAlpha(0xFF001833, 0.35 * alpha)), 4);
+                drawList:AddRect({pillX, pillY}, {pillX + pillW, pillY + pillH},
+                    ToU32(WithAlpha(0xFF4499FF, 0.85 * alpha)), 4, nil, 1.0);
+            end
         end
 
         -- Phase disc icon: immediately left of the % text, centered in the row
@@ -423,21 +554,30 @@ local function DrawDayColumn(drawList, cx, cy, colWeekday, moonPercent, moonDay,
         end
     end
 
-    -- Weakness corner badge: small weakness element icon in bottom-right corner of main icon,
-    -- with a red border. Overlaid directly on the element icon — no separate row.
+    -- Weakness corner badge: small weakness element icon (or color fill) in bottom-right
+    -- corner of the main icon, with a red border.
     local weakWeekday = ELEMENT_DEFEATS[colWeekday];
-    local badgeTex    = weakWeekday ~= nil and GetTexPtr(textures[weakWeekday]) or nil;
-    if badgeTex then
+    if showBadge ~= false and weakWeekday ~= nil then
         local cornerX = iconX + iconSize - badgeSize;
         local cornerY = iconY + iconSize - badgeSize;
-        -- Solid dark-red background so badge reads clearly over the element icon
+        -- Solid dark-red background so badge reads clearly
         drawList:AddRectFilled(
             {cornerX - 1, cornerY - 1}, {cornerX + badgeSize + 1, cornerY + badgeSize + 1},
             ToU32(WithAlpha(0xFF3B0000, alpha)), 2);
-        -- Weakness element icon
-        drawList:AddImage(badgeTex,
-            {cornerX, cornerY}, {cornerX + badgeSize, cornerY + badgeSize},
-            {0,0}, {1,1}, ToU32(WithAlpha(0xFFFFFFFF, alpha)));
+        if disableIcons then
+            -- Color fill using weakness element's color
+            local weakArgb = colorConfig[ELEM_KEYS[weakWeekday]] or 0xFFFFFFFF;
+            drawList:AddRectFilled(
+                {cornerX, cornerY}, {cornerX + badgeSize, cornerY + badgeSize},
+                ToU32(WithAlpha(weakArgb, alpha * 0.85)), 2);
+        else
+            local badgeTex = GetTexPtr(textures[weakWeekday]);
+            if badgeTex then
+                drawList:AddImage(badgeTex,
+                    {cornerX, cornerY}, {cornerX + badgeSize, cornerY + badgeSize},
+                    {0,0}, {1,1}, ToU32(WithAlpha(0xFFFFFFFF, alpha)));
+            end
+        end
         -- Darker red border
         drawList:AddRect(
             {cornerX - 1, cornerY - 1}, {cornerX + badgeSize + 1, cornerY + badgeSize + 1},
@@ -453,7 +593,8 @@ end
 -- Called INSIDE Begin/End: checks hover, draws the card glow, stores deferred data.
 local function DrawFenrirTooltip(drawList, cardX, cardY, cardW, cardH, moonDay, moonPercent)
     -- Bail if tooltips are globally disabled
-    if not (gConfig and gConfig.vanaTimeShowTooltip ~= false) then return; end
+    if not (gConfig and gConfig.vanaTimeEnableTooltips ~= false
+        and (gConfig.vanaTimeTooltipFenrir or gConfig.vanaTimeTooltipSeleneBow)) then return; end
     if not imgui.IsMouseHoveringRect({cardX, cardY}, {cardX + cardW, cardY + cardH}) then
         return;
     end
@@ -474,7 +615,7 @@ local function FlushFenrirTooltip()
     local showSelene  = not gConfig or gConfig.vanaTimeTooltipSeleneBow ~= false;
     if not showFenrir and not showSelene then return; end
 
-    local phaseIdx  = GetMoonPhaseIndex(moonDay);
+    local phaseIdx  = GetMoonPhaseRaw(moonDay);
     local phaseName = PHASE_NAMES[phaseIdx] or '?';
 
     local dl = imgui.GetForegroundDrawList();
@@ -590,7 +731,6 @@ local function FlushFenrirTooltip()
     curY = curY + separatorH;
 
     -- ── Draw rows ─────────────────────────────────────────────────────────
-    local dimGoldCol  = imgui.GetColorU32({0.85, 0.72, 0.38, 0.80});  -- dimmed section title
     local sepLineCol  = imgui.GetColorU32({0.28, 0.28, 0.28, 1.0});
 
     for _, r in ipairs(rows) do
@@ -628,6 +768,18 @@ local WIN_FLAGS_WEATHER = bit.bor(
     ImGuiWindowFlags_NoSavedSettings
 );
 
+-- Timers popup uses ImGui-drawn background (no NoBackground) so PushStyleColor controls it.
+-- NoBringToFrontOnFocus is intentionally OMITTED so SetNextWindowFocus() can keep it on top.
+local WIN_FLAGS_TIMERS = bit.bor(
+    ImGuiWindowFlags_NoDecoration,
+    ImGuiWindowFlags_AlwaysAutoResize,
+    ImGuiWindowFlags_NoFocusOnAppearing,
+    ImGuiWindowFlags_NoNav,
+    ImGuiWindowFlags_NoDocking,
+    ImGuiWindowFlags_NoMove,
+    ImGuiWindowFlags_NoSavedSettings
+);
+
 -- ── Public API ────────────────────────────────────────────────────────────────
 
 function M.Initialize()
@@ -646,10 +798,15 @@ end
 function M.Cleanup()
     textures = {};
     moonPhaseTextures = {};
-    arrowDownTex  = nil;
     arrowRightTex = nil;
     moonUpTex     = nil;
     moonDownTex   = nil;
+    clockIconTex  = nil;
+    gearIconTex   = nil;
+    todDayTex       = nil;
+    todNightTex     = nil;
+    todDeadNightTex = nil;
+    timersOpen    = false;
 end
 
 function M.DrawWindow(weatherId)
@@ -658,18 +815,26 @@ function M.DrawWindow(weatherId)
     -- Clear deferred tooltip from any previous frame
     pendingFenrirTooltip = nil;
     local colorCfg  = (cfg.colorCustomization or {}).vanaTime or {};
-    local scale     = cfg.vanaTimeScale or 1.0;
-    local fontSize  = math.floor((cfg.vanaTimeFontSize or 12) * scale);
-    local iconSize  = math.floor((cfg.vanaTimeIconSize or 28) * scale);
+    local scale     = math.max(0.5, math.min(2.0,  cfg.vanaTimeScale    or 1.0));
+    local fontSize  = math.floor(math.max(8,  math.min(24, cfg.vanaTimeFontSize or 12)) * scale);
+    local iconSize  = math.floor(math.max(16, math.min(64, cfg.vanaTimeIconSize  or 28)) * scale);
     local rounding  = 12.0;
 
     -- ── Get game data (pure Lua — no FFI) ───────────────────────────────────
     local rawTime       = GetRawTime();
     local weekday       = math.floor(rawTime / VD_DAY_SEC) % 8;
+    local vtDay         = math.floor(rawTime / VD_DAY_SEC);
     local vtHour        = math.floor(rawTime % VD_DAY_SEC / VD_HOUR_SEC);
     local vtMin         = math.floor(rawTime % VD_HOUR_SEC / VD_MIN_F);
-    local moonDay       = math.floor(rawTime / VD_DAY_SEC) % VD_MOON_DAYS;
+    local vtMinuteOfDay = vtHour * 60 + vtMin;
+    local moonDay       = (math.floor(rawTime / VD_DAY_SEC) + VD_MOON_OFFSET) % VD_MOON_DAYS;
     local moonPct       = CalcMoonPercent(moonDay);
+
+    -- Feed timers cache when the panel is open (no-op cost when closed)
+    local showTimers = cfg.vanaTimeShowTimers ~= false;
+    if showTimers and timersOpen then
+        timers.Update(os.time(), vtMinuteOfDay, vtDay, moonDay);
+    end
 
     -- Past / future days
     local pastWeekday   = (weekday  - 1 + 8)           % 8;
@@ -711,69 +876,31 @@ function M.DrawWindow(weatherId)
     end
 
     -- Element color for current day (ELEM_KEYS is a module-level constant — no alloc)
-    local elemArgb    = colorCfg[ELEM_KEYS[weekday]] or 0xFFFFFFFF;
-    local outlineArgb = GetOutlineColor(weekday);
+    -- vtTextColor resolved inside pcall to avoid contributing an extra upvalue.
 
     -- ── Column layout geometry ───────────────────────────────────────────────
-    local winPad    = 8;                          -- window padding (kept for PushStyleVar)
-    local CARD_PAD  = 4;                          -- card extends this many px outside colContentW on each side
-    local SEP_GAP   = 4;                          -- gap between card edge and separator arrow
-    local arrowW    = fontSize + 2;               -- text fallback size
-    local sepArrowW = math.floor(iconSize * 0.5); -- separator arrow width
+    -- colPad stays here because PushStyleVar below needs it.
+    local colPad = 8;  -- window padding
 
-    local showPastFuture = cfg.vanaTimeShowPastFuture ~= false;
-    local showMoon       = cfg.vanaTimeShowMoonPercent ~= false;
-    local pastFutureAlpha = cfg.vanaTimePastFutureOpacity or PAST_FUTURE_ALPHA;
-
-    -- Base column content width: phase icon + "100%" + direction arrow
-    local moonArrowSlot = showMoon and (math.floor(fontSize * 0.7) + 2) or 0;
-    local phaseIconSlot = showMoon and (math.floor(fontSize + 2) + 2) or 0;
-    local moonMaxW      = showMoon and (phaseIconSlot + imtext.Measure('100%', fontSize) + moonArrowSlot) or 0;
-    local colContentW   = math.max(iconSize, moonMaxW + 4);
-
-    -- Card width (as drawn by DrawDayColumn: content + CARD_PAD on each side)
-    local cardW = colContentW + CARD_PAD * 2;
-
-    -- Total card area width (layout anchored on card edges, not column padding)
-    local cardAreaW;
-    if showPastFuture then
-        cardAreaW = cardW * 3 + SEP_GAP * 4 + sepArrowW * 2;
-    else
-        cardAreaW = cardW;
-    end
-
-    -- colW only used for DrawDayColumn x-offset computation below
-    local colPad = winPad;  -- keep variable alive for PushStyleVar below
-
-    -- Clock row height
-    local clockH = fontSize + 4;
-    -- Column height: badge is now a corner overlay on the icon, not a separate row
-    local colH   = showMoon
-        and (iconSize + 2 + fontSize + 4)
-        or  (iconSize + 4);
-
-    -- contentW is purely the card area — clock text floats above independently
-    local contentW = cardAreaW;
-
-    -- Pre-measure clock strings — only re-measure when text or font size changes
+    -- Cache measurement updates — run every frame so strings are ready when window opens.
     if fontSize ~= lastFontSize then
-        lastFontSize    = fontSize;
-        vtCache.measW   = 0;  -- force re-measure
-        ltCache.measW   = 0;
+        lastFontSize  = fontSize;
+        vtCache.measW = 0;
+        ltCache.measW = 0;
+        -- Also invalidate the "100%" moon-percent measurement cache (used by DrawDayColumn).
+        _moonPctFontSz = -1;
     end
     if vtCache.measW == 0 then
         vtCache.measW = imtext.Measure(vtCache.str, fontSize);
     end
-    local vtMeasW = vtCache.measW;
-    local ltMeasW = 0;
-    if ltStr ~= '' then
-        if ltCache.measW == 0 then
-            ltCache.measW = imtext.Measure(ltCache.str, fontSize);
-        end
-        ltMeasW = ltCache.measW;
+    if ltStr ~= '' and ltCache.measW == 0 then
+        ltCache.measW = imtext.Measure(ltCache.str, fontSize);
     end
-
-    local totalH = clockH + colH + colPad;
+    -- Measure "100%" once per unique fontSize; reused in DrawDayColumn and the outer layout.
+    if _moonPctFontSz ~= fontSize then
+        _moonPctFontSz = fontSize;
+        _moonPctMeasW  = imtext.Measure('100%', fontSize);
+    end
 
     -- ── Window open ──────────────────────────────────────────────────────────
     local windowFlags = GetBaseWindowFlags(cfg.lockPositions);
@@ -794,8 +921,55 @@ function M.DrawWindow(weatherId)
         mainWinSize.w  = ww;
         mainWinSize.h  = wh;
 
+        -- ── Layout geometry (locals here so they don't add outer upvalues) ──────
+        local elemArgb    = colorCfg[ELEM_KEYS[weekday]] or 0xFFFFFFFF;
+        local outlineArgb = GetOutlineColor(weekday);
+        local vtTextColor = cfg.vanaTimeVTElementColor and elemArgb or VT_TEXT_COLOR;
+
+        local CARD_PAD       = 4;
+        local SEP_GAP        = 4;
+        local arrowW         = fontSize + 2;
+        local sepArrowW      = math.floor(iconSize * 0.5);
+
+        local showGear     = cfg.vanaTimeShowSettingsBtn ~= false;
+        local showPastFuture  = cfg.vanaTimeShowPastFuture ~= false;
+        local showMoon        = cfg.vanaTimeShowMoonPercent ~= false;
+        local showBadge       = cfg.vanaTimeShowWeaknessBadge ~= false;
+        local plainDayIcons   = cfg.vanaTimePlainDayIcons == true;
+        local pastFutureAlpha = cfg.vanaTimePastFutureOpacity or PAST_FUTURE_ALPHA;
+
+        local moonArrowSlot = showMoon and (math.floor(fontSize * 0.7) + 2) or 0;
+        local phaseIconSlot = showMoon and (math.floor(fontSize + 2) + 2) or 0;
+        local moonMaxW      = showMoon and (phaseIconSlot + _moonPctMeasW + moonArrowSlot) or 0;
+        local colContentW   = math.max(iconSize, moonMaxW + 4);
+        local cardW         = colContentW + CARD_PAD * 2;
+        local cardAreaW     = showPastFuture
+            and (cardW * 3 + SEP_GAP * 4 + sepArrowW * 2)
+            or  cardW;
+
+        local clockH   = fontSize + 4;
+        local colH     = showMoon and (iconSize + 2 + fontSize + 4) or (iconSize + 4);
+        local contentW = cardAreaW;
+        local vtMeasW  = vtCache.measW;
+        local ltMeasW  = ltStr ~= '' and ltCache.measW or 0;
+
+        local totalH = clockH + colH + colPad;
+        local ltBelowColumns = (not showPastFuture) and (ltStr ~= '');
+        if not showPastFuture then
+            local inlineTodW = (not cfg.vanaTimeTodPopup) and (clockH + 3) or 0;
+            -- How many icon slots appear in the right zone of the clock row?
+            local numIcons   = (showTimers and 1 or 0) + (showGear and 1 or 0);
+            local iconZoneW  = numIcons > 0 and (numIcons * clockH + (numIcons - 1) * 2 + 4) or 0;
+            local vtRowNeed  = vtMeasW + inlineTodW + 8 + iconZoneW;
+            local ltRowNeed  = ltStr ~= '' and (ltMeasW + 8) or 0;
+            contentW = math.max(contentW, vtRowNeed, ltRowNeed);
+        end
+        if ltBelowColumns then
+            totalH = totalH + clockH + 2;
+        end
+
         local cx0, cy0 = imgui.GetCursorScreenPos();
-        local drawList = GetUIDrawList();
+        local drawList = imgui.GetWindowDrawList();
 
         -- ── Window background ────────────────────────────────────────────────
         local bgPad  = colPad;
@@ -806,8 +980,8 @@ function M.DrawWindow(weatherId)
         local bgOpacity = cfg.vanaTimeBackgroundOpacity or 0.85;
         local bgRgb  = colorCfg.bgColor or 0xFF000000;
 
-        local bgTheme     = cfg.vanaTimeBackgroundTheme or 'Plain';
-        local borderTheme = cfg.vanaTimeBorderTheme     or 'Plain';
+        local bgTheme     = 'Plain';    -- locked: Background = Plain
+        local borderTheme = 'Window1';  -- locked: Border = Window1
 
         if bgTheme:match('^Window%d+$') then
             -- Nine-slice textured background
@@ -870,18 +1044,209 @@ function M.DrawWindow(weatherId)
             drawList:AddRectFilledMultiColor({midX, gY}, {gX2, gY + gH}, glow, transp, transp, glow);
         end
 
-        if ltStr ~= '' then
-            -- Two-column layout: VT centered in left half, LT centered in right half
+        -- Three layout modes:
+        --  No timers           → VT centred (or VT|LT split halves)
+        --  Timers, no LT       → left 2/3 VT  |  right 1/3 clock icon
+        --  Timers + LT         → equal thirds: VT | clock icon | LT
+        local iconSzClock = clockH;  -- square: icon fits the clock row height
+
+        -- ── Time-of-day icon (placed right after the VT text in every layout) ──
+        -- Dead of Night 20:00-03:59  |  Day 06:00-17:59  |  Night otherwise
+        local todIconSize = clockH;
+        local todTexRaw =
+            (vtHour >= 20 or vtHour < 4)                and todDeadNightTex
+            or (vtHour >= 6 and vtHour < 18)            and todDayTex
+            or todNightTex;
+        local todTex = GetTexPtr(todTexRaw);
+
+        local function DrawTodIcon(vtX)
+            if not todTex then return end;
+            if cfg.vanaTimeTodPopup then return end; -- shown in its own tab instead
+            local tx = vtX + vtMeasW + 3;
+            local ty = clockY + math.floor((clockH - todIconSize) / 2);
+            drawList:AddImage(todTex, {tx, ty}, {tx + todIconSize, ty + todIconSize},
+                {0,0}, {1,1}, ToU32(0xEEFFFFFF));
+        end
+
+        -- Hover tooltips for VT and LT text regions
+        local function DrawClockTooltips(vtX, ltX, ltClockY)
+            if cfg.vanaTimeEnableTooltips == false then return end;
+            local ltY = ltClockY or clockY;
+            if imgui.IsMouseHoveringRect({vtX, clockY}, {vtX + vtMeasW, clockY + clockH}) then
+                if cfg.vanaTimeTipVT ~= false then imgui.SetTooltip("Vana'diel Time"); end
+            elseif ltX and ltMeasW > 0
+                and imgui.IsMouseHoveringRect({ltX, ltY}, {ltX + ltMeasW, ltY + clockH}) then
+                if cfg.vanaTimeTipLT ~= false then imgui.SetTooltip('Local Time'); end
+            end
+        end
+
+        if showTimers then
+            local iconTex = GetTexPtr(clockIconTex);
+            if ltBelowColumns then
+                -- VT left 2/3 + clock icon right 1/3; LT draws below columns
+                local twoThird = math.floor(contentW * 2 / 3);
+                local vtX  = cx0 + math.floor((twoThird - vtMeasW) / 2);
+                local icX  = cx0 + twoThird + math.floor(((contentW - twoThird) - iconSzClock) / 2);
+                local icY  = clockY + math.floor((clockH - iconSzClock) / 2);
+                DrawTextWithOutline(drawList, vtStr, vtX, clockY, vtTextColor, outlineArgb, fontSize);
+                DrawTodIcon(vtX);
+                clockIconRect.x = icX; clockIconRect.y = icY;
+                clockIconRect.w = iconSzClock; clockIconRect.h = iconSzClock;
+                DrawClockTooltips(vtX, nil);
+            elseif ltStr ~= '' then
+                -- Equal thirds: VT | clock icon | LT
+                local third = math.floor(contentW / 3);
+                local vtX  = cx0 + math.floor((third - vtMeasW) / 2);
+                local icX  = cx0 + third + math.floor((third - iconSzClock) / 2);
+                local icY  = clockY + math.floor((clockH - iconSzClock) / 2);
+                local ltX  = cx0 + third * 2 + math.floor((third - ltMeasW) / 2);
+                DrawTextWithOutline(drawList, vtStr, vtX, clockY, vtTextColor, outlineArgb, fontSize);
+                DrawTodIcon(vtX);
+                DrawTextWithOutline(drawList, ltStr, ltX, clockY, colorCfg.textColor or 0xFFFFFFFF, outlineArgb, fontSize);
+                clockIconRect.x = icX; clockIconRect.y = icY;
+                clockIconRect.w = iconSzClock; clockIconRect.h = iconSzClock;
+                DrawClockTooltips(vtX, ltX);
+            else
+                -- VT in left 2/3, icon in right 1/3
+                local twoThird = math.floor(contentW * 2 / 3);
+                local vtX  = cx0 + math.floor((twoThird - vtMeasW) / 2);
+                local icX  = cx0 + twoThird + math.floor(((contentW - twoThird) - iconSzClock) / 2);
+                local icY  = clockY + math.floor((clockH - iconSzClock) / 2);
+                DrawTextWithOutline(drawList, vtStr, vtX, clockY, vtTextColor, outlineArgb, fontSize);
+                DrawTodIcon(vtX);
+                clockIconRect.x = icX; clockIconRect.y = icY;
+                clockIconRect.w = iconSzClock; clockIconRect.h = iconSzClock;
+                DrawClockTooltips(vtX, nil);
+            end
+            -- Glow disc behind icon — black so the white icon reads clearly
+            local icx, icy, isz = clockIconRect.x, clockIconRect.y, clockIconRect.w;
+
+            -- If gear is also showing, re-center the pair within the right zone.
+            if showGear then
+                -- Re-derive zone start from the branch above for accuracy.
+                -- Pair: clock + 2px gap + gear
+                local pairW      = isz * 2 + 2;
+                -- The right zone for the current branch: from the raw icX formula we can
+                -- back-calculate; easier to just shift icx left by half the gear + gap.
+                icx = icx - math.floor((isz + 2) / 2);
+                clockIconRect.x = icx;
+            end
+
+            local cx2, cy2 = icx + isz * 0.5, icy + isz * 0.5;
+            local glowAlpha = timersOpen and 0xAA or 0x66;
+            drawList:AddCircleFilled({cx2, cy2}, isz * 0.65,
+                ToU32(bit.bor(bit.lshift(glowAlpha, 24), 0x000000)), 24);
+            -- Icon
+            if iconTex then
+                drawList:AddImage(iconTex, {icx, icy}, {icx + isz, icy + isz},
+                    {0, 0}, {1, 1}, ToU32(0xCCFFFFFF));
+            end
+            -- Hover highlight + click
+            if imgui.IsMouseHoveringRect({icx, icy}, {icx + isz, icy + isz}) then
+                drawList:AddCircleFilled({cx2, cy2}, isz * 0.65, ToU32(0x30FFFFFF), 24);
+                if imgui.IsMouseClicked(0) then
+                    timersOpen    = not timersOpen;
+                    firstTimerFrame = timersOpen;
+                    if timersOpen then
+                        timersLastActivity = os.clock();
+                        timersOpenedAt     = os.clock();
+                    end
+                end
+            end
+
+            -- Gear icon sits immediately to the right of the clock icon.
+            if showGear then
+                local gearTex = GetTexPtr(gearIconTex);
+                local gx      = icx + isz + 2;
+                local gy      = icy;
+                local gc2x, gc2y = gx + isz * 0.5, gy + isz * 0.5;
+                drawList:AddCircleFilled({gc2x, gc2y}, isz * 0.65,
+                    ToU32(bit.bor(bit.lshift(0x55, 24), 0x000000)), 24);
+                if gearTex then
+                    drawList:AddImage(gearTex, {gx, gy}, {gx + isz, gy + isz},
+                        {0,0}, {1,1}, ToU32(0xCCC3AE79));
+                end
+                if imgui.IsMouseHoveringRect({gx, gy}, {gx + isz, gy + isz}) then
+                    drawList:AddCircleFilled({gc2x, gc2y}, isz * 0.65, ToU32(0x30FFFFFF), 24);
+                    if cfg.vanaTimeEnableTooltips ~= false then
+                        imgui.SetTooltip('VanaTime Settings');
+                    end
+                    if imgui.IsMouseClicked(0) and XIUI_ToggleVanaTimeConfig then
+                        XIUI_ToggleVanaTimeConfig();
+                    end
+                end
+            end
+        elseif ltBelowColumns then
+            -- VT in left zone; LT draws below columns (past/future hidden, no timers)
+            -- If gear is shown, split left 2/3 / right 1/3; otherwise center VT.
+            local twoThird = showGear and math.floor(contentW * 2 / 3) or contentW;
+            local vtX = cx0 + math.floor((twoThird - vtMeasW) / 2);
+            DrawTextWithOutline(drawList, vtStr, vtX, clockY, vtTextColor, outlineArgb, fontSize);
+            DrawTodIcon(vtX);
+            DrawClockTooltips(vtX, nil);
+            if showGear then
+                local gearTex = GetTexPtr(gearIconTex);
+                local gx  = cx0 + twoThird + math.floor(((contentW - twoThird) - iconSzClock) / 2);
+                local gy  = clockY + math.floor((clockH - iconSzClock) / 2);
+                local gc2x, gc2y = gx + iconSzClock * 0.5, gy + iconSzClock * 0.5;
+                drawList:AddCircleFilled({gc2x, gc2y}, iconSzClock * 0.65, ToU32(bit.bor(bit.lshift(0x55, 24), 0x000000)), 24);
+                if gearTex then
+                    drawList:AddImage(gearTex, {gx, gy}, {gx + iconSzClock, gy + iconSzClock}, {0,0}, {1,1}, ToU32(0xCCC3AE79));
+                end
+                if imgui.IsMouseHoveringRect({gx, gy}, {gx + iconSzClock, gy + iconSzClock}) then
+                    drawList:AddCircleFilled({gc2x, gc2y}, iconSzClock * 0.65, ToU32(0x30FFFFFF), 24);
+                    if cfg.vanaTimeEnableTooltips ~= false then imgui.SetTooltip('VanaTime Settings'); end
+                    if imgui.IsMouseClicked(0) and XIUI_ToggleVanaTimeConfig then XIUI_ToggleVanaTimeConfig(); end
+                end
+            end
+        elseif ltStr ~= '' then
+            -- Original two-column layout: VT centred in left half, LT in right half
             local halfW = contentW / 2;
             local vtX   = cx0 + math.floor((halfW - vtMeasW) / 2);
             local ltX   = cx0 + halfW + math.floor((halfW - ltMeasW) / 2);
-            DrawTextWithOutline(drawList, vtStr, vtX, clockY, elemArgb,  outlineArgb, fontSize);
+            DrawTextWithOutline(drawList, vtStr, vtX, clockY, vtTextColor, outlineArgb, fontSize);
+            DrawTodIcon(vtX);
             DrawTextWithOutline(drawList, ltStr, ltX, clockY, colorCfg.textColor or 0xFFFFFFFF, outlineArgb, fontSize);
+            DrawClockTooltips(vtX, ltX);
+            -- Gear icon: drawn after LT, in a small slot at the far right if space allows
+            if showGear then
+                local gearTex = GetTexPtr(gearIconTex);
+                local gx  = cx0 + contentW - iconSzClock;
+                local gy  = clockY + math.floor((clockH - iconSzClock) / 2);
+                local gc2x, gc2y = gx + iconSzClock * 0.5, gy + iconSzClock * 0.5;
+                drawList:AddCircleFilled({gc2x, gc2y}, iconSzClock * 0.65, ToU32(bit.bor(bit.lshift(0x55, 24), 0x000000)), 24);
+                if gearTex then
+                    drawList:AddImage(gearTex, {gx, gy}, {gx + iconSzClock, gy + iconSzClock}, {0,0}, {1,1}, ToU32(0xCCC3AE79));
+                end
+                if imgui.IsMouseHoveringRect({gx, gy}, {gx + iconSzClock, gy + iconSzClock}) then
+                    drawList:AddCircleFilled({gc2x, gc2y}, iconSzClock * 0.65, ToU32(0x30FFFFFF), 24);
+                    if cfg.vanaTimeEnableTooltips ~= false then imgui.SetTooltip('VanaTime Settings'); end
+                    if imgui.IsMouseClicked(0) and XIUI_ToggleVanaTimeConfig then XIUI_ToggleVanaTimeConfig(); end
+                end
+            end
         else
-            -- VT fully centered
-            local vtX = cx0 + math.floor((contentW - vtMeasW) / 2);
-            DrawTextWithOutline(drawList, vtStr, vtX, clockY, elemArgb, outlineArgb, fontSize);
-        end
+            -- VT in left zone; gear in right zone if enabled, otherwise VT fully centered.
+            local twoThird = showGear and math.floor(contentW * 2 / 3) or contentW;
+            local vtX = cx0 + math.floor((twoThird - vtMeasW) / 2);
+            DrawTextWithOutline(drawList, vtStr, vtX, clockY, vtTextColor, outlineArgb, fontSize);
+            DrawTodIcon(vtX);
+            DrawClockTooltips(vtX, nil);
+            if showGear then
+                local gearTex = GetTexPtr(gearIconTex);
+                local gx  = cx0 + twoThird + math.floor(((contentW - twoThird) - iconSzClock) / 2);
+                local gy  = clockY + math.floor((clockH - iconSzClock) / 2);
+                local gc2x, gc2y = gx + iconSzClock * 0.5, gy + iconSzClock * 0.5;
+                drawList:AddCircleFilled({gc2x, gc2y}, iconSzClock * 0.65, ToU32(bit.bor(bit.lshift(0x55, 24), 0x000000)), 24);
+                if gearTex then
+                    drawList:AddImage(gearTex, {gx, gy}, {gx + iconSzClock, gy + iconSzClock}, {0,0}, {1,1}, ToU32(0xCCC3AE79));
+                end
+                if imgui.IsMouseHoveringRect({gx, gy}, {gx + iconSzClock, gy + iconSzClock}) then
+                    drawList:AddCircleFilled({gc2x, gc2y}, iconSzClock * 0.65, ToU32(0x30FFFFFF), 24);
+                    if cfg.vanaTimeEnableTooltips ~= false then imgui.SetTooltip('VanaTime Settings'); end
+                    if imgui.IsMouseClicked(0) and XIUI_ToggleVanaTimeConfig then XIUI_ToggleVanaTimeConfig(); end
+                end
+            end
+        end  -- closes: if showTimers / elseif ltBelowColumns / elseif ltStr / else
 
         -- ── Day columns ──────────────────────────────────────────────────────
         local colY   = cy0 + clockH + colPad;
@@ -894,7 +1259,7 @@ function M.DrawWindow(weatherId)
 
             local pcx, pcy, pcw, pch = DrawDayColumn(drawList, pastX, colY, pastWeekday,
                 pastMoonPct, pastMoonDay, pastFutureAlpha,
-                iconSize, fontSize, colorCfg, showMoon);
+                iconSize, fontSize, colorCfg, showMoon, showBadge, plainDayIcons);
             DrawFenrirTooltip(drawList, pcx, pcy, pcw, pch, pastMoonDay, pastMoonPct);
 
             -- Separator arrow: starts right after past card's right edge
@@ -916,7 +1281,7 @@ function M.DrawWindow(weatherId)
             local curX = arr1X + sepArrowW + SEP_GAP + CARD_PAD;
             local ccx, ccy, ccw, cch = DrawDayColumn(drawList, curX, colY, weekday,
                 moonPct, moonDay, 1.0,
-                iconSize, fontSize, colorCfg, showMoon);
+                iconSize, fontSize, colorCfg, showMoon, showBadge, plainDayIcons);
             DrawFenrirTooltip(drawList, ccx, ccy, ccw, cch, moonDay, moonPct);
 
             -- Second separator arrow
@@ -933,14 +1298,27 @@ function M.DrawWindow(weatherId)
             local futX = arr2X + sepArrowW + SEP_GAP + CARD_PAD;
             local fcx, fcy, fcw, fch = DrawDayColumn(drawList, futX, colY, futureWeekday,
                 futureMoonPct, futureMoonDay, pastFutureAlpha,
-                iconSize, fontSize, colorCfg, showMoon);
+                iconSize, fontSize, colorCfg, showMoon, showBadge, plainDayIcons);
             DrawFenrirTooltip(drawList, fcx, fcy, fcw, fch, futureMoonDay, futureMoonPct);
         else
-            -- Current column only, centered
-            local ccx, ccy, ccw, cch = DrawDayColumn(drawList, cardX0, colY, weekday,
+            -- Current column only, centered within contentW
+            local cardOffX = math.floor((contentW - cardW) / 2);
+            local ccx, ccy, ccw, cch = DrawDayColumn(drawList, cardX0 + cardOffX + CARD_PAD, colY, weekday,
                 moonPct, moonDay, 1.0,
-                iconSize, fontSize, colorCfg, showMoon);
+                iconSize, fontSize, colorCfg, showMoon, showBadge, plainDayIcons);
             DrawFenrirTooltip(drawList, ccx, ccy, ccw, cch, moonDay, moonPct);
+        end
+
+        -- LT below day columns when past/future is hidden
+        if ltBelowColumns and ltStr ~= '' then
+            local ltY = colY + colH + 2;
+            local ltX = cx0 + math.floor((contentW - ltMeasW) / 2);
+            DrawTextWithOutline(drawList, ltStr, ltX, ltY, colorCfg.textColor or 0xFFFFFFFF, outlineArgb, fontSize);
+            if cfg.vanaTimeEnableTooltips ~= false and cfg.vanaTimeTipLT ~= false then
+                if imgui.IsMouseHoveringRect({ltX, ltY}, {ltX + ltMeasW, ltY + clockH}) then
+                    imgui.SetTooltip('Local Time');
+                end
+            end
         end
     end  -- pcall body end
     end); -- pcall
@@ -953,13 +1331,525 @@ function M.DrawWindow(weatherId)
     -- Render deferred Fenrir tooltip on the foreground draw list (always above all windows)
     FlushFenrirTooltip();
 
+    -- ── Time of Day popup ────────────────────────────────────────────────────
     -- ── Weather popup ────────────────────────────────────────────────────────
-    if cfg.vanaTimeShowWeather ~= false and weatherId >= 4 then
-        M.DrawWeatherPopup(weatherId, fontSize, iconSize, colorCfg, rounding);
+    -- Drawn BEFORE the timers popup so timers (last drawn) always renders on top.
+    local todEnabled     = cfg.vanaTimeTodPopup == true;
+
+    -- Test-placement preview: cancel if non-elemental hiding was turned off or 30s elapsed.
+    local weatherTestId    = nil;
+    local weatherTestAlpha = 1.0;
+    if cfg.vanaTimeShowWeather ~= false and cfg.vanaTimeWeatherHideNonElemental then
+        if os.clock() < (_G.XIUI_weatherTestExpiry or 0) then
+            weatherTestId    = 4;  -- Wind (first elemental in HorizonXI ordering)
+            weatherTestAlpha = 0.35 + 0.65 * math.abs(math.sin(os.clock() * 3));
+        end
+    else
+        _G.XIUI_weatherTestExpiry = 0;  -- cancel if user turned off hideNonElemental
+    end
+
+    local weatherEnabled = (cfg.vanaTimeShowWeather ~= false
+        and weatherId >= 0
+        and not (cfg.vanaTimeWeatherHideNonElemental and weatherId < 4))
+        or (weatherTestId ~= nil);
+    local todSide        = cfg.vanaTimeTodSide     or 'left';
+    local weatherSide    = cfg.vanaTimeWeatherSide or 'right';
+    local sameSide       = todEnabled and weatherEnabled and (todSide == weatherSide);
+
+    -- When sharing a side: left/right → stack vertically (TOD first, weather below)
+    --   left/right side  → stack vertically (TOD first, weather below)
+    --   above/below side → stack only when both share the same H-align (to avoid overlap).
+    --                      Different H-aligns → each popup uses its own setting independently.
+    local weatherOffX, weatherOffY = 0, 0;
+    local todAlignForce, weatherAlignForce = nil, nil;
+    if sameSide then
+        if todSide == 'left' or todSide == 'right' then
+            weatherOffY = cachedTodH + WEATHER_POPUP_GAP;
+        else
+            local todAlign     = cfg.vanaTimeTodAlign     or 'left';
+            local weatherAlign = cfg.vanaTimeWeatherAlign or 'left';
+            if todAlign == weatherAlign then
+                -- Same alignment: stack to avoid overlap.
+                -- TOD keeps its alignment; weather is offset to the opposite side of it.
+                todAlignForce = todAlign;
+                if todAlign == 'right' then
+                    weatherAlignForce = 'right';
+                    weatherOffX = -(cachedTodW + WEATHER_POPUP_GAP);
+                else
+                    weatherAlignForce = 'left';
+                    weatherOffX = cachedTodW + WEATHER_POPUP_GAP;
+                end
+            end
+            -- Different alignments: each popup goes to its own edge, no offset needed.
+        end
+    end
+
+    -- Resolve per-tab icon sizes (custom scale or fall back to main iconSize).
+    local todIconSize;
+    if cfg.vanaTimeTodCustomScale then
+        todIconSize = math.floor(math.max(16, math.min(64, cfg.vanaTimeTodIconSize or 28)) * scale);
+    else
+        todIconSize = iconSize;
+    end
+
+    -- Weather base size (custom or shared with main icon size)
+    local weatherBaseSize;
+    if cfg.vanaTimeWeatherCustomScale then
+        weatherBaseSize = math.floor(math.max(16, math.min(64, cfg.vanaTimeWeatherIconSize or 28)) * scale);
+    else
+        weatherBaseSize = iconSize;
+    end
+    -- Elemental weather adjustment: boost size for IDs 4-19 (or always while preview drag is active)
+    local weatherIconSize = weatherBaseSize;
+    if cfg.vanaTimeWeatherAdjustElemental then
+        local isElemental    = weatherEnabled and weatherId >= 4;
+        local previewActive  = _G.XIUI_weatherElementalPreview == true;
+        local previewBase    = _G.XIUI_weatherBasePreview == true;
+        -- previewBase: dragging the non-elemental slider — suppress the elemental boost
+        -- so the user sees exactly what non-elemental weather will look like.
+        if not previewBase and (isElemental or previewActive) then
+            if cfg.vanaTimeWeatherCustomScale then
+                weatherIconSize = math.floor(math.max(16, math.min(64, cfg.vanaTimeWeatherElementalIconSize or 42)) * scale);
+            else
+                -- Auto: 50% larger than base, hard-capped at scaled 64
+                weatherIconSize = math.min(math.floor(weatherBaseSize * 1.5), math.floor(64 * scale));
+            end
+        end
+    end
+
+    if todEnabled then
+        M.DrawTodPopup(vtHour, vtMinuteOfDay, todIconSize, colorCfg, rounding, todAlignForce);
+    end
+    if weatherEnabled then
+        M.DrawWeatherPopup(weatherTestId or weatherId, fontSize, weatherIconSize, colorCfg, rounding, weatherOffX, weatherOffY, weatherAlignForce, weatherTestAlpha);
+    end
+
+    -- ── Timers popup ─────────────────────────────────────────────────────────
+    -- Drawn last so it renders above TOD/Weather tabs.
+    if showTimers and timersOpen then
+        local timersFontSize = math.floor(math.max(8, math.min(24, cfg.vanaTimeTimersFontSize or 12)) * scale);
+        M.DrawTimersPopup(timersFontSize, colorCfg, rounding);
     end
 end
 
-function M.DrawWeatherPopup(weatherId, fontSize, iconSize, colorCfg, rounding)
+-- ── Timers popup helpers ──────────────────────────────────────────────────────
+
+-- DrawTimerSection: wraps a CollapsingHeader with XIUI gold label text.
+-- State is session-only (timerSectionOpen) — never written to disk.
+local function DrawTimerSection(label, key, drawFn)
+    local saved = timerSectionOpen[key] == true;
+    if firstTimerFrame then
+        imgui.SetNextItemOpen(saved, ImGuiCond_Always);
+    end
+    imgui.PushStyleColor(ImGuiCol_Text, {0.957, 0.855, 0.592, 1.0});
+    local isOpen = imgui.CollapsingHeader(label);
+    imgui.PopStyleColor(1);
+    timerSectionOpen[key] = isOpen;
+    if isOpen then drawFn() end
+end
+
+-- Helper: thin not-full-width separator between rows inside a timer section.
+local function DrawSectionDivider()
+    imgui.PushStyleColor(ImGuiCol_Separator, {0.28, 0.28, 0.28, 0.55});
+    imgui.Separator();
+    imgui.PopStyleColor(1);
+end
+
+-- Helper: one transport route row — Label | Countdown | VT departure time (element colour)
+local function DrawRouteRow(row)
+    if row.city1 then
+        imgui.TextColored(row.city1Color, row.city1);
+        if row.city2 and row.city2 ~= '' then
+            imgui.SameLine(0, 4);
+            imgui.TextColored(timers.colorGoldDark, row.arrow or '>');
+            imgui.SameLine(0, 4);
+            imgui.TextColored(row.city2Color, row.city2);
+        end
+        if row.city3 then
+            imgui.SameLine(0, 4);
+            imgui.TextColored(timers.colorGoldDark, '>');
+            imgui.SameLine(0, 4);
+            imgui.TextColored(row.city3Color, row.city3);
+        end
+        if row.routeVia then
+            imgui.SameLine(0, 6);
+            imgui.TextColored(timers.colorDimGrey, row.routeVia);
+        end
+    else
+        imgui.TextColored(timers.colorGoldDark, row.label or '');
+    end
+    imgui.SameLine(0, 10);
+    if row.isOOS then
+        imgui.TextColored({0.85, 0.22, 0.22, 1.0}, 'Out of Service');
+        imgui.SameLine(0, 10);
+    elseif row.isServicedSoon then
+        imgui.TextColored(timers.colorServicedSoon, 'Serviced Soon');
+        imgui.SameLine(0, 10);
+    elseif row.isBoarding then
+        imgui.TextColored(timers.colorBoarding, 'BOARDING');
+        imgui.SameLine(0, 10);
+    elseif row.isTransit then
+        imgui.TextColored(timers.colorGoldDark, 'IN-TRANSIT');
+        imgui.SameLine(0, 10);
+    end
+    local cdColor = (row.isEmpty or not row.cdColor) and timers.colorDimGrey or row.cdColor;
+    imgui.TextColored(cdColor, row.countdownStr or '--');
+end
+
+local function DrawAirshipsContent()
+    local a = timers.airships;
+    for i, entry in ipairs(a) do
+        DrawRouteRow(entry);
+        if i < #a then DrawSectionDivider() end
+    end
+end
+
+local function DrawBoatsContent()
+    local b = timers.boats;
+    local groupOpen = false;
+    for i, entry in ipairs(b) do
+        if entry.isHeader then
+            -- Seed collapsed state on popup open; remember state within session.
+            if firstTimerFrame then
+                imgui.SetNextItemOpen(timerBoatGroupOpen[entry.label] == true, ImGuiCond_Always);
+            end
+            imgui.PushStyleColor(ImGuiCol_Text, timers.colorGoldDark);
+            local open = imgui.CollapsingHeader(entry.label .. '##boatGroup');
+            imgui.PopStyleColor(1);
+            timerBoatGroupOpen[entry.label] = open;
+            groupOpen = open;
+        elseif groupOpen then
+            DrawRouteRow(entry);
+            if i < #b and not b[i + 1].isHeader then
+                DrawSectionDivider();
+            end
+        end
+    end
+end
+
+local RSE_LOCATION_COLOR = {
+    ['Shakrami Maze'] = {0.22, 0.80, 0.42, 1.0},  -- Windurst green
+    ['Ordelle Caves'] = {0.90, 0.25, 0.30, 1.0},  -- Sandoria red
+    ['Gusgen Mines']  = {0.33, 0.53, 0.93, 1.0},  -- Bastok blue
+};
+
+local function DrawRSELocation(loc)
+    local col = RSE_LOCATION_COLOR[loc] or timers.colorDimGrey;
+    imgui.TextColored(timers.colorDimGrey, '@');
+    imgui.SameLine(0, 4);
+    imgui.TextColored(col, loc or '');
+end
+
+local function DrawRSEContent()
+    local rse = timers.rse;
+    for i, e in ipairs(rse) do
+        if e.isCurrent then
+            -- Active slot: Name (rich gold) | @ Location (coloured) | countdown left (yellow)
+            imgui.TextColored(timers.colorGoldDark,  e.slotName);
+            imgui.SameLine(0, 5);
+            DrawRSELocation(e.location);
+            imgui.SameLine(0, 10);
+            imgui.TextColored(timers.colorSoon,    e.countdownStr .. ' left');
+        else
+            -- Future slot: Name (muted gold) | @ Location (coloured) | date (dim) | countdown (waiting)
+            imgui.TextColored(timers.colorGoldMuted, e.slotName);
+            imgui.SameLine(0, 5);
+            DrawRSELocation(e.location);
+            imgui.SameLine(0, 10);
+            imgui.TextColored(timers.colorDimGrey, e.dateStr);
+            imgui.SameLine(0, 10);
+            imgui.TextColored(timers.colorWaiting, e.countdownStr);
+        end
+        if i < #rse then DrawSectionDivider() end
+    end
+end
+
+local function DrawLunarContent()
+    local lun  = timers.lunar;
+    local dl   = imgui.GetWindowDrawList();
+    local isz  = math.floor(imgui.GetTextLineHeight());
+
+    local function DrawPhaseIcon(phaseIdx)
+        local iconIdx = PHASE_ICON_MAP[phaseIdx] or phaseIdx;
+        local tex = GetTexPtr(moonPhaseTextures[iconIdx]);
+        local cx, cy = imgui.GetCursorScreenPos();
+        if tex then
+            dl:AddImage(tex, {cx, cy}, {cx + isz, cy + isz}, {0,0}, {1,1}, 0xFFFFFFFF);
+        end
+        imgui.Dummy({isz, isz});
+    end
+
+    for i, e in ipairs(lun) do
+        local isNew  = (e.phaseIdx == 0);
+        local isFull = (e.phaseIdx == 6);
+        -- Capture row top-left before any items are drawn (for border rect)
+        local rowX, rowY = imgui.GetCursorScreenPos();
+
+        if e.isCurrent then
+            -- Current phase: icon | Name (rich gold) | ends [date] (dim) | countdown (yellow)
+            DrawPhaseIcon(e.phaseIdx);
+            imgui.SameLine(0, 4);
+            imgui.TextColored(timers.colorGoldDark,  e.phaseName);
+            imgui.SameLine(0, 10);
+            imgui.TextColored(timers.colorDimGrey, 'ends');
+            imgui.SameLine(0, 4);
+            imgui.TextColored(timers.colorGrey,    e.dateStr);
+            imgui.SameLine(0, 10);
+            imgui.TextColored(timers.colorSoon,    e.countdownStr);
+        else
+            -- Future phase: icon | Name (muted gold) | start date (dim) | countdown (waiting)
+            DrawPhaseIcon(e.phaseIdx);
+            imgui.SameLine(0, 4);
+            imgui.TextColored(timers.colorGoldMuted, e.phaseName);
+            imgui.SameLine(0, 10);
+            imgui.TextColored(timers.colorDimGrey, e.dateStr);
+            imgui.SameLine(0, 10);
+            imgui.TextColored(timers.colorWaiting, e.countdownStr);
+        end
+
+        -- Blood-red border for New Moon; moonlit-blue border for Full Moon (hardcoded, not config)
+        if isNew or isFull then
+            local mx, my = imgui.GetItemRectMax();
+            local borderArgb = isNew and 0xFFCC2222 or 0xFF4499FF;
+            dl:AddRect({rowX - 3, rowY - 1}, {mx + 3, my + 1},
+                ToU32(WithAlpha(borderArgb, 0.80)), 3, nil, 1.0);
+        end
+
+        if i < #lun then DrawSectionDivider() end
+    end
+end
+
+function M.DrawTimersPopup(fontSize, colorCfg, rounding)
+    local cfg  = gConfig;
+    if not cfg then return; end
+
+    local side = cfg.vanaTimeTimerSide or 'above';
+    local popX = mainWinPos.x;
+    local popY;
+    if side == 'above' then
+        popY = mainWinPos.y - cachedTimersH - 4;
+    else
+        popY = mainWinPos.y + mainWinSize.h + 4;
+    end
+
+    -- XIUI standard dark color scheme (same palette as config panels / status tooltips)
+    imgui.PushStyleColor(ImGuiCol_WindowBg,       {0.06, 0.06, 0.07, 0.93});
+    imgui.PushStyleColor(ImGuiCol_Border,          {0.38, 0.38, 0.38, 0.90});
+    imgui.PushStyleColor(ImGuiCol_Header,          {0.14, 0.12, 0.08, 1.0});
+    imgui.PushStyleColor(ImGuiCol_HeaderHovered,   {0.22, 0.19, 0.11, 1.0});
+    imgui.PushStyleColor(ImGuiCol_HeaderActive,    {0.28, 0.24, 0.12, 1.0});
+    imgui.PushStyleVar(ImGuiStyleVar_WindowRounding, rounding);
+    imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, {8, 6});
+    imgui.SetNextWindowPos({popX, popY}, ImGuiCond_Always);
+    imgui.SetNextWindowSizeConstraints({200, 0}, {500, 9999});
+
+    -- Capture the GLOBAL (unscaled) font size before Begin; inside the window
+    -- GetFontSize() would return the already-scaled value from the prior frame,
+    -- which creates a feedback loop and makes the window oscillate.
+    local globalFontSize = imgui.GetFontSize();
+    if not globalFontSize or globalFontSize <= 1 then globalFontSize = 13; end
+
+    -- Keep Timers on top even if a TOD/Weather window was just created this frame.
+    imgui.SetNextWindowFocus();
+    local timersHovered = false;
+    if imgui.Begin('VanaTimeTimers', true, WIN_FLAGS_TIMERS) then
+        -- Scale all ImGui text to match the VanaTime font-size setting.
+        -- Uses the global font size captured before Begin to avoid feedback loop.
+        -- Clamp scale so a weird globalFontSize reading can't produce extreme or zero values.
+        local fontScale = math.max(0.5, math.min(3.0, fontSize / globalFontSize));
+        imgui.SetWindowFontScale(fontScale);
+
+        local _, ph = imgui.GetWindowSize();
+        cachedTimersH = ph;
+
+        DrawTimerSection('Airships##vtTimers', 'airships', DrawAirshipsContent);
+        DrawTimerSection('Boats##vtTimers',    'boats',    DrawBoatsContent);
+        DrawTimerSection('RSE##vtTimers',      'rse',      DrawRSEContent);
+        DrawTimerSection('Lunar Phases##vtTimers', 'lunar', DrawLunarContent);
+
+        firstTimerFrame = false;
+
+        -- Capture hover state while window context is valid.
+        -- Flag 32 = AllowWhenBlockedByActiveItem: stays true while clicking items inside.
+        timersHovered = imgui.IsWindowHovered(32);
+        if timersHovered then
+            timersLastActivity = os.clock();
+        end
+        -- Reset font scale before End() so the window state is neutral for the next frame.
+        imgui.SetWindowFontScale(1.0);
+    end
+    imgui.End();
+
+    -- ── Auto-close logic ────────────────────────────────────────────────────
+    local cfg = gConfig;
+
+    -- Option 1: close when clicking outside the timers window.
+    -- Grace period of 0.15s after open so the opening click doesn't immediately close it.
+    if cfg.vanaTimeTimersAutoCloseClick then
+        if (imgui.IsMouseClicked(0) or imgui.IsMouseClicked(1))
+            and not timersHovered
+            and (os.clock() - timersOpenedAt) > 0.15 then
+            timersOpen = false;
+        end
+    end
+
+    -- Option 2: close after idle timeout (inactivity = mouse not hovering the window).
+    if cfg.vanaTimeTimersAutoCloseIdle then
+        local idleSec = cfg.vanaTimeTimersAutoCloseIdleSec or 5;
+        if os.clock() - timersLastActivity > idleSec then
+            timersOpen = false;
+        end
+    end
+
+    imgui.PopStyleVar(2);
+    imgui.PopStyleColor(5);
+end
+
+function M.DrawTodPopup(vtHour, vtMinuteOfDay, iconSize, colorCfg, rounding, alignOverride)
+    local cfg  = gConfig;
+    local side = cfg.vanaTimeTodSide or 'left';
+    local wx, wy = mainWinPos.x, mainWinPos.y;
+    local ww, wh = mainWinSize.w, mainWinSize.h;
+
+    local todTexRaw =
+        (vtHour >= 20 or vtHour < 4)     and todDeadNightTex
+        or (vtHour >= 6 and vtHour < 18) and todDayTex
+        or todNightTex;
+    local todTex = GetTexPtr(todTexRaw);
+    if not todTex then return; end
+
+    local align = alignOverride or cfg.vanaTimeTodAlign or 'left';
+
+    -- ── Timer countdown to next TOD transition ───────────────────────────────
+    local showTimer  = cfg.vanaTimeTodShowTimer == true;
+    local timerStr   = nil;
+    if showTimer then
+        -- Period boundaries in VT minutes:
+        --   Dead of Night : [1200,1440) ∪ [0,240)  → transitions to Night at 04:00 (240)
+        --   Night (early) : [240, 360)              → transitions to Day   at 06:00 (360)
+        --   Day           : [360,1080)              → transitions to Night at 18:00 (1080)
+        --   Night (late)  : [1080,1200)             → transitions to Dead  at 20:00 (1200)
+        local m = vtMinuteOfDay;
+        local target;
+        if m >= 1200 or m < 240 then
+            target = 240;
+        elseif m < 360 then
+            target = 360;
+        elseif m < 1080 then
+            target = 1080;
+        else
+            target = 1200;
+        end
+        -- Use fractional VT-minute position so the counter ticks every real
+        -- second rather than jumping once per 2.4 s VT-minute boundary.
+        local vtMinFrac = (GetRawTime() % VD_DAY_SEC) / VD_MIN_F;
+        local diffFrac  = target - vtMinFrac;
+        if diffFrac <= 0 then diffFrac = diffFrac + 1440 end;
+        local secs = math.max(0, diffFrac * VD_MIN_F);
+        timerStr = timers.FmtCountdown(secs);
+    end
+
+    -- Seed dimensions on first frame so right/above alignment doesn't overshoot.
+    -- 12 = WindowPadding * 2 (6 each side).
+    if cachedTodW == 0 then cachedTodW = iconSize + 12; end
+    if cachedTodH == 0 then cachedTodH = iconSize + 12; end
+
+    local popX, popY;
+    if side == 'right' then
+        popX = wx + ww + WEATHER_POPUP_GAP;
+        popY = wy;
+    elseif side == 'left' then
+        popX = wx - WEATHER_POPUP_GAP - iconSize - 8;
+        popY = wy;
+    elseif side == 'below' then
+        popY = wy + wh + WEATHER_POPUP_GAP;
+        popX = (align == 'right') and (wx + ww - cachedTodW) or wx;
+    else -- 'above'
+        popY = wy - cachedTodH - WEATHER_POPUP_GAP;
+        popX = (align == 'right') and (wx + ww - cachedTodW) or wx;
+    end
+
+    imgui.PushStyleVar(ImGuiStyleVar_WindowRounding, rounding);
+    imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, {6, 6});
+    imgui.SetNextWindowPos({popX, popY}, ImGuiCond_Always);
+
+    if imgui.Begin('VanaTimeTod', true, WIN_FLAGS_WEATHER) then
+        local pw, ph = imgui.GetWindowSize();
+        cachedTodH = ph;
+        cachedTodW = pw;
+
+        local cx, cy   = imgui.GetCursorScreenPos();
+        local drawList = imgui.GetWindowDrawList();
+
+        -- Full window coverage for bg/border (1-frame-behind pw/ph is fine).
+        local popBgPad  = 6;
+        local bgX = cx - popBgPad; local bgY = cy - popBgPad;   -- = windowX, windowY
+        local bgW = pw;            local bgH = ph;               -- full window rect
+        local contentW  = pw - 12;   -- inside padding (pw = content + 2*6)
+        local contentH  = ph - 12;
+        local bgOpacity  = cfg.vanaTimeBackgroundOpacity or 0.85;
+        local bgRgb      = colorCfg.bgColor or 0xFF000000;
+        local bgTheme    = 'Plain';
+        local borderTheme = 'Window1';
+
+        if bgTheme:match('^Window%d+$') then
+            windowbg.Draw(drawList, cx, cy, contentW, contentH, {
+                theme=bgTheme, bgScale=cfg.vanaTimeBgScale or 1.0,
+                bgOpacity=bgOpacity, borderScale=0, borderOpacity=0,
+                bgColor=bgRgb, borderColor=0x00000000, padding=popBgPad });
+        elseif bgTheme ~= '-None-' then
+            local opaqueU32 = ToU32(WithAlpha(bgRgb, bgOpacity));
+            local transpU32 = ToU32(WithAlpha(bgRgb, 0.0));
+            local midX = bgX + bgW / 2;
+            drawList:AddRectFilledMultiColor({bgX,bgY},{midX,bgY+bgH}, transpU32,opaqueU32,opaqueU32,transpU32);
+            drawList:AddRectFilledMultiColor({midX,bgY},{bgX+bgW,bgY+bgH}, opaqueU32,transpU32,transpU32,opaqueU32);
+        end
+
+        if borderTheme:match('^Window%d+$') then
+            windowbg.Draw(drawList, cx, cy, contentW, contentH, {
+                theme=borderTheme, bgScale=0, bgOpacity=0,
+                borderScale=cfg.vanaTimeBorderScale or 1.0,
+                borderOpacity=cfg.vanaTimeBorderOpacity or 1.0,
+                bgColor=0x00000000, borderColor=colorCfg.borderColor or 0xFFFFFFFF,
+                padding=popBgPad });
+        elseif borderTheme == 'Plain' then
+            local borderArgb = WithAlpha(colorCfg.borderColor or 0xFFFFFFFF, cfg.vanaTimeBorderOpacity or 1.0);
+            drawList:AddRect({bgX,bgY},{bgX+bgW,bgY+bgH}, ToU32(borderArgb), rounding, nil, 1.0);
+        end
+
+        -- Icon: centered horizontally within whatever width the window has settled on.
+        local iconOffX = math.max(0, math.floor((contentW - iconSize) / 2));
+        drawList:AddImage(todTex, {cx + iconOffX, cy}, {cx + iconOffX + iconSize, cy + iconSize}, {0,0}, {1,1}, ToU32(0xEEFFFFFF));
+        imgui.Dummy({iconSize, iconSize});
+
+        -- Timer text: inside the box, centered, font scaled proportionally to icon.
+        if timerStr then
+            local fontScale = iconSize / 28.0;
+            imgui.SetWindowFontScale(fontScale);
+            local tw, _ = imgui.CalcTextSize(timerStr);
+            local textOffX = math.max(0, math.floor((contentW - tw) / 2));
+            imgui.SetCursorPosX(imgui.GetCursorPosX() + textOffX);
+            local timerArgb = colorCfg.todTimerColor or 0xFFFFFFFF;
+            local timerF4   = {ArgbR(timerArgb), ArgbG(timerArgb), ArgbB(timerArgb), ArgbA(timerArgb)};
+            imgui.TextColored(timerF4, timerStr);
+            imgui.SetWindowFontScale(1.0);
+        end
+
+        if imgui.IsWindowHovered() then
+            if cfg.vanaTimeEnableTooltips ~= false and cfg.vanaTimeTipTod ~= false then
+                local todName =
+                    (vtHour >= 20 or vtHour < 4)     and 'Dead of Night'
+                    or (vtHour >= 6 and vtHour < 18) and 'Day'
+                    or 'Night';
+                imgui.SetTooltip(todName);
+            end
+        end
+    end
+    imgui.End();
+    imgui.PopStyleVar(2);
+end
+
+function M.DrawWeatherPopup(weatherId, fontSize, iconSize, colorCfg, rounding, offX, offY, alignOverride, iconAlpha)
     local cfg       = gConfig;
     local elemIdx   = WEATHER_TO_ELEMENT[weatherId];
     if elemIdx == nil then return; end
@@ -968,8 +1858,18 @@ function M.DrawWeatherPopup(weatherId, fontSize, iconSize, colorCfg, rounding)
     local weatherTex = GetTexPtr(textures[elemIdx]);
     if weatherTex == nil then return; end
 
+    local iconGap   = 2;  -- gap between the two icons for double weather
+    local doubleW   = isDouble and (iconSize + iconGap) or 0;
+
+    -- Seed cachedWeatherW on first frame (before Begin runs) so right-align
+    -- doesn't overshoot on the very first render.  12 = WindowPadding*2 (6+6).
+    if cachedWeatherW == 0 then
+        cachedWeatherW = iconSize + doubleW + 12;
+    end
+
     -- Position relative to main window
     local side     = cfg.vanaTimeWeatherSide or 'right';
+    local align    = alignOverride or cfg.vanaTimeWeatherAlign or 'left';
     local wx, wy   = mainWinPos.x, mainWinPos.y;
     local ww, wh   = mainWinSize.w, mainWinSize.h;
 
@@ -978,15 +1878,17 @@ function M.DrawWeatherPopup(weatherId, fontSize, iconSize, colorCfg, rounding)
         popX = wx + ww + WEATHER_POPUP_GAP;
         popY = wy;
     elseif side == 'left' then
-        popX = wx - WEATHER_POPUP_GAP - (iconSize + (isDouble and fontSize + 6 or 0) + 8);
+        popX = wx - WEATHER_POPUP_GAP - (iconSize + doubleW + 8);
         popY = wy;
     elseif side == 'below' then
-        popX = wx;
         popY = wy + wh + WEATHER_POPUP_GAP;
+        popX = (align == 'right') and (wx + ww - cachedWeatherW) or wx;
     else -- 'above'
-        popX = wx;
         popY = wy - cachedWeatherH - WEATHER_POPUP_GAP;
+        popX = (align == 'right') and (wx + ww - cachedWeatherW) or wx;
     end
+    popX = popX + (offX or 0);
+    popY = popY + (offY or 0);
 
     imgui.PushStyleVar(ImGuiStyleVar_WindowRounding, rounding);
     imgui.PushStyleVar(ImGuiStyleVar_WindowPadding, {6, 6});
@@ -995,53 +1897,85 @@ function M.DrawWeatherPopup(weatherId, fontSize, iconSize, colorCfg, rounding)
     if imgui.Begin('VanaTimeWeather', true, WIN_FLAGS_WEATHER) then
         local pw, ph = imgui.GetWindowSize();
         cachedWeatherH = ph;
+        cachedWeatherW = pw;
 
         local cx, cy   = imgui.GetCursorScreenPos();
-        local drawList = GetUIDrawList();
+        local drawList = imgui.GetWindowDrawList();
 
-        -- Background
-        local popContentW = iconSize + (isDouble and fontSize + 4 or 0);
-        local popBgPad    = 6;
-        local popBgArgb   = WithAlpha(colorCfg.bgColor or 0xFF000000, (cfg.vanaTimeBackgroundOpacity or 0.85) * 0.9);
-        drawList:AddRectFilled(
-            {cx - popBgPad, cy - popBgPad},
-            {cx + popContentW + popBgPad, cy + iconSize + popBgPad},
-            ToU32(popBgArgb), rounding);
-        local bgTheme = cfg.vanaTimeBackgroundTheme or 'Plain';
+        -- Background + border — mirrors main window logic exactly
+        local popContentW  = iconSize + doubleW;
+        local popBgPad     = 6;
+        local bgX = cx - popBgPad;
+        local bgY = cy - popBgPad;
+        local bgW = popContentW + popBgPad * 2;
+        local bgH = iconSize    + popBgPad * 2;
+        local bgOpacity   = cfg.vanaTimeBackgroundOpacity or 0.85;
+        local bgRgb       = colorCfg.bgColor  or 0xFF000000;
+        local bgTheme     = 'Plain';    -- locked: Background = Plain
+        local borderTheme = 'Window1';  -- locked: Border = Window1
+
         if bgTheme:match('^Window%d+$') then
             windowbg.Draw(drawList, cx, cy, popContentW, iconSize, {
-                theme = bgTheme, bgOpacity = 0,
-                borderScale = cfg.vanaTimeBorderScale or 1.0,
-                borderOpacity = cfg.vanaTimeBorderOpacity or 1.0,
-                borderColor = colorCfg.borderColor or 0xFFFFFFFF,
-                padding = popBgPad,
+                theme         = bgTheme,
+                bgScale       = cfg.vanaTimeBgScale or 1.0,
+                bgOpacity     = bgOpacity,
+                borderScale   = 0,
+                borderOpacity = 0,
+                bgColor       = bgRgb,
+                borderColor   = 0x00000000,
+                padding       = popBgPad,
             });
-        else
-            local borderArgb = WithAlpha(colorCfg.borderColor or 0xFFFFFFFF, cfg.vanaTimeBorderOpacity or 1.0);
-            drawList:AddRect(
-                {cx - popBgPad, cy - popBgPad},
-                {cx + popContentW + popBgPad, cy + iconSize + popBgPad},
-                ToU32(borderArgb), rounding, nil, 1.0);
+        elseif bgTheme ~= '-None-' then
+            -- Plain: horizontal gradient, transparent edges → opaque centre
+            local opaqueU32 = ToU32(WithAlpha(bgRgb, bgOpacity));
+            local transpU32 = ToU32(WithAlpha(bgRgb, 0.0));
+            local midX = bgX + bgW / 2;
+            drawList:AddRectFilledMultiColor(
+                {bgX,  bgY}, {midX,    bgY + bgH},
+                transpU32, opaqueU32, opaqueU32, transpU32);
+            drawList:AddRectFilledMultiColor(
+                {midX, bgY}, {bgX + bgW, bgY + bgH},
+                opaqueU32, transpU32, transpU32, opaqueU32);
         end
 
-        -- Weather element icon
+        if borderTheme:match('^Window%d+$') then
+            windowbg.Draw(drawList, cx, cy, popContentW, iconSize, {
+                theme         = borderTheme,
+                bgScale       = 0,
+                bgOpacity     = 0,
+                borderScale   = cfg.vanaTimeBorderScale   or 1.0,
+                borderOpacity = cfg.vanaTimeBorderOpacity or 1.0,
+                bgColor       = 0x00000000,
+                borderColor   = colorCfg.borderColor or 0xFFFFFFFF,
+                padding       = popBgPad,
+            });
+        elseif borderTheme == 'Plain' then
+            local borderArgb = WithAlpha(colorCfg.borderColor or 0xFFFFFFFF, cfg.vanaTimeBorderOpacity or 1.0);
+            drawList:AddRect({bgX, bgY}, {bgX + bgW, bgY + bgH}, ToU32(borderArgb), rounding, nil, 1.0);
+        end
+
+        -- Weather element icon(s) — two side-by-side for double weather
+        local iconTint = ToU32(WithAlpha(0xFFFFFFFF, iconAlpha or 1.0));
         drawList:AddImage(
             weatherTex,
-            {cx, cy}, {cx + iconSize, cy + iconSize});
+            {cx, cy}, {cx + iconSize, cy + iconSize}, {0,0}, {1,1}, iconTint);
 
-        -- "x2" label for double weather
         if isDouble then
-            local x2Str = 'x2';
-            local x2X   = cx + iconSize + 3;
-            local x2Y   = cy + (iconSize - fontSize) / 2;
-            local elemArgb = colorCfg['element' .. ELEMENT_NAMES[elemIdx]] or 0xFFFFFFFF;
-            local outArgb  = GetOutlineColor(elemIdx);
-            DrawTextWithOutline(drawList, x2Str, x2X, x2Y, elemArgb, outArgb, fontSize);
+            local x2 = cx + iconSize + iconGap;
+            drawList:AddImage(
+                weatherTex,
+                {x2, cy}, {x2 + iconSize, cy + iconSize}, {0,0}, {1,1}, iconTint);
         end
 
         -- ImGui dummy to size the window
-        local dummyW = iconSize + (isDouble and fontSize + 6 or 0);
+        local dummyW = iconSize + doubleW;
         imgui.Dummy({dummyW, iconSize});
+
+        if imgui.IsWindowHovered() then
+            if cfg.vanaTimeEnableTooltips ~= false and cfg.vanaTimeTipWeather ~= false then
+                imgui.SetTooltip(WEATHER_NAMES[weatherId] or 'Unknown');
+            end
+        end
     end
     imgui.End();
     imgui.PopStyleVar(2);

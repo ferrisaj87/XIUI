@@ -458,23 +458,49 @@ function components.DrawCheckbox(label, configKey, callback)
     end
 end
 
+-- Per-slider right-click timestamp for manual double-right-click detection.
+-- ImGui's IsMouseDoubleClicked is unreliable across SliderInt/SliderFloat due to
+-- hover-state differences; tracking single clicks ourselves is more consistent.
+local _sliderRClickTime = {};
+
 -- Helper function for slider with deferred save (top-level gConfig keys)
-function components.DrawSlider(label, configKey, min, max, format, callback)
+-- Optional 7th arg `default`: double-right-clicking the slider resets it to that value.
+function components.DrawSlider(label, configKey, min, max, format, callback, default)
     local value = { gConfig[configKey] };
     local changed = false;
 
     imgui.SetNextItemWidth(CONTENT_MAX_WIDTH);
 
-    -- Use SliderFloat if format is specified, otherwise check if value is integer
-    if format ~= nil then
-        -- Format specified, use float slider
+    if format == '%d' then
+        -- Explicit integer format: always use SliderInt for proper per-pixel drag
+        value = { math.floor(value[1] or 0) };
+        changed = imgui.SliderInt(label, value, min, max, '%d', ImGuiSliderFlags_AlwaysClamp);
+    elseif format ~= nil then
+        -- Float format (e.g. '%.2f')
         changed = imgui.SliderFloat(label, value, min, max, format, ImGuiSliderFlags_AlwaysClamp);
     elseif type(gConfig[configKey]) == 'number' and math.floor(gConfig[configKey]) == gConfig[configKey] then
-        -- No format and value is integer, use int slider
+        -- No format but stored value is already an integer
+        value = { math.floor(value[1] or 0) };
         changed = imgui.SliderInt(label, value, min, max, '%d', ImGuiSliderFlags_AlwaysClamp);
     else
-        -- No format but value is float, use float slider with default format
+        -- No format, float value
         changed = imgui.SliderFloat(label, value, min, max, '%.2f', ImGuiSliderFlags_AlwaysClamp);
+    end
+
+    -- Double right-click resets to default.
+    -- Manual timing is used instead of IsMouseDoubleClicked because hover state
+    -- differs between SliderInt and SliderFloat, causing inconsistent detection.
+    if default ~= nil and imgui.IsItemHovered() and imgui.IsMouseClicked(1) then
+        local now = os.clock();
+        local last = _sliderRClickTime[configKey];
+        if last and (now - last) < 0.5 then
+            value[1] = default;
+            changed = true;
+            _sliderRClickTime[configKey] = nil;
+            SaveSettingsToDisk();
+        else
+            _sliderRClickTime[configKey] = now;
+        end
     end
 
     if changed then
@@ -527,7 +553,7 @@ end
 -- Flexible combo box for any table + key (with width constraint and auto-save)
 -- items: display labels, values: optional stored values (if nil, items are used as values)
 -- callback: optional function called after selection with (newValue) parameter
-function components.Combo(label, parentTable, key, items, values, default, callback)
+function components.Combo(label, parentTable, key, items, values, default, callback, width)
     local currentValue = parentTable[key];
     if currentValue == nil then currentValue = default or (values and values[1] or items[1]); end
 
@@ -542,7 +568,7 @@ function components.Combo(label, parentTable, key, items, values, default, callb
         end
     end
 
-    imgui.SetNextItemWidth(CONTENT_MAX_WIDTH);
+    imgui.SetNextItemWidth(width or CONTENT_MAX_WIDTH);
     if imgui.BeginCombo(label, currentLabel) then
         for i, item in ipairs(items) do
             local itemValue = values and values[i] or item;

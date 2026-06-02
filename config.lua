@@ -1409,6 +1409,37 @@ function config.SetWindowOpen(isOpen)
     showConfig[1] = isOpen and true or false;
 end
 
+-- Returns the index of the VanaTime settings tab by looking up the function
+-- reference, so it stays correct even if tabs are added after VanaTime.
+local function GetVanaTimeTabIndex()
+    for i, fn in ipairs(settingsDrawFunctions) do
+        if fn == DrawVanaTimeSettings then return i; end
+    end
+    return #settingsDrawFunctions;  -- safe fallback
+end
+
+-- Navigate directly to the VanaTime settings tab.
+-- Called by the gear icon in the VanaTime module; defined here because
+-- selectedCategory is a local in this file.
+function config.OpenVanaTimeSettings()
+    selectedCategory = GetVanaTimeTabIndex();
+    showConfig[1]    = true;
+end
+-- Exposed as XIUI_-prefixed globals so vanatime/ui.lua can call them without
+-- a circular require, while keeping the global namespace tidy.
+XIUI_OpenVanaTimeConfig   = config.OpenVanaTimeSettings;
+
+-- Toggle: if config is open, close it; otherwise open to VanaTime tab.
+function config.ToggleVanaTimeSettings()
+    if showConfig[1] then
+        showConfig[1] = false;
+    else
+        selectedCategory = GetVanaTimeTabIndex();
+        showConfig[1]    = true;
+    end
+end
+XIUI_ToggleVanaTimeConfig = config.ToggleVanaTimeSettings;
+
 function config.OpenCrossbarManagePalettes()
     local idx = GetCrossbarCategoryIndex();
     if not idx then
