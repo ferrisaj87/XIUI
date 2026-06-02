@@ -34,6 +34,7 @@ function M.createColorCustomizationDefaults()
         targetBar = T{
             hpGradient = T{ enabled = true, start = '#e26c6c', stop = '#fb9494' },
             castBarGradient = T{ enabled = true, start = '#ffaa00', stop = '#ffcc44' },
+            mpBarGradient = T{ enabled = true, start = '#9abb5a', stop = '#bfe07d' },  -- Aspirable mob MP stripe (defaults to match player MP bar)
             distanceTextColor = 0xFFFFFFFF,
             castTextColor = 0xFFFFAA00,  -- Orange color for enemy casting
             -- Per-entity-type HP bar gradients (used when targetBarHpColorByType is enabled)
@@ -271,6 +272,26 @@ function M.createColorCustomizationDefaults()
         -- Mob Info
         mobInfo = T{
             levelTextColor = 0xFFFFFFFF,
+        },
+
+        -- Vana Time
+        vanaTime = T{
+            bgColor         = 0xFF000000,   -- black bg (transparent via opacity setting)
+            borderColor     = 0xFFFFFFFF,
+            textColor       = 0xFFFFFFFF,   -- LT clock + general text
+            moonFullColor   = 0xFFFFD700,   -- gold glow for full moon cell
+            moonNewColor    = 0xFF8B0000,   -- dark red glow for new moon cell
+            todTimerColor   = 0xFFFFFFFF,   -- TOD countdown text (default: white)
+            -- Light group (Fire/Wind/Lightning/Light) -> black outline + white pill
+            -- Dark group  (Ice/Water/Earth/Dark)      -> white outline + dark pill
+            elementFire      = 0xFFFF4500,  -- orange-red   (Light group)
+            elementEarth     = 0xFFB8860B,  -- dark gold    (Dark group)
+            elementWater     = 0xFF1E90FF,  -- dodger blue  (Dark group)
+            elementWind      = 0xFF32CD32,  -- lime green   (Light group)
+            elementIce       = 0xFF87CEEB,  -- sky blue     (Dark group)
+            elementLightning = 0xFFBF5FFF,  -- med purple   (Light group)
+            elementLight     = 0xFFFFFFE0,  -- light yellow (Light group)
+            elementDark      = 0xFF2A0850,  -- very deep dark purple (Dark group)
         },
 
         -- Global/Shared
